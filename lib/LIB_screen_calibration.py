@@ -32,16 +32,21 @@ import os
 import sys
 from collections import namedtuple
 
-#: The config lives beside the tools, not beside this module.
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONFIG_PATH = os.path.join(_ROOT, ".screen_ruler_config.json")
+from lib.LIB_project_config import get as _config_get
+from lib.LIB_project_config import update_local as _config_update_local
 
-#: Config layout version. v1 was a single ``{"ppi_x": ...}`` for the whole
-#: machine; v2 files a calibration per monitor. A v1 file is migrated on first
-#: load rather than discarded -- someone did the card-holding work to produce
-#: that number, and it is almost certainly right for whichever monitor they did
-#: it on, which is the one they are most likely sitting at now.
-CONFIG_VERSION = 2
+#: Where in the configuration the calibrations live. The **local** file, always:
+#: a calibration is measured against particular monitors on one desk, so it is
+#: not merely useless on another machine but actively wrong.
+CONFIG_KEY = "screen.monitors"
+
+#: The standalone file this used to be, kept only to migrate out of. Older runs
+#: of ScreenRuler wrote here; the first read that finds it moves its contents
+#: into the local project config, because nobody should have to hold a card
+#: against the glass a second time for a file rename.
+LEGACY_CONFIG_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    ".screen_ruler_config.json")
 
 MM_PER_INCH = 25.4
 
@@ -186,10 +191,17 @@ def monitor_at(x, y, screen_size=None):
 # ----------------------------------------------------------------------
 # Stored calibrations
 # ----------------------------------------------------------------------
-def load_config():
-    """The whole config as ``{monitor key: {...}}``, empty if unreadable."""
+def _legacy_file_monitors():
+    """
+    Calibrations from the standalone file this used to live in, or ``{}``.
+
+    Two shapes have existed there: ``{"monitors": {...}}``, and before that a
+    single machine-wide ``{"ppi_x": ...}``.  The older one is handed back under
+    the sentinel key so the caller can adopt it for whichever monitor is in
+    front of them now -- the only monitor it could have been measured on.
+    """
     try:
-        with open(CONFIG_PATH, "r") as f:
+        with open(LEGACY_CONFIG_PATH, "r") as f:
             data = json.load(f)
     except (OSError, ValueError):
         # OSError, not just FileNotFoundError: the file can also be unreadable
@@ -202,14 +214,28 @@ def load_config():
     monitors = data.get("monitors")
     if isinstance(monitors, dict):
         return monitors
-    # A v1 file: one machine-wide "ppi_x" and nothing else. Hand it back under
-    # the sentinel so the caller can adopt it for whichever monitor is in front
-    # of them now, which is the only monitor it could have been measured on.
     try:
         legacy = float(data["ppi_x"])
     except (KeyError, TypeError, ValueError):
         return {}
     return {UNKNOWN_MONITOR_KEY: {"ppi": legacy}} if legacy > 0 else {}
+
+
+def load_config():
+    """
+    The calibrations as ``{monitor key: {...}}``, empty if there are none.
+
+    Reads the local project config, falling back to the standalone file that
+    predates it -- and carrying that file's contents forward on the way, so the
+    move happens once and silently rather than costing a recalibration.
+    """
+    monitors = _config_get(CONFIG_KEY)
+    if isinstance(monitors, dict) and monitors:
+        return monitors
+    inherited = _legacy_file_monitors()
+    if inherited:
+        _config_update_local(CONFIG_KEY, inherited)
+    return inherited
 
 
 def load_saved_ppi(monitor, config=None):
@@ -224,19 +250,14 @@ def load_saved_ppi(monitor, config=None):
 
 def save_ppi(monitor, ppi):
     """File ``ppi`` under ``monitor``, leaving every other monitor's alone."""
-    monitors = load_config()
+    monitors = dict(load_config())
     monitors.pop(UNKNOWN_MONITOR_KEY, None)   # migrated; it has a real key now
     monitors[monitor.key] = {
         "ppi": ppi,
         "label": monitor.label,
         "size_px": [monitor.width, monitor.height],
     }
-    try:
-        with open(CONFIG_PATH, "w") as f:
-            json.dump({"version": CONFIG_VERSION, "monitors": monitors}, f,
-                      indent=2, sort_keys=True)
-    except OSError:
-        pass  # non-fatal if we can't write the config
+    _config_update_local(CONFIG_KEY, monitors)
 
 
 def px_per_mm(ppi):

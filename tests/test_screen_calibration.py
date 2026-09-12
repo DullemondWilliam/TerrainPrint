@@ -15,11 +15,15 @@ pixel is not.
 """
 
 import json
+from collections import namedtuple
 
 import pytest
 
 import ScreenRuler as R
+from lib import LIB_project_config as P
 from lib import LIB_screen_calibration as C
+
+Paths = namedtuple("Paths", "legacy local project")
 
 MONITOR = C.Monitor("DELA0C9@2560x1440", "Dell U2515H", 2560, 1440)
 OTHER = C.Monitor("SAM0F91@1920x1080", "Samsung S24", 1920, 1080)
@@ -28,10 +32,19 @@ LEGACY_PPI = 81.54726735598227
 
 @pytest.fixture
 def config(tmp_path, monkeypatch):
-    """Point the module at a throwaway config file, and hand back its path."""
-    path = tmp_path / "ruler.json"
-    monkeypatch.setattr(C, "CONFIG_PATH", str(path))
-    return path
+    """
+    Redirect every config file this module touches into a throwaway directory.
+
+    Three of them: the project config, the local one calibrations now live in,
+    and the standalone file they used to live in and are migrated out of.
+    """
+    paths = Paths(tmp_path / ".screen_ruler_config.json",
+                  tmp_path / "project_config.local.json",
+                  tmp_path / "project_config.json")
+    monkeypatch.setattr(P, "CONFIG_PATH", str(paths.project))
+    monkeypatch.setattr(P, "LOCAL_CONFIG_PATH", str(paths.local))
+    monkeypatch.setattr(C, "LEGACY_CONFIG_PATH", str(paths.legacy))
+    return paths
 
 
 def _write(path, payload):
@@ -45,15 +58,15 @@ class TestReadingTheConfig:
         assert C.load_config() == {}
 
     def test_a_file_that_is_not_json(self, config):
-        config.write_text("{ not json at all")
+        config.legacy.write_text("{ not json at all")
         assert C.load_config() == {}
 
     def test_a_file_that_is_json_but_not_a_config(self, config):
-        _write(config, ["a", "list"])
+        _write(config.legacy, ["a", "list"])
         assert C.load_config() == {}
 
     def test_a_per_monitor_file_reads_back(self, config):
-        _write(config, {"version": 2,
+        _write(config.legacy, {"version": 2,
                         "monitors": {MONITOR.key: {"ppi": 108.8}}})
         assert C.load_config() == {MONITOR.key: {"ppi": 108.8}}
 
@@ -62,14 +75,14 @@ class TestTheLegacySingleCalibration:
     """A v1 file holds one number for the whole machine. It is not thrown away."""
 
     def test_it_is_offered_under_the_sentinel_key(self, config):
-        _write(config, {"ppi_x": LEGACY_PPI})
+        _write(config.legacy, {"ppi_x": LEGACY_PPI})
         assert C.load_config() == {C.UNKNOWN_MONITOR_KEY: {"ppi": LEGACY_PPI}}
 
     @pytest.mark.parametrize("payload", [
         {"ppi_x": 0}, {"ppi_x": -5}, {"ppi_x": "wide"}, {"ppi_x": None}, {},
     ])
     def test_a_useless_legacy_value_is_not_adopted(self, config, payload):
-        _write(config, payload)
+        _write(config.legacy, payload)
         assert C.load_config() == {}
 
     def test_saving_retires_the_sentinel(self, config):
@@ -78,7 +91,7 @@ class TestTheLegacySingleCalibration:
         go, or it would be re-adopted by the *next* monitor the window lands on
         and quietly claim that panel is the same size as this one.
         """
-        _write(config, {"ppi_x": LEGACY_PPI})
+        _write(config.legacy, {"ppi_x": LEGACY_PPI})
         C.save_ppi(MONITOR, LEGACY_PPI)
         stored = C.load_config()
         assert C.UNKNOWN_MONITOR_KEY not in stored
@@ -98,9 +111,17 @@ class TestWritingCalibrations:
         assert entry["label"] == "Dell U2515H"
         assert entry["size_px"] == [2560, 1440]
 
-    def test_it_is_written_in_the_current_format(self, config):
+    def test_it_lands_in_the_local_config_not_the_tracked_one(self, config):
+        """
+        A calibration is true of one desk, so it must never reach the file that
+        goes into git — committing it would push these monitors' measurements
+        onto every other machine, where they are wrong rather than merely
+        useless.
+        """
         C.save_ppi(MONITOR, 108.8)
-        assert json.loads(config.read_text())["version"] == C.CONFIG_VERSION
+        assert not config.project.exists()
+        written = json.loads(config.local.read_text())
+        assert written["screen"]["monitors"][MONITOR.key]["ppi"] == 108.8
 
     def test_saving_one_monitor_leaves_the_others_alone(self, config):
         C.save_ppi(MONITOR, 108.8)
@@ -114,10 +135,11 @@ class TestWritingCalibrations:
         C.save_ppi(OTHER, 96.0)
         assert set(C.load_config()) == {MONITOR.key, OTHER.key}
 
-    def test_an_unwritable_config_is_not_fatal(self, tmp_path, monkeypatch):
+    def test_an_unwritable_config_is_not_fatal(self, config, monkeypatch):
         """A read-only home should cost you the save, not the running ruler."""
-        monkeypatch.setattr(C, "CONFIG_PATH", str(tmp_path))   # a directory
-        C.save_ppi(MONITOR, 108.8)                             # must not raise
+        monkeypatch.setattr(P, "LOCAL_CONFIG_PATH",
+                            str(config.local.parent))         # a directory
+        C.save_ppi(MONITOR, 108.8)                            # must not raise
 
 
 class TestReadingOneMonitorsCalibration:
@@ -130,13 +152,13 @@ class TestReadingOneMonitorsCalibration:
         {"ppi": 0}, {"ppi": -1}, {"ppi": "wide"}, {"ppi": None}, {}, None,
     ])
     def test_a_damaged_entry_reads_as_uncalibrated(self, config, stored):
-        _write(config, {"version": 2, "monitors": {MONITOR.key: stored}})
+        _write(config.legacy, {"version": 2, "monitors": {MONITOR.key: stored}})
         assert C.load_saved_ppi(MONITOR) is None
 
     def test_a_supplied_config_is_not_re_read(self, config):
         """The app loads once and asks about several monitors from that copy."""
         snapshot = {MONITOR.key: {"ppi": 108.8}}
-        config.unlink(missing_ok=True)
+        config.legacy.unlink(missing_ok=True)
         assert C.load_saved_ppi(MONITOR, snapshot) == pytest.approx(108.8)
 
 
@@ -205,7 +227,7 @@ class TestTheAppAdoptsWhatIsStored:
 
     def test_a_legacy_figure_is_claimed_for_the_monitor_in_front_of_you(
             self, new_ruler, config):
-        _write(config, {"ppi_x": LEGACY_PPI})
+        _write(config.legacy, {"ppi_x": LEGACY_PPI})
         ruler = new_ruler()
         assert ruler.ppi == pytest.approx(LEGACY_PPI)
         assert ruler.mode == "ruler"               # not sent back to calibrate

@@ -32,9 +32,11 @@ from shapely.ops import unary_union
 from shapely.validation import make_valid
 import trimesh
 
-EPSG_SRC      = "EPSG:4326"
-EPSG_METRIC   = "EPSG:3347"
-DEFAULT_SCALE = 8_000_000          # 1 print-mm : 8 km
+from lib.LIB_project_config import get as _cfg
+
+EPSG_SRC      = _cfg("crs.source")
+EPSG_METRIC   = _cfg("crs.working")
+DEFAULT_SCALE = _cfg("print.scale")          # 1 print-mm : scale/1e6 km
 
 # Border parts smaller than this triangulate into non-manifold slivers and are
 # too small to print anyway (matches the island filter in LIB_terrain_stl).
@@ -51,8 +53,8 @@ _LAYER_OVERLAP_MM = 0.01
 @dataclass
 class ConnectorParams:
     scale:        float = DEFAULT_SCALE   # map scale denominator (1 : scale)
-    thickness_mm: float = 2.0             # total border height
-    dovetail_mm:  float = 1.0             # dovetail layer height / pocket depth (Z)
+    thickness_mm: float = _cfg("print.border_thickness_mm")   # total border height
+    dovetail_mm:  float = _cfg("print.dovetail_mm")  # dovetail layer height / pocket depth (Z)
     spacing_mm:   float = 14.0            # gap between keys along the seam
     neck_mm:      float = 1.6             # dovetail width at the corridor edge (throat)
     mouth_mm:     float = 3.2             # dovetail width at the far end (wide -> locks)

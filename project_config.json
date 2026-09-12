@@ -1,0 +1,22 @@
+{
+  "crs": {
+    "working": "EPSG:3347",
+    "source": "EPSG:4326"
+  },
+  "print": {
+    "scale": 8000000,
+    "bed_mm": 256.0,
+    "bed_margin_mm": 10.0,
+    "border_thickness_mm": 2.0,
+    "dovetail_mm": 1.0
+  },
+  "paths": {
+    "provinces_in": "Data/JSon-Provinces-Orig",
+    "provinces_out": "Data/JSonProvinces-Cleaned"
+  },
+  "island_editor": {
+    "buffer_mm": 0.25,
+    "brush_mm": 0.125,
+    "min_area_mm2": 0.02
+  }
+}

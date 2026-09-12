@@ -49,6 +49,7 @@ from PySide6.QtWidgets import (QApplication, QDoubleSpinBox, QFileDialog,
 
 from lib.LIB_border_connectors import ConnectorParams, EPSG_METRIC, _load_union_m
 from lib.LIB_dovetail_fitter import fit_dovetails, _base_footprint, _safe_name
+from lib.LIB_project_config import get as _cfg
 
 GEOJSON_FILTER = "GeoJSON (*.geojson *.json);;All files (*)"
 STL_FILTER = "STL (*.stl);;All files (*)"
@@ -132,7 +133,7 @@ class DovetailFitterTester(QMainWindow):
         self.btn_remove = QPushButton("Remove")
         self.btn_remove.clicked.connect(self.remove_province)
 
-        self.scale_spin = self._spin(1.0, 100_000_000.0, 8_000_000.0, 0,
+        self.scale_spin = self._spin(1.0, 100_000_000.0, float(_cfg("print.scale")), 0,
                                      "Map-scale denominator the STLs were printed at")
         self.scale_spin.setSingleStep(500_000.0)
         self.dove_spin = self._spin(0.1, 20.0, 1.0, 2, "Dovetail pocket depth (mm)")

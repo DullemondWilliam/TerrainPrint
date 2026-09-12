@@ -40,12 +40,14 @@ import numpy as np
 import manifold3d as m3d
 import trimesh
 
+from lib.LIB_project_config import get as _cfg
+
 log = logging.getLogger(__name__)
 
 #: Default usable print-bed edge in millimetres (matches the project default).
-DEFAULT_BED_MM = 256.0
+DEFAULT_BED_MM = _cfg("print.bed_mm")
 #: Default keep-clear border subtracted from each bed edge, per side.
-DEFAULT_MARGIN_MM = 10.0
+DEFAULT_MARGIN_MM = _cfg("print.bed_margin_mm")
 #: Border parts smaller than this are sub-printable slivers (matches the other libs).
 MIN_PART_AREA_MM2 = 0.5
 

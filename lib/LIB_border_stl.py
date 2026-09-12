@@ -33,11 +33,12 @@ from shapely.geometry import MultiPolygon
 from shapely.ops import transform as shp_transform
 
 from lib.LIB_border_connectors import MIN_PART_AREA_MM2, extrude_solid
+from lib.LIB_project_config import get as _cfg
 
 log = logging.getLogger(__name__)
 
 #: CRS the border model is built in by default (Statistics Canada Lambert, metres).
-DEFAULT_PROJECTION = "EPSG:3347"
+DEFAULT_PROJECTION = _cfg("crs.working")
 
 
 def build_border_stl(border_geom, height_mm, geometry_crs=None,

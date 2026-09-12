@@ -80,6 +80,7 @@ from lib.LIB_island_metrics import (bridging_buffer_km, closest_pair,
                                     gap_range_km, landmass_count)
 from lib.LIB_island_removal import is_below_area, remove_small_islands
 from lib.LIB_lake_removal import remove_lakes
+from lib.LIB_project_config import get as cfg
 from lib.LIB_screen_calibration import (MM_PER_INCH, load_saved_ppi,
                                         monitor_at, px_per_mm)
 
@@ -87,13 +88,13 @@ GEOJSON_FILTER = "GeoJSON (*.geojson *.json);;All files (*)"
 #: Project print CRS (Statistics Canada Lambert, metres). Islands are worked in
 #: metres so the km buffer / km² threshold are real ground units, then
 #: reprojected back to the source CRS on save.
-EPSG_METRIC = "EPSG:3347"
+EPSG_METRIC = cfg("crs.working")
 
 #: Where the file dialogs start, resolved next to this script (raw provinces
 #: in, island-edited outputs out).
 _ROOT = Path(__file__).resolve().parent
-DEFAULT_LOAD_DIR = _ROOT / "Data" / "JSon-Provinces-Orig"
-DEFAULT_SAVE_DIR = _ROOT / "Data" / "JSonProvinces-Cleaned"
+DEFAULT_LOAD_DIR = _ROOT / cfg("paths.provinces_in")
+DEFAULT_SAVE_DIR = _ROOT / cfg("paths.provinces_out")
 
 ISLAND_COLOUR = "#AED6F1"     # ordinary islands
 SELECT_COLOUR = "#F5B041"     # clicked / selected islands
@@ -109,7 +110,7 @@ SCALE_COLOUR = "#2C3E50"      # the map's scale bars, darker than any island
 #: what it comes out as on paper once the province is printed at the reduction
 #: below. 1:8 000 000 fits a whole province on a desk-sized sheet, which is the
 #: project's working figure; the toolbar's spin box moves it.
-DEFAULT_PRINT_SCALE = 8_000_000
+DEFAULT_PRINT_SCALE = cfg("print.scale")
 PRINT_SCALE_MIN, PRINT_SCALE_MAX = 1_000, 500_000_000
 PRINT_SCALE_STEP = 500_000
 
@@ -131,9 +132,9 @@ MM_PER_KM = 1_000_000
 #: a 0.25 mm buffer is 2 km there and a 0.125 mm brush is 1 km.  Three decimals
 #: resolve 0.001 mm, which at that scale is 8 m — finer than the 10 m the old km
 #: boxes could state; area gets a fourth because a squared unit needs it.
-BUFFER_MM = (0.0, 50.0, 0.25, 3, 0.05)
-BRUSH_MM = (0.001, 25.0, 0.125, 3, 0.05)
-AREA_MM2 = (0.0, 10_000.0, 0.02, 4, 0.01)
+BUFFER_MM = (0.0, 50.0, cfg("island_editor.buffer_mm"), 3, 0.05)
+BRUSH_MM = (0.001, 25.0, cfg("island_editor.brush_mm"), 3, 0.05)
+AREA_MM2 = (0.0, 10_000.0, cfg("island_editor.min_area_mm2"), 4, 0.01)
 
 #: Scale-bar geometry, in fractions of the axes. The bars sit in the bottom-left
 #: corner — the km bar above the mm one — and each aims to span ``SCALE_SPAN`` of
