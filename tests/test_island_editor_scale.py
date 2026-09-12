@@ -21,6 +21,7 @@ import pytest
 from shapely.geometry import box
 
 import UI_island_editor as M
+from lib.LIB_screen_calibration import Monitor
 
 pytestmark = pytest.mark.usefixtures("qapp")
 
@@ -31,6 +32,17 @@ EAST = box(20_000, 0, 30_000, 10_000)
 ISLAND_KM2 = 100.0
 
 KM_BAR, MM_BAR = 0, 1
+
+#: A stand-in screen measurement, so "real size" can be checked without caring
+#: what monitor the suite happens to be running on. 4.116 px/mm is 104.5 px/in,
+#: which is a 28" 1440p panel.
+FAKE_PX_PER_MM = 4.116034147873318
+FAKE_MONITOR = Monitor("TEST0001@2560x1440", "Test panel", 2560, 1440)
+
+
+def _centre(editor):
+    (x0, x1), (y0, y1) = editor.ax.get_xlim(), editor.ax.get_ylim()
+    return (x0 + x1) / 2, (y0 + y1) / 2
 
 
 @pytest.fixture
@@ -275,6 +287,69 @@ class TestTheTwoScaleBars:
         budget = _view_span_km(editor) * M.SCALE_SPAN
         assert 0 < _bar(editor, KM_BAR)[1] <= budget
         assert 0 < _bar(editor, MM_BAR)[1] <= budget
+
+    def test_real_size_puts_a_printed_millimetre_on_a_screen_millimetre(
+            self, editor, monkeypatch):
+        """
+        The whole claim of the button, checked against the definition: a
+        millimetre of glass must hold exactly the ground a millimetre of paper
+        will at the current reduction.
+        """
+        monkeypatch.setattr(editor, "_screen_calibration",
+                            lambda: (FAKE_PX_PER_MM, FAKE_MONITOR))
+        for denom in (4_000_000, 8_000_000, 20_000_000):
+            editor.scale_spin.setValue(denom)
+            _settle(editor)
+            editor.zoom_to_real_size()
+            _settle(editor)
+            ground_m_per_screen_mm = FAKE_PX_PER_MM / editor._px_per_metre()
+            assert ground_m_per_screen_mm == pytest.approx(denom / 1000.0)
+
+    def test_real_size_makes_the_millimetre_bar_true_to_the_glass(
+            self, editor, monkeypatch):
+        """
+        The independent check: at real size the mm scale bar is not merely
+        labelled in millimetres, it *measures* that many millimetres of screen.
+        """
+        monkeypatch.setattr(editor, "_screen_calibration",
+                            lambda: (FAKE_PX_PER_MM, FAKE_MONITOR))
+        editor.zoom_to_real_size()
+        _settle(editor)
+        line, label = editor._scale_artists[MM_BAR]
+        xs = line.get_xdata()
+        width_px = editor.ax.get_window_extent().width
+        on_glass_mm = (xs[-1] - xs[0]) * width_px / FAKE_PX_PER_MM
+        assert on_glass_mm == pytest.approx(float(label.get_text().split()[0]))
+
+    def test_real_size_keeps_the_map_centred(self, editor, monkeypatch):
+        """Zooming is about the middle of the view, so nothing is lost off-screen."""
+        monkeypatch.setattr(editor, "_screen_calibration",
+                            lambda: (FAKE_PX_PER_MM, FAKE_MONITOR))
+        _settle(editor)
+        before = _centre(editor)
+        editor.zoom_to_real_size()
+        _settle(editor)
+        assert _centre(editor) == pytest.approx(before)
+
+    def test_real_size_says_so_when_the_monitor_was_never_measured(
+            self, editor, monkeypatch):
+        """
+        Without a measurement there is no honest answer, so it declines and
+        names the tool that takes one rather than guessing at 96 dpi.
+        """
+        monkeypatch.setattr(editor, "_screen_calibration",
+                            lambda: (None, FAKE_MONITOR))
+        _settle(editor)
+        before = editor.ax.get_xlim()
+        editor.zoom_to_real_size()
+        assert editor.ax.get_xlim() == before          # view untouched
+        assert "ScreenRuler" in editor.status.text()
+
+    def test_real_size_needs_a_province(self, editor, qtbot):
+        blank = M.IslandEditor()
+        qtbot.addWidget(blank)
+        assert not blank.btn_real.isEnabled()
+        assert editor.btn_real.isEnabled()
 
     def test_the_bars_ride_the_corner_rather_than_the_map(self, editor):
         """Axes coordinates, so a pan cannot carry them off the canvas."""

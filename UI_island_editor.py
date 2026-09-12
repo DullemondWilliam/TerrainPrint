@@ -35,6 +35,12 @@ the scale leaves the numbers alone and changes what they are worth. The map
 carries two scale bars to match, bottom left: one in km of ground, one in mm of
 paper.
 
+**Real Size** takes that literally and zooms the map to its printed size on the
+glass, so a province held against the monitor is the province that comes off the
+printer. It needs the screen measured first, which ``ScreenRuler.py`` does and
+``lib.LIB_screen_calibration`` stores — per monitor, since a calibration is a
+statement about one panel.
+
 The document is a single geometry; each operation is a ``geometry -> geometry``
 transform recorded as a snapshot command, and the selection is remapped onto the
 result so a merge leaves the merged landmass selected.
@@ -74,6 +80,8 @@ from lib.LIB_island_metrics import (bridging_buffer_km, closest_pair,
                                     gap_range_km, landmass_count)
 from lib.LIB_island_removal import is_below_area, remove_small_islands
 from lib.LIB_lake_removal import remove_lakes
+from lib.LIB_screen_calibration import (MM_PER_INCH, load_saved_ppi,
+                                        monitor_at, px_per_mm)
 
 GEOJSON_FILTER = "GeoJSON (*.geojson *.json);;All files (*)"
 #: Project print CRS (Statistics Canada Lambert, metres). Islands are worked in
@@ -330,6 +338,15 @@ class IslandEditor(QMainWindow):
             self.perkm_box.fontMetrics().horizontalAdvance("000.00 km/mm") + 16)
         self.scale_spin.valueChanged.connect(self._on_print_scale)
 
+        # The one control that takes the print scale literally, by putting the
+        # map on the glass at the size it will come off the printer.
+        self.btn_real = self._button("Real Size", self.zoom_to_real_size,
+                                     enabled=False)
+        self.btn_real.setToolTip(
+            "Zoom so the map is its printed size: a millimetre on screen "
+            "becomes a millimetre on paper, at the scale on the left. Needs "
+            "this monitor measured first — run ScreenRuler.py to do that.")
+
         # -- single live canvas ---------------------------------------------
         # Built before the toolbars because the view tools belong to the canvas
         # and ride in the top row with the other document-level controls.
@@ -366,7 +383,7 @@ class IslandEditor(QMainWindow):
         for widget in (self.btn_import, self.btn_save, self._separator(),
                        self.btn_undo, self.btn_redo, self._separator(), self.nav,
                        self._separator(), QLabel("Print scale"), self.scale_spin,
-                       self.perkm_box):
+                       self.perkm_box, self.btn_real):
             top.addWidget(widget)
         top.addStretch(1)
         root.addLayout(top)
@@ -685,6 +702,63 @@ class IslandEditor(QMainWindow):
             self._update_status("Print scale changed — ")
         else:
             self.canvas.draw_idle()
+
+    # -- real size ----------------------------------------------------------
+    def _screen_calibration(self):
+        """
+        ``(pixels per screen millimetre, monitor)`` for the monitor this window
+        is on, or ``(None, monitor)`` if nobody has measured it.
+
+        The measurement has to come from a person holding something of known
+        size against the glass -- the physical dimensions a monitor reports
+        through EDID are missing or wrong often enough to be useless, which is
+        the whole reason ``ScreenRuler.py`` exists.  This reads what it stored.
+        """
+        centre = self.frameGeometry().center()
+        screen = self.screen() or QApplication.primaryScreen()
+        size = ((screen.geometry().width(), screen.geometry().height())
+                if screen is not None else None)
+        monitor = monitor_at(centre.x(), centre.y(), size)
+        ppi = load_saved_ppi(monitor)
+        return (px_per_mm(ppi) if ppi else None), monitor
+
+    def zoom_to_real_size(self) -> None:
+        """
+        Put the map on the glass at the size it will print.
+
+        One millimetre of screen is made to carry exactly the ground that one
+        millimetre of paper will, so a province held up against the monitor is
+        the province that comes off the printer.  The zoom is done by *scaling
+        the current view* rather than by computing limits from the axes box:
+        the limits matplotlib is holding have already been through
+        ``apply_aspect`` (the axes keep ``adjustable="datalim"``, so it widens
+        them to fill the box), and multiplying both spans by one factor keeps
+        that agreement intact where fresh limits could fight it.
+        """
+        screen_px_per_mm, monitor = self._screen_calibration()
+        if screen_px_per_mm is None:
+            self._update_status(
+                f"No screen measurement for {monitor.label} — run "
+                "ScreenRuler.py to measure it, then Real Size can work — ")
+            return
+
+        # A screen millimetre must hold a printed millimetre's worth of ground.
+        wanted = screen_px_per_mm / self._to_km(1.0) / 1000.0
+        current = self._px_per_metre()
+        if current <= 0 or wanted <= 0:
+            return
+        factor = current / wanted
+        for get, set_ in ((self.ax.get_xlim, self.ax.set_xlim),
+                          (self.ax.get_ylim, self.ax.set_ylim)):
+            low, high = get()
+            middle, half = (low + high) / 2, (high - low) * factor / 2
+            set_(middle - half, middle + half)
+        self.canvas.draw_idle()
+        self._update_status(
+            f"Real size at 1:{_grouped(self.scale_spin.value())} — 1 mm on "
+            f"screen is 1 mm on paper ({self._km_per_mm():g} km of ground), "
+            f"measured at {screen_px_per_mm * MM_PER_INCH:.1f} px/in on "
+            f"{monitor.label} — ")
 
     def _on_draw(self, _event) -> None:
         """
@@ -1033,6 +1107,7 @@ class IslandEditor(QMainWindow):
         self.btn_remove_sel.setEnabled(picked >= 1)
         self.btn_remove_small.setEnabled(has)
         self.btn_lakes.setEnabled(has)
+        self.btn_real.setEnabled(has)     # nothing to size against an empty map
         self.btn_select_all.setEnabled(has)
         self.btn_clear.setEnabled(bool(self.selected))
         # Unlike All/None this stays live at both extremes: inverting nothing

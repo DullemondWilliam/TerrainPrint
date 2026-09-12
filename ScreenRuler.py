@@ -53,28 +53,18 @@ No third-party dependencies -- uses only the standard library (tkinter, and
 ctypes for the Windows monitor query).
 """
 
-import json
-import os
 import sys
 import tkinter as tk
-from collections import namedtuple
 from tkinter import font as tkfont
 
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".screen_ruler_config.json")
-
-#: Config layout version. v1 was a single ``{"ppi_x": ...}`` for the whole
-#: machine; v2 files a calibration per monitor. A v1 file is migrated on first
-#: load rather than discarded -- someone did the card-holding work to produce
-#: that number, and it is almost certainly right for whichever monitor they did
-#: it on, which is the one they are most likely sitting at now.
-CONFIG_VERSION = 2
+from lib.LIB_screen_calibration import (MM_PER_INCH, UNKNOWN_MONITOR_KEY,
+                                        enable_per_monitor_dpi, load_config,
+                                        load_saved_ppi, monitor_at, save_ppi)
 
 # Standard credit-card / ID-card size in mm (ISO/IEC 7810 ID-1) -- a handy,
 # widely-available real-world reference object for calibration.
 CREDIT_CARD_WIDTH_MM = 85.60
 CREDIT_CARD_HEIGHT_MM = 53.98
-
-MM_PER_INCH = 25.4
 
 #: How often to notice the window has been dragged to another monitor. A window
 #: move raises <Configure> on Windows, so this is only the backstop for changes
@@ -82,206 +72,16 @@ MM_PER_INCH = 25.4
 #: underneath a window that never moved.
 MONITOR_POLL_MS = 700
 
-#: What a monitor is, as far as this program is concerned.
-#:
-#: ``key`` is what a calibration is filed under, and is built to be stable
-#: across the things that should not cost you a recalibration (re-ordering
-#: displays, unplugging and replugging) while still separating monitors that
-#: genuinely differ. See ``_windows_monitor`` for how it is derived.
-Monitor = namedtuple("Monitor", "key label width height")
-
-#: The monitor to fall back on where we cannot enumerate them -- everywhere but
-#: Windows, since tkinter alone cannot tell one display from another. One key
-#: for the whole machine restores the original single-calibration behaviour.
-UNKNOWN_MONITOR_KEY = "display"
-
-
-# ----------------------------------------------------------------------
-# Which monitor are we on?
-# ----------------------------------------------------------------------
-# tkinter has no multi-monitor API at all: winfo_screenwidth and friends answer
-# for the primary display (or the whole virtual desktop), never for the display
-# a given window happens to be sitting on. On Windows the answer is a short walk
-# through user32, which is worth taking because a ruler is exactly the program
-# where the difference between two monitors matters. Everywhere else we admit we
-# cannot tell and keep one calibration for the machine.
-if sys.platform == "win32":
-    import ctypes
-    from ctypes import wintypes
-
-    _MONITOR_DEFAULTTONEAREST = 2
-
-    class _RECT(ctypes.Structure):
-        _fields_ = [("left", wintypes.LONG), ("top", wintypes.LONG),
-                    ("right", wintypes.LONG), ("bottom", wintypes.LONG)]
-
-    class _MONITORINFOEXW(ctypes.Structure):
-        _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", _RECT),
-                    ("rcWork", _RECT), ("dwFlags", wintypes.DWORD),
-                    ("szDevice", wintypes.WCHAR * 32)]
-
-    class _DISPLAY_DEVICEW(ctypes.Structure):
-        _fields_ = [("cb", wintypes.DWORD), ("DeviceName", wintypes.WCHAR * 32),
-                    ("DeviceString", wintypes.WCHAR * 128),
-                    ("StateFlags", wintypes.DWORD),
-                    ("DeviceID", wintypes.WCHAR * 128),
-                    ("DeviceKey", wintypes.WCHAR * 128)]
-
-    def _user32():
-        """user32 with the signatures we use declared (needed on 64-bit)."""
-        lib = ctypes.windll.user32
-        lib.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
-        lib.MonitorFromPoint.restype = ctypes.c_void_p
-        lib.GetMonitorInfoW.argtypes = [ctypes.c_void_p,
-                                        ctypes.POINTER(_MONITORINFOEXW)]
-        lib.GetMonitorInfoW.restype = wintypes.BOOL
-        lib.EnumDisplayDevicesW.argtypes = [
-            wintypes.LPCWSTR, wintypes.DWORD,
-            ctypes.POINTER(_DISPLAY_DEVICEW), wintypes.DWORD]
-        lib.EnumDisplayDevicesW.restype = wintypes.BOOL
-        return lib
-
-    def _monitor_hardware(device_name):
-        """
-        ``(model, human name)`` for the monitor on an adapter output, or
-        ``(None, None)``.
-
-        ``DeviceID`` looks like ``MONITOR\\DELA0C9\\{guid}\\0002``.  The second
-        component is the EDID model code, which is what we key on: it survives
-        re-ordering and replugging, where the trailing instance number does not.
-        Two identical monitors collapse onto one key, and that is the right
-        answer -- identical panels have identical physical DPI, so one
-        calibration genuinely serves both.
-        """
-        device = _DISPLAY_DEVICEW()
-        device.cb = ctypes.sizeof(_DISPLAY_DEVICEW)
-        if not _user32().EnumDisplayDevicesW(device_name, 0,
-                                             ctypes.byref(device), 0):
-            return None, None
-        parts = [p for p in device.DeviceID.split("\\") if p]
-        model = parts[1] if len(parts) > 1 else None
-        return model, (device.DeviceString or None)
-
-    def _windows_monitor(x, y):
-        """The monitor containing screen point ``(x, y)``, or None if unclear."""
-        lib = _user32()
-        handle = lib.MonitorFromPoint(wintypes.POINT(int(x), int(y)),
-                                      _MONITOR_DEFAULTTONEAREST)
-        if not handle:
-            return None
-        info = _MONITORINFOEXW()
-        info.cbSize = ctypes.sizeof(_MONITORINFOEXW)
-        if not lib.GetMonitorInfoW(handle, ctypes.byref(info)):
-            return None
-
-        width = info.rcMonitor.right - info.rcMonitor.left
-        height = info.rcMonitor.bottom - info.rcMonitor.top
-        model, name = _monitor_hardware(info.szDevice)
-        # Resolution joins the key because changing it changes the pixel size of
-        # every real-world inch, which is precisely what a calibration records.
-        stem = model or info.szDevice.strip("\\.") or "display"
-        return Monitor(f"{stem}@{width}x{height}",
-                       name or info.szDevice or "display", width, height)
-
-    def enable_per_monitor_dpi():
-        """
-        Ask Windows to stop lying about pixels, before Tk makes any window.
-
-        Without this a DPI-unaware process is handed a fictitious resolution and
-        its window is bitmap-stretched to fit -- so the "pixels" it draws into
-        are not the monitor's, and on a mixed-DPI desk the stretch factor
-        changes as the window crosses between displays.  A calibration taken on
-        one monitor would then be wrong on the next for a reason no amount of
-        recalibrating can express.  Per-monitor-v2 makes the window's pixels the
-        monitor's pixels, which is the only footing a ruler can work from.
-        """
-        for call in (
-            lambda: ctypes.windll.user32.SetProcessDpiAwarenessContext(-4),
-            lambda: ctypes.windll.shcore.SetProcessDpiAwareness(2),
-            lambda: ctypes.windll.user32.SetProcessDPIAware(),
-        ):
-            try:
-                if call():
-                    return
-            except (AttributeError, OSError):
-                continue        # older Windows; try the next one down
-
-else:
-    def _windows_monitor(x, y):
-        return None
-
-    def enable_per_monitor_dpi():
-        pass
-
 
 def describe_monitor(root):
-    """The monitor this window is sitting on, however little we can tell."""
+    """The monitor this Tk window is sitting on, however little we can tell."""
     try:
         centre_x = root.winfo_rootx() + root.winfo_width() // 2
         centre_y = root.winfo_rooty() + root.winfo_height() // 2
-        found = _windows_monitor(centre_x, centre_y)
-        if found is not None:
-            return found
-    except (tk.TclError, OSError, ValueError):
-        pass
-    return Monitor(UNKNOWN_MONITOR_KEY, "this display",
-                   root.winfo_screenwidth(), root.winfo_screenheight())
-
-
-# ----------------------------------------------------------------------
-# Stored calibrations
-# ----------------------------------------------------------------------
-def load_config():
-    """The whole config as ``{monitor key: {...}}``, empty if unreadable."""
-    try:
-        with open(CONFIG_PATH, "r") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        # OSError, not just FileNotFoundError: the file can also be unreadable
-        # (wrong permissions, a directory in its place, a network share that has
-        # gone away), and none of those are worth taking the ruler down for.
-        # ValueError covers json's own JSONDecodeError.
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    monitors = data.get("monitors")
-    if isinstance(monitors, dict):
-        return monitors
-    # A v1 file: one machine-wide "ppi_x" and nothing else. Hand it back under
-    # the sentinel so the caller can adopt it for whichever monitor is in front
-    # of them now, which is the only monitor it could have been measured on.
-    try:
-        legacy = float(data["ppi_x"])
-    except (KeyError, TypeError, ValueError):
-        return {}
-    return {UNKNOWN_MONITOR_KEY: {"ppi": legacy}} if legacy > 0 else {}
-
-
-def load_saved_ppi(monitor, config=None):
-    """A previously saved calibration for ``monitor``, or None."""
-    entry = (load_config() if config is None else config).get(monitor.key)
-    try:
-        ppi = float(entry["ppi"])
-    except (KeyError, TypeError, ValueError):
-        return None
-    return ppi if ppi > 0 else None
-
-
-def save_ppi(monitor, ppi):
-    """File ``ppi`` under ``monitor``, leaving every other monitor's alone."""
-    monitors = load_config()
-    monitors.pop(UNKNOWN_MONITOR_KEY, None)   # migrated; it has a real key now
-    monitors[monitor.key] = {
-        "ppi": ppi,
-        "label": monitor.label,
-        "size_px": [monitor.width, monitor.height],
-    }
-    try:
-        with open(CONFIG_PATH, "w") as f:
-            json.dump({"version": CONFIG_VERSION, "monitors": monitors}, f,
-                      indent=2, sort_keys=True)
-    except OSError:
-        pass  # non-fatal if we can't write the config
+        size = (root.winfo_screenwidth(), root.winfo_screenheight())
+    except tk.TclError:
+        return monitor_at(0, 0)
+    return monitor_at(centre_x, centre_y, size)
 
 
 def os_reported_ppi(root):

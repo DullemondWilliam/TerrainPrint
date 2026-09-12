@@ -16,6 +16,7 @@ into one interactive editor, reusing:
 - `lib.LIB_island_erasing.erase_stroke(doc, points, width_km)`
 - `lib.LIB_island_removal.remove_small_islands` / `is_below_area` / `area_km2`
 - `lib.LIB_lake_removal.remove_lakes(geom)`
+- `lib.LIB_screen_calibration.monitor_at` / `load_saved_ppi` / `px_per_mm`
 
 It stays independent of the `app`/`core` main window, like the other `UI_*`
 tools. (The `app` window already offers a combined, undoable cleanup editor via
@@ -110,6 +111,24 @@ tools. (The `app` window already offers a combined, undoable cleanup editor via
   `8 km/mm`). It is the same statement as the ratio, in the units that relate the
   map's two scale bars and the mm parameters of FR-3.5 to ground distance. It
   tracks the spin box and is never typed into — the scale is the one input.
+- **FR-2.11 Real Size** — zoom so the map is its **printed** size on the glass:
+  one millimetre of screen carries exactly the ground one millimetre of paper
+  will at the current reduction, so a province held against the monitor is the
+  province that comes off the printer. It is a camera action driven by the print
+  scale, so it sits in the *document and view* row beside it and changes no
+  geometry. The zoom scales the *current* view by one factor rather than
+  computing limits from the axes box: matplotlib has already put those limits
+  through `apply_aspect` (FR-2.2's `adjustable="datalim"` widens them to fill the
+  box), and multiplying both spans by one factor preserves that agreement where
+  fresh limits could fight it. Zooming is about the centre, so nothing is lost
+  off-screen.
+- **FR-2.12** Real Size needs the monitor **measured**, which `ScreenRuler.py`
+  does and `lib.LIB_screen_calibration` stores per monitor. The physical size a
+  monitor reports through EDID is missing or wrong on a great many panels, so
+  there is no honest figure to fall back on: without a measurement the button
+  declines, names the tool that takes one, and leaves the view alone rather than
+  guessing at 96 dpi. The calibration is read live, so moving the window to
+  another monitor and pressing it again uses that monitor's figure.
 
 ## 4. Operations (each is one undoable command)
 
