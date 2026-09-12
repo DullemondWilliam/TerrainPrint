@@ -54,7 +54,6 @@ other UI_* harnesses.
 """
 
 import logging
-import math
 import sys
 from pathlib import Path
 
@@ -80,6 +79,9 @@ from lib.LIB_island_metrics import (bridging_buffer_km, closest_pair,
                                     gap_range_km, landmass_count)
 from lib.LIB_island_removal import is_below_area, remove_small_islands
 from lib.LIB_lake_removal import remove_lakes
+from lib.LIB_map_scale import (grouped as _grouped, km_per_mm as _km_per_mm_at,
+                               scale_bars, to_km2 as _to_km2_at,
+                               to_km as _to_km_at, to_mm as _to_mm_at)
 from lib.LIB_project_config import get as cfg
 from lib.LIB_screen_calibration import (MM_PER_INCH, load_saved_ppi,
                                         monitor_at, px_per_mm)
@@ -113,11 +115,6 @@ SCALE_COLOUR = "#2C3E50"      # the map's scale bars, darker than any island
 DEFAULT_PRINT_SCALE = cfg("print.scale")
 PRINT_SCALE_MIN, PRINT_SCALE_MAX = 1_000, 500_000_000
 PRINT_SCALE_STEP = 500_000
-
-#: Millimetres in a kilometre, which is the whole of the km/mm readout: a 1:N map
-#: puts N mm of ground under every mm of paper, so N / this is the ground
-#: kilometres one printed millimetre covers.
-MM_PER_KM = 1_000_000
 
 #: The editing parameters, as ``(lo, hi, default, decimals, step)`` for ``_spin``.
 #:
@@ -194,30 +191,6 @@ def _as_multi(geom):
     """Normalise any polygonal geometry to a MultiPolygon (None if empty)."""
     parts = _polygons(geom)
     return MultiPolygon(parts) if parts else None
-
-
-def _nice(value: float) -> float:
-    """
-    The largest 1 / 2 / 2.5 / 5 x 10ⁿ at or below ``value``.
-
-    A scale bar has to be read off, not measured, so its length is a round
-    number of its own unit and the *bar* takes whatever length that works out
-    to — never the other way round.  Rounding down keeps the bar inside the
-    span it was budgeted; the sequence's widest step is 2x, so it never falls
-    below half of it either.
-    """
-    if value <= 0:
-        return 0.0
-    power = 10.0 ** math.floor(math.log10(value))
-    for step in (5.0, 2.5, 2.0):
-        if value >= step * power:
-            return step * power
-    return power
-
-
-def _grouped(value: int) -> str:
-    """A large integer with space-separated thousands (8000000 -> '8 000 000')."""
-    return f"{value:,}".replace(",", " ")
 
 
 def _differs(a, b) -> bool:
@@ -674,19 +647,19 @@ class IslandEditor(QMainWindow):
     # could go on to invalidate.
     def _km_per_mm(self) -> float:
         """Ground kilometres under one printed millimetre, at the current scale."""
-        return self.scale_spin.value() / MM_PER_KM
+        return _km_per_mm_at(self.scale_spin.value())
 
     def _to_km(self, mm: float) -> float:
         """A printed length (mm) as the ground distance it stands for (km)."""
-        return mm * self._km_per_mm()
+        return _to_km_at(mm, self.scale_spin.value())
 
     def _to_km2(self, mm2: float) -> float:
         """A printed area (mm²) as the ground area it stands for (km²)."""
-        return mm2 * self._km_per_mm() ** 2
+        return _to_km2_at(mm2, self.scale_spin.value())
 
     def _to_mm(self, km: float) -> float:
         """A ground distance (km) as the length it prints at (mm)."""
-        return km / self._km_per_mm()
+        return _to_mm_at(km, self.scale_spin.value())
 
     def _perkm_text(self) -> str:
         """The km/mm readout for the current print scale."""
@@ -803,14 +776,7 @@ class IslandEditor(QMainWindow):
                 artist.set_visible(False)
             return True
 
-        # Each bar is rounded in its own unit, so both read as whole numbers;
-        # their lengths therefore differ, which is the point — one says how far,
-        # the other how big it comes out.
-        budget = span * SCALE_SPAN
-        km = _nice(budget / 1000.0)
-        mm = _nice(budget * 1000.0 / denom)
-        bars = ((km * 1000.0, f"{km:g} km"),
-                (mm * denom / 1000.0, f"{mm:g} mm at 1:{_grouped(denom)}"))
+        bars = scale_bars(span, denom, SCALE_SPAN)
 
         for (line, label), y, (ground, text) in zip(self._scale_artists,
                                                     SCALE_Y, bars):

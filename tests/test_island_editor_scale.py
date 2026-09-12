@@ -76,41 +76,6 @@ def _view_span_km(editor):
     return editor.ax.get_window_extent().width / editor._px_per_metre() / 1000.0
 
 
-class TestNiceNumbers:
-    """``_nice`` picks a bar length a reader can take in at a glance."""
-
-    @pytest.mark.parametrize("value, expected", [
-        (0.9, 0.5), (1.0, 1.0), (1.7, 1.0), (2.4, 2.0), (3.0, 2.5),
-        (6.0, 5.0), (11.0, 10.0), (260.0, 250.0), (999.0, 500.0),
-        (1000.0, 1000.0),
-    ])
-    def test_it_rounds_down_to_the_sequence(self, value, expected):
-        assert M._nice(value) == pytest.approx(expected)
-
-    @pytest.mark.parametrize("value", [0.003, 0.42, 1.0, 7.7, 93.0, 4_180.0])
-    def test_it_never_overruns_its_budget(self, value):
-        """Rounding *down* is what keeps the bar inside the span it was given."""
-        assert M._nice(value) <= value
-
-    @pytest.mark.parametrize("value", [0.003, 0.42, 1.0, 7.7, 93.0, 4_180.0])
-    def test_it_never_wastes_more_than_half(self, value):
-        """The sequence's widest step is 2x, so a bar is never under half-length."""
-        assert M._nice(value) > value / 2
-
-    @pytest.mark.parametrize("value", [1.3, 3.0, 7.7, 9.99])
-    def test_it_reads_the_same_in_every_decade(self, value):
-        assert M._nice(value * 10) == pytest.approx(M._nice(value) * 10)
-        assert M._nice(value / 100) == pytest.approx(M._nice(value) / 100)
-
-    @pytest.mark.parametrize("value", [0.0, -1.0])
-    def test_nothing_to_round(self, value):
-        assert M._nice(value) == 0.0
-
-    def test_thousands_are_grouped_for_reading(self):
-        assert M._grouped(8_000_000) == "8 000 000"
-        assert M._grouped(500) == "500"
-
-
 class TestPrintedSizesBecomeGroundUnits:
     """The editor states paper; the libs take ground. These are the crossings."""
 
