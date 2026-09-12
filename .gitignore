@@ -138,11 +138,17 @@ json-stl/*
 *.stl
 geojson-processed/
 
-# Geodata: inputs, intermediates and outputs, not source. ~7 GB, nearly all of
-# it one Canada120m.tif; the province GeoJSON in here is pipeline data that the
-# UI_* tools read and write, so it churns constantly and does not belong in the
-# history. Keep it backed up by other means — git is not that.
-Data/
+# Geodata. Only the pipeline's *inputs* are tracked: Data/JSon-Provinces-Orig is
+# the province GeoJSON everything else is derived from, so it is source in all
+# but name and worth a history. Everything beside it is an intermediate or an
+# output the UI_* tools rewrite constantly, or the ~7 GB Canada120m.tif — none of
+# which belongs in the repo. Keep those backed up by other means; git is not that.
+#
+# This must be ``Data/*`` and not ``Data/``: git cannot re-include anything
+# inside an excluded *directory*, so the directory itself has to stay visible and
+# its contents be excluded one level down for the negation below to take effect.
+Data/*
+!Data/JSon-Provinces-Orig/
 unused/
 
 # Claude Code: the shared project settings are tracked, the per-machine ones

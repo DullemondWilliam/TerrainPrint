@@ -1,0 +1,11 @@
+# Tracked geodata is pipeline *input*, so it must survive a round trip through
+# git byte for byte: a fresh clone has to feed the UI_* tools exactly what the
+# originals did. This machine has core.autocrlf=true, which would otherwise
+# rewrite the GeoJSON line endings on checkout — harmless to a parser, but it
+# means the working tree no longer holds the bytes that were committed.
+Data/JSon-Provinces-Orig/** -text
+
+# Source keeps git's normal handling: LF in the repository, native in the
+# working tree.
+*.py text
+*.md text
