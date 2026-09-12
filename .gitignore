@@ -155,6 +155,11 @@ unused/
 # (paths, one-off tool approvals) are not.
 .claude/settings.local.json
 
+# ScreenRuler's calibration. Measured against the physical monitors sitting on
+# one particular desk, so it is per-machine by definition and means nothing —
+# worse, it is actively wrong — on anyone else's.
+.screen_ruler_config.json
+
 # Temporary files
 *.tmp
 *.bak
