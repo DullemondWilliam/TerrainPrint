@@ -1,24 +1,36 @@
 """
 UI_province_viewer.py
 
-Every province at once, at the size it will print.
+Every province at once, at the size it will print — and every *stage* at once,
+one folder per layer.
 
 Where ``UI_island_editor`` opens one province and changes it, this opens *many*
-and changes nothing.  The question it answers is the one you cannot ask a
-single-file tool: laid out together at 1:8 000 000, how big is the whole thing,
-do the pieces line up, and will it fit on the paper you have.
+and changes nothing.  It answers two questions a single-file tool cannot be
+asked.  Laid out together at 1:8 000 000, how big is the whole thing and do the
+pieces line up?  And, given a folder per pipeline stage — originals, cleaned,
+bordered — **what actually changed between them?**
+
+The second question is answered by blinking.  Each folder loads as a layer,
+Space steps to the next one, and the camera does not move: two stages drawn on
+the same pixels and swapped back and forth make a changed coastline jump out the
+way nothing else does.  For that to work three things have to hold still — the
+view, the colour of each province, and which provinces are selected — so all
+three are keyed to the province rather than to the layer being drawn.
 
 Workflow
 --------
-1. **Import GeoJSON …** — pick any number of files at once, or **Import Folder …**
-   to take a whole directory. Each file becomes one province, drawn in its own
-   colour at its true position (worked in EPSG:3347 metres, so the provinces sit
-   together exactly as the ground does).
-2. **Look** — left-drag pans, the arrow keys pan in steps (Shift for a long
+1. **Add Layer …** — pick a folder; every GeoJSON in it becomes one layer, drawn
+   in its true position (worked in EPSG:3347 metres, so provinces sit together
+   exactly as the ground does).  Add a folder per pipeline stage.
+   **Import GeoJSON …** adds loose files to the layer you are on.
+2. **Blink** — ``Space`` for the next layer, ``Shift+Space`` for the previous,
+   ``1``–``9`` to jump straight to one; or the ``◀ ▶`` buttons and the layer
+   list.  The view never moves on a swap.
+3. **Look** — left-drag pans, the arrow keys pan in steps (Shift for a long
    stride, Ctrl for a nudge), the wheel zooms, and a left click with no drag
    toggles a province's selection. **Selection** has All / None / Invert, as in
-   the island editor.
-3. **Print scale** — the same 1:N control, km/mm readout and **Real Size** button
+   the island editor, and survives a layer swap.
+4. **Print scale** — the same 1:N control, km/mm readout and **Real Size** button
    the editor has, over the same two scale bars. The status line adds the one
    figure this tool exists for: how many millimetres across the loaded provinces
    come out at the current reduction.
@@ -48,10 +60,10 @@ from shapely.strtree import STRtree
 
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame, QGroupBox,
-                               QHBoxLayout, QLabel, QLineEdit, QMainWindow,
-                               QMessageBox, QPushButton, QSpinBox, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFrame,
+                               QGroupBox, QHBoxLayout, QLabel, QLineEdit,
+                               QMainWindow, QMessageBox, QPushButton, QSpinBox,
+                               QVBoxLayout, QWidget)
 
 from lib.LIB_island_merging import _polygons
 from lib.LIB_map_scale import (grouped, km_per_mm, printed_size_mm, scale_bars,
@@ -61,10 +73,18 @@ from lib.LIB_screen_calibration import (MM_PER_INCH, load_saved_ppi,
                                         monitor_at, px_per_mm)
 
 GEOJSON_FILTER = "GeoJSON (*.geojson *.json);;All files (*)"
+GEOJSON_GLOBS = ("*.geojson", "*.json")
 EPSG_METRIC = cfg("crs.working")
 
 _ROOT = Path(__file__).resolve().parent
 DEFAULT_LOAD_DIR = _ROOT / cfg("paths.provinces_out")
+
+#: Name for the layer loose files land in, when there is no layer to put them on.
+LOOSE_LAYER = "Files"
+
+#: Layers reachable by a number key. Nine is what one hand covers, and a
+#: pipeline with more stages than that is better stepped through with Space.
+LAYER_KEYS = 9
 
 #: Provinces are told apart by colour rather than labelled, because a label per
 #: province is unreadable at the zoom this tool is for — the whole country — and
@@ -112,6 +132,44 @@ def _dir_or_cwd(path: Path) -> str:
     return str(path if path.is_dir() else Path.cwd())
 
 
+def geojson_in(folder) -> list:
+    """Every GeoJSON in a folder, in a stable order."""
+    folder = Path(folder)
+    return sorted(p for pattern in GEOJSON_GLOBS for p in folder.glob(pattern))
+
+
+def stage_suffix(names) -> str:
+    """
+    The ``_word`` that *every* file in a folder ends with, or ``""``.
+
+    Pipeline stages stamp their output: ``JSonProvinces-Bordered`` holds
+    ``CAN_Alberta_simplified.geojson`` where ``JSonProvinces-Cleaned`` holds
+    ``CAN_Alberta.geojson``.  Stripping the suffix the whole folder shares is
+    what lets the viewer see those two as the same Alberta, and so hold its
+    colour and its selection still while you blink between the layers.
+
+    Only a suffix the whole folder shares counts, and only when there is more
+    than one file to share it: ``CAN_Alberta`` on its own would otherwise read
+    as the province ``CAN`` at stage ``Alberta``, and a folder of
+    ``CAN_Alberta`` and ``CAN_Manitoba`` would keep its two province names
+    precisely because they disagree.
+    """
+    names = list(names)
+    if len(names) < 2:
+        return ""
+    suffix = "_" + names[0].rpartition("_")[2]
+    # One ``endswith`` settles three questions. The suffix is shared; the
+    # underscore it starts with is the last one in every name, so there is no
+    # need to re-split them; and a name carrying no underscore at all is
+    # rejected too, since ``rpartition`` hands back the whole of it and nothing
+    # can end with a string longer than itself. The length test is the one
+    # thing left over: a name that *is* the suffix has no province left in it.
+    if any(not name.endswith(suffix) or len(name) <= len(suffix)
+           for name in names):
+        return ""
+    return suffix
+
+
 class MapToolbar(NavigationToolbar):
     """Matplotlib's navigation toolbar, trimmed as in the island editor."""
 
@@ -123,15 +181,30 @@ class MapToolbar(NavigationToolbar):
 class Province:
     """One loaded file: its name, its geometry, and the parts drawn from it."""
 
-    def __init__(self, path: Path, geometry):
+    def __init__(self, path: Path, geometry, key: str = ""):
         self.path = path
         self.name = path.stem
+        #: What identifies this province *across* layers: the file's name with
+        #: the layer's stage suffix taken off. Colour and selection hang off it.
+        self.key = key or path.stem
         self.geometry = geometry
         self.parts = _polygons(geometry)
 
     @property
     def area_km2(self) -> float:
         return self.geometry.area / 1e6
+
+
+class Layer:
+    """One folder, loaded whole: a single stage of the pipeline."""
+
+    def __init__(self, name: str, path, provinces: list):
+        self.name = name
+        self.path = path                 # None for a layer of loose files
+        self.provinces = provinces
+
+    def __len__(self) -> int:
+        return len(self.provinces)
 
 
 class ProvinceViewer(QMainWindow):
@@ -141,9 +214,13 @@ class ProvinceViewer(QMainWindow):
         self.resize(1280, 800)
 
         # -- state ----------------------------------------------------------
-        self.provinces: list[Province] = []
-        self.selected: list[int] = []       # indices into ``provinces``
-        self._colours: list = []            # one per province, no two neighbours alike
+        self.layers: list[Layer] = []
+        self.active = 0                     # index into ``layers``
+        #: Selected province *keys*, not indices: index 5 is a different
+        #: province in a layer with a different file count, so an index-based
+        #: selection would quietly jump to another province on a swap.
+        self.selected: set = set()
+        self._colours: dict = {}            # key -> colour, one map for all layers
         self._grab = None
         self._dragged = False
         self._scale_artists: list = []
@@ -183,13 +260,13 @@ class ProvinceViewer(QMainWindow):
 
         # -- canvas ---------------------------------------------------------
         self.caption = QLabel()
-        self.caption.setStyleSheet("color:#555;")
+        self._emphasise(self.caption)       # names the layer you are looking at
         self.figure = Figure(figsize=(11, 7))
         self.figure.subplots_adjust(left=0, right=1, bottom=0, top=1)
         self.canvas = FigureCanvasQTAgg(self.figure)
         self.canvas.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.ax = self.figure.add_subplot(1, 1, 1)
-        self._style_axis("Import province GeoJSON files to begin")
+        self._style_axis(self._caption_text())
         self.nav = MapToolbar(self.canvas, self)
         self.canvas.mpl_connect("scroll_event", self._on_scroll)
         self.canvas.mpl_connect("button_press_event", self._on_press)
@@ -199,11 +276,15 @@ class ProvinceViewer(QMainWindow):
 
         # -- row 1: the documents and the view -------------------------------
         top = QHBoxLayout()
+        self.btn_layer = self._button("Add Layer …", self.add_layer)
+        self.btn_layer.setToolTip(
+            "Load every GeoJSON in a folder as one layer — one stage of the "
+            "pipeline. Add a folder per stage, then blink between them.")
         self.btn_import = self._button("Import GeoJSON …", self.import_files)
-        self.btn_folder = self._button("Import Folder …", self.import_folder)
+        self.btn_import.setToolTip("Add loose files to the layer you are on.")
         self.btn_clear_all = self._button("Clear", self.clear_all, enabled=False)
-        self.btn_clear_all.setToolTip("Unload every province.")
-        for widget in (self.btn_import, self.btn_folder, self.btn_clear_all,
+        self.btn_clear_all.setToolTip("Unload every layer.")
+        for widget in (self.btn_layer, self.btn_import, self.btn_clear_all,
                        self._separator(), self.nav, self._separator(),
                        QLabel("Print scale"), self.scale_spin, self.perkm_box,
                        self.btn_real):
@@ -211,9 +292,28 @@ class ProvinceViewer(QMainWindow):
         top.addStretch(1)
         root.addLayout(top)
 
-        # -- row 2: selection ------------------------------------------------
-        # The only group there is: this tool looks, it does not act, so there is
-        # nothing for a selection to be the subject *of* beyond reading it off.
+        # -- row 2: layers, then selection -----------------------------------
+        self.btn_prev = self._button("◀", self.previous_layer, enabled=False)
+        self.btn_prev.setToolTip("Previous layer  (Shift+Space)")
+        self.btn_prev.setFixedWidth(28)
+        self.btn_next = self._button("▶", self.next_layer, enabled=False)
+        self.btn_next.setToolTip("Next layer  (Space) — the blink key")
+        self.btn_next.setFixedWidth(28)
+        self.layer_box = QComboBox()
+        self.layer_box.setMinimumWidth(240)
+        self.layer_box.setToolTip(
+            "The layer on show. Number keys 1–9 jump straight to one.")
+        self.layer_box.currentIndexChanged.connect(self._on_layer_box)
+        self.btn_drop_layer = self._button("Remove", self.remove_layer,
+                                           enabled=False)
+        self.btn_drop_layer.setToolTip("Unload the layer on show.")
+        self.grp_layers = self._group(
+            "Layers", self.btn_prev, self.layer_box, self.btn_next,
+            self.btn_drop_layer)
+
+        # The only other group there is: this tool looks, it does not act, so
+        # there is nothing for a selection to be the subject *of* beyond reading
+        # it off — and beyond following one province between the layers.
         self.btn_select_all = self._button("All", self.select_all, enabled=False)
         self.btn_clear = self._button("None", self.clear_selection, enabled=False)
         self.btn_invert = self._button("Invert", self.invert_selection,
@@ -227,6 +327,7 @@ class ProvinceViewer(QMainWindow):
             self.lbl_count)
 
         row = QHBoxLayout()
+        row.addWidget(self.grp_layers)
         row.addWidget(self.grp_selection)
         row.addStretch(1)
         root.addLayout(row)
@@ -234,7 +335,7 @@ class ProvinceViewer(QMainWindow):
         root.addWidget(self.caption)
         root.addWidget(self.canvas, stretch=1)
 
-        self.status = QLabel("No provinces loaded.")
+        self.status = QLabel("No layers loaded.")
         self._emphasise(self.status)
         root.addWidget(self.status)
 
@@ -247,7 +348,19 @@ class ProvinceViewer(QMainWindow):
             for modifier, step in ((0, PAN_STEP),
                                    (Qt.Modifier.SHIFT.value, PAN_STEP_COARSE),
                                    (Qt.Modifier.CTRL.value, PAN_STEP_FINE)):
-                self._bind_pan(modifier | key.value, dx * step, dy * step)
+                self._bind(modifier | key.value,
+                           lambda fx=dx * step, fy=dy * step: self._pan_by(fx, fy))
+
+        # Space is the blink key. It sits under the thumb, so one stage can be
+        # compared against the one before it as fast as the eye re-registers —
+        # which is the only way a change of two printed millimetres in a
+        # coastline is ever going to be visible on a map of the whole country.
+        self._bind(Qt.Key.Key_Space.value, self.next_layer)
+        self._bind(Qt.Modifier.SHIFT.value | Qt.Key.Key_Space.value,
+                   self.previous_layer)
+        for offset in range(LAYER_KEYS):
+            self._bind(Qt.Key.Key_1.value + offset,
+                       lambda index=offset: self.show_layer(index))
 
         self.scale_spin.installEventFilter(self)
         self.perkm_box.installEventFilter(self)
@@ -269,9 +382,9 @@ class ProvinceViewer(QMainWindow):
         return super().eventFilter(obj, event)
 
     # -- construction helpers ----------------------------------------------
-    def _bind_pan(self, sequence, fx: float, fy: float) -> None:
-        shortcut = QShortcut(QKeySequence(sequence), self.canvas,
-                             activated=lambda: self._pan_by(fx, fy))
+    def _bind(self, sequence, slot) -> None:
+        """A canvas-scoped shortcut, so the map's keys only fire on the map."""
+        shortcut = QShortcut(QKeySequence(sequence), self.canvas, activated=slot)
         shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
 
     @staticmethod
@@ -308,6 +421,77 @@ class ProvinceViewer(QMainWindow):
         b.clicked.connect(lambda *_: self.canvas.setFocus())
         b.setEnabled(enabled)
         return b
+
+    # -- layers -------------------------------------------------------------
+    @property
+    def layer(self):
+        """The layer on show, or None."""
+        return self.layers[self.active] if self.layers else None
+
+    @property
+    def provinces(self) -> list:
+        """The active layer's provinces — what is drawn, clicked and measured."""
+        return self.layers[self.active].provinces if self.layers else []
+
+    def show_layer(self, index: int) -> None:
+        """
+        Put one layer on show, without moving the camera.
+
+        Holding the camera still is the requirement, not a courtesy.  Comparing
+        two stages of the pipeline is a blink comparison, and a blink only reads
+        if the two frames are registered: re-fitting the view on a swap would
+        show every province shift at once and tell you nothing about which ones
+        actually moved.
+        """
+        if not (0 <= index < len(self.layers)) or index == self.active:
+            return
+        self.active = index
+        self._sync_layer_box()
+        self._redraw(preserve_view=True)
+        self._sync_buttons()
+        self._update_title()
+        self._update_status()
+
+    def next_layer(self) -> None:
+        """Step to the next layer, wrapping — so two layers blink on one key."""
+        if len(self.layers) > 1:
+            self.show_layer((self.active + 1) % len(self.layers))
+
+    def previous_layer(self) -> None:
+        if len(self.layers) > 1:
+            self.show_layer((self.active - 1) % len(self.layers))
+
+    def _on_layer_box(self, index: int) -> None:
+        self.show_layer(index)
+        self.canvas.setFocus()          # Space must go on meaning "next layer"
+
+    def _sync_layer_box(self) -> None:
+        """Rebuild the layer list, without it answering back."""
+        blocked = self.layer_box.blockSignals(True)
+        try:
+            self.layer_box.clear()
+            for index, layer in enumerate(self.layers):
+                mark = f"{index + 1}. " if index < LAYER_KEYS else ""
+                self.layer_box.addItem(f"{mark}{layer.name}  ({len(layer)})")
+            self.layer_box.setCurrentIndex(self.active if self.layers else -1)
+        finally:
+            self.layer_box.blockSignals(blocked)
+
+    def remove_layer(self) -> None:
+        """Unload the layer on show, keeping the view and the selection."""
+        if not self.layers:
+            return
+        self.layers.pop(self.active)
+        if not self.layers:
+            self.clear_all()
+            return
+        self.active = min(self.active, len(self.layers) - 1)
+        self._colours = self._colour_map()
+        self._sync_layer_box()
+        self._redraw(preserve_view=True)
+        self._sync_buttons()
+        self._update_title()
+        self._update_status()
 
     # -- canvas -------------------------------------------------------------
     def _px_per_metre(self) -> float:
@@ -388,19 +572,39 @@ class ProvinceViewer(QMainWindow):
         self.ax.set_ylim(yd - (yd - y0) * scale, yd + (y1 - yd) * scale)
         self.canvas.draw_idle()
 
-    def _colour_map(self) -> list:
+    def _colour_map(self) -> dict:
         """
-        A colour per province, such that no two that touch are given the same one.
+        A colour per province *key*, such that no two that touch are given the
+        same one — and such that a province keeps its colour across every layer.
+
+        Keeping still is the point.  Colour only the layer on show, and the
+        greedy order would come out differently for a stage holding a different
+        set of files: Alberta would go blue in one layer and green in the next,
+        and blinking between the two would report that every province in Canada
+        had changed.  So the colouring is computed once, over all the layers
+        together, and looked up by key at draw time.
 
         This is the map-colouring problem, and the classic answer holds: greedy
-        colouring in descending-adjacency order gets real provinces down to four.
-        Cycling the palette by load order instead would sooner or later put two
-        yellows either side of a border, which is the one thing a map of many
-        provinces must not do — and load order is alphabetical, so it would do it
-        on a whim.  Costs about 0.2 s for 27 provinces, paid once per load rather
-        than once per draw.
+        colouring in descending-adjacency order gets real provinces down to
+        four.  Cycling the palette by load order instead would sooner or later
+        put two yellows either side of a border, which is the one thing a map of
+        many provinces must not do — and load order is alphabetical, so it would
+        do it on a whim.  Costs about 0.2 s for 27 provinces, paid once per load
+        rather than once per draw.
+
+        One geometry per key, from the first layer that has it, rather than the
+        union over the layers: the stages of this pipeline differ by fractions
+        of a printed millimetre, so any one of them answers "who touches whom"
+        the same way, and taking the first keeps this the size of job it was
+        before layers existed.
         """
-        geometries = [p.geometry for p in self.provinces]
+        representative: dict = {}
+        for layer in self.layers:
+            for province in layer.provinces:
+                representative.setdefault(province.key, province.geometry)
+
+        keys = list(representative)
+        geometries = [representative[k] for k in keys]
         neighbours = {i: set() for i in range(len(geometries))}
         if len(geometries) > 1:
             tree = STRtree(geometries)
@@ -417,21 +621,29 @@ class ProvinceViewer(QMainWindow):
             # A province ringed by more neighbours than the palette has colours
             # has to repeat one; better a repeat than a crash.
             chosen[index] = free[0] if free else len(taken) % len(PROVINCE_COLOURS)
-        return [PROVINCE_COLOURS[chosen[i]] for i in range(len(geometries))]
+        return {keys[i]: PROVINCE_COLOURS[chosen[i]] for i in range(len(keys))}
+
+    def _caption_text(self) -> str:
+        """What is on show, said plainly — the one thing a blink has to tell you."""
+        if not self.layers:
+            return "Add a folder as a layer to begin"
+        where = (f"layer {self.active + 1} of {len(self.layers)}"
+                 if len(self.layers) > 1 else "the only layer")
+        blink = "   —   Space for the next layer" if len(self.layers) > 1 else ""
+        return f"{self.layer.name}   ({where}){blink}"
 
     def _redraw(self, preserve_view: bool = False) -> None:
         if preserve_view:
             xlim, ylim = self.ax.get_xlim(), self.ax.get_ylim()
-        self._style_axis(
-            "Provinces at scale  (click to select, drag to pan, wheel to zoom)")
-        picked = set(self.selected)
-        for index, province in enumerate(self.provinces):
+        self._style_axis(self._caption_text())
+        for province in self.provinces:
             if not province.parts:
                 continue
-            chosen = index in picked
+            chosen = province.key in self.selected
             gpd.GeoSeries(province.parts).plot(
                 ax=self.ax,
-                facecolor=SELECT_COLOUR if chosen else self._colours[index],
+                facecolor=SELECT_COLOUR if chosen
+                else self._colours.get(province.key, PROVINCE_COLOURS[0]),
                 edgecolor=SELECT_EDGE if chosen else EDGE_COLOUR,
                 linewidth=1.0 if chosen else 0.6,
                 zorder=3 if chosen else 2)
@@ -486,13 +698,8 @@ class ProvinceViewer(QMainWindow):
         index = self._province_at(event.xdata, event.ydata)
         if index is None:
             return
-        if index in self.selected:
-            self.selected.remove(index)
-        else:
-            self.selected.append(index)
-        self._redraw(preserve_view=True)
-        self._sync_buttons()
-        self._update_status()
+        self.selected ^= {self.provinces[index].key}
+        self._after_selection_change()
 
     def _province_at(self, x: float, y: float):
         """
@@ -508,18 +715,33 @@ class ProvinceViewer(QMainWindow):
         return None
 
     # -- selection ----------------------------------------------------------
+    @property
+    def visible_keys(self) -> set:
+        """The keys the layer on show carries. Selection acts on these."""
+        return {p.key for p in self.provinces}
+
+    @property
+    def picked(self) -> list:
+        """Indices into the active layer whose province is selected."""
+        return [i for i, p in enumerate(self.provinces) if p.key in self.selected]
+
     def select_all(self) -> None:
-        self.selected = list(range(len(self.provinces)))
+        self.selected |= self.visible_keys
         self._after_selection_change()
 
     def clear_selection(self) -> None:
-        self.selected = []
+        self.selected = set()
         self._after_selection_change()
 
     def invert_selection(self) -> None:
-        """Select exactly the provinces that were not, and vice versa."""
-        picked = set(self.selected)
-        self.selected = [i for i in range(len(self.provinces)) if i not in picked]
+        """
+        Select exactly the provinces that were not, and vice versa.
+
+        Over what is on show only: a province another layer has and this one
+        does not is left as it was, so that a swap and a swap back gives you the
+        selection you had rather than the complement of it.
+        """
+        self.selected ^= self.visible_keys
         self._after_selection_change()
 
     def _after_selection_change(self) -> None:
@@ -529,15 +751,18 @@ class ProvinceViewer(QMainWindow):
 
     def _sync_buttons(self) -> None:
         has = bool(self.provinces)
-        picked = len(self.selected)
+        many = len(self.layers) > 1
         self.grp_selection.setEnabled(has)
         self.btn_select_all.setEnabled(has)
         self.btn_clear.setEnabled(bool(self.selected))
         self.btn_invert.setEnabled(has)
         self.btn_real.setEnabled(has)
-        self.btn_clear_all.setEnabled(has)
+        self.btn_clear_all.setEnabled(bool(self.layers))
+        self.btn_drop_layer.setEnabled(bool(self.layers))
+        self.btn_prev.setEnabled(many)
+        self.btn_next.setEnabled(many)
         self.lbl_count.setText(
-            f"{picked} of {len(self.provinces)} selected" if has
+            f"{len(self.picked)} of {len(self.provinces)} selected" if has
             else "none loaded")
 
     # -- printed size / real size -------------------------------------------
@@ -550,7 +775,7 @@ class ProvinceViewer(QMainWindow):
         self._update_status("Print scale changed — ")
 
     def _extent(self):
-        """``(minx, miny, maxx, maxy)`` over every loaded province, or None."""
+        """``(minx, miny, maxx, maxy)`` over the layer on show, or None."""
         if not self.provinces:
             return None
         return unary_union([p.geometry for p in self.provinces]).bounds
@@ -612,22 +837,72 @@ class ProvinceViewer(QMainWindow):
             _dir_or_cwd(DEFAULT_LOAD_DIR), GEOJSON_FILTER)
         self._load(paths)
 
-    def import_folder(self) -> None:
+    def add_layer(self) -> None:
         folder = QFileDialog.getExistingDirectory(
-            self, "Import every GeoJSON in a folder", _dir_or_cwd(DEFAULT_LOAD_DIR))
+            self, "Add a folder as a layer", _dir_or_cwd(DEFAULT_LOAD_DIR))
         if not folder:
             return
-        found = sorted(p for pattern in ("*.geojson", "*.json")
-                       for p in Path(folder).glob(pattern))
+        found = geojson_in(folder)
         if not found:
             QMessageBox.information(self, "Nothing to import",
                                     "No .geojson or .json files in that folder.")
             return
-        self._load(found)
+        self._load_layer(Path(folder), found)
+
+    def _layer_name(self, folder: Path) -> str:
+        """
+        The folder's own name, qualified only as far as it has to be.
+
+        Two stages of a pipeline are easily ``.../v1/provinces`` and
+        ``.../v2/provinces``; calling both of those "provinces" would leave the
+        blink with no way of saying which one you are looking at.
+        """
+        name = folder.name or str(folder)
+        if any(layer.name == name for layer in self.layers):
+            name = f"{folder.parent.name}/{name}"
+        return name
+
+    def _load_layer(self, folder: Path, paths) -> None:
+        """
+        A folder as one layer: one stage of the pipeline, ready to blink against.
+
+        The camera moves for the first layer and never again.  Fitting the view
+        to each new folder would undo the registration the whole comparison
+        rests on — you would add the stage you meant to compare and lose the
+        framing you meant to compare it in.
+        """
+        suffix = stage_suffix([p.stem for p in paths])
+        provinces, failed = [], []
+        for path in paths:
+            key = path.stem[:-len(suffix)] if suffix else path.stem
+            try:
+                province = self._read(path, key)
+            except Exception as exc:
+                failed.append(f"{path.name}: {exc}")
+                continue
+            if province is not None:
+                provinces.append(province)
+
+        first = not self.layers
+        self.layers.append(Layer(self._layer_name(folder), folder, provinces))
+        self.active = len(self.layers) - 1
+        self._colours = self._colour_map()
+        self._sync_layer_box()
+        self._redraw(preserve_view=not first)
+        self._sync_buttons()
+        self._update_title()
+
+        note = f"Layer '{self.layer.name}': {len(provinces)} province(s)"
+        if suffix:
+            note += f", matched across layers by dropping '{suffix}'"
+        if failed:
+            note += f"; {len(failed)} failed ({failed[0]})"
+        self._update_status(f"{note} — ")
 
     def _load(self, paths) -> None:
         """
-        Add every readable file, reporting the ones that were not.
+        Add every readable file to the layer on show, reporting the ones that
+        were not.
 
         One bad file among forty must not cost the other thirty-nine: this is a
         bulk tool, so a failure is a line in the status rather than a dialog that
@@ -635,6 +910,11 @@ class ProvinceViewer(QMainWindow):
         """
         if not paths:
             return
+        first = not self.layers
+        if first:
+            self.layers.append(Layer(LOOSE_LAYER, None, []))
+            self.active = 0
+
         loaded, failed = [], []
         known = {p.path for p in self.provinces}
         for raw in paths:
@@ -649,10 +929,10 @@ class ProvinceViewer(QMainWindow):
             if province is not None:
                 loaded.append(province)
 
-        self.provinces.extend(loaded)
-        self.selected = []
+        self.layer.provinces.extend(loaded)
         self._colours = self._colour_map()
-        self._redraw(preserve_view=False)
+        self._sync_layer_box()
+        self._redraw(preserve_view=not first)
         self._sync_buttons()
         self._update_title()
 
@@ -661,7 +941,7 @@ class ProvinceViewer(QMainWindow):
             note += f"; {len(failed)} failed ({failed[0]})"
         self._update_status(f"{note} — ")
 
-    def _read(self, path: Path):
+    def _read(self, path: Path, key: str = ""):
         """One file as a Province in the working CRS, or None if it has no land."""
         gdf = gpd.read_file(path)
         if gdf.empty:
@@ -670,13 +950,15 @@ class ProvinceViewer(QMainWindow):
         geometry = unary_union(list(work.geometry))
         if geometry.is_empty or not _polygons(geometry):
             return None
-        return Province(path, geometry)
+        return Province(path, geometry, key)
 
     def clear_all(self) -> None:
-        self.provinces = []
-        self.selected = []
-        self._colours = []
-        self._style_axis("Import province GeoJSON files to begin")
+        self.layers = []
+        self.active = 0
+        self.selected = set()
+        self._colours = {}
+        self._sync_layer_box()
+        self._style_axis(self._caption_text())
         self._sync_buttons()
         self._update_title()
         self._update_status()
@@ -686,21 +968,28 @@ class ProvinceViewer(QMainWindow):
         if not self.provinces:
             self.status.setText(f"{prefix}No provinces loaded.")
             return
-        bits = [f"{len(self.provinces)} province(s)"]
-        if self.selected:
-            names = [self.provinces[i].name for i in sorted(self.selected)]
+        bits = [f"{self.layer.name}: {len(self.provinces)} province(s)"]
+        if len(self.layers) > 1:
+            bits.append(f"layer {self.active + 1} of {len(self.layers)}")
+        picked = self.picked
+        if picked:
+            names = [self.provinces[i].name for i in picked]
             shown = ", ".join(names[:3]) + ("…" if len(names) > 3 else "")
-            area = sum(self.provinces[i].area_km2 for i in self.selected)
+            area = sum(self.provinces[i].area_km2 for i in picked)
             bits.append(f"{len(names)} selected ({shown}; {area:,.0f} km²)")
         bits.append(self._printed_extent_text())
         bits.append(f"at 1:{grouped(self.scale_spin.value())}")
         self.status.setText(f"{prefix}{', '.join(b for b in bits if b)}.")
 
     def _update_title(self) -> None:
-        count = len(self.provinces)
+        if not self.layers:
+            self.setWindowTitle("Province Viewer — (nothing loaded)")
+            return
+        where = (f" ({self.active + 1} of {len(self.layers)})"
+                 if len(self.layers) > 1 else "")
         self.setWindowTitle(
-            f"Province Viewer — {count} province(s)" if count
-            else "Province Viewer — (nothing loaded)")
+            f"Province Viewer — {self.layer.name}{where} — "
+            f"{len(self.provinces)} province(s)")
 
 
 def main() -> int:
