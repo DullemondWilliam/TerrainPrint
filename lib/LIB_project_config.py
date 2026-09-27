@@ -133,6 +133,41 @@ DEFAULTS = {
         "brush_mm": 0.125,
         "min_area_mm2": 0.02,
     },
+    "bridges": {
+        # Straight fixed-width bridges between islands, in printed millimetres.
+        # Unlike the island_editor buffer, whose neck width falls out of the gap
+        # it is closing, these are a specification: every bridge is this wide.
+        # 1 mm is 8 km at 1:8,000,000 and 3.3 nozzle widths -- a causeway you
+        # can print and handle.
+        "width_mm": 1.0,
+        # How far each end is pushed past the coastline into the land, so the
+        # union is a lap joint. One width gives a square of overlap at each end.
+        "embed_mm": 1.0,
+        # Refuse to span further than this, which also decides which islands
+        # are left separate. 5 mm is 40 km of water, and an aspect of 5 at the
+        # default width -- stiff enough to survive handling.
+        "max_span_mm": 5.0,
+        # Coastline sampling pitch when hunting for a landing. A quarter of the
+        # bridge width: finer cannot move a landing by a visible amount.
+        "sample_mm": 0.25,
+        # What a bad landing is worth, in mm of span. A fully grazing landing
+        # must save 2 mm of crossing to be taken over a square one; likewise a
+        # landing with no bite on the shore.
+        "angle_penalty_mm": 2.0,
+        "anchor_penalty_mm": 2.0,
+        # Reject a landing biting less than this fraction of the width x
+        # embedment a straight shore would give -- a bridge welded on by a
+        # sliver snaps off.
+        "min_anchor": 0.5,
+        # Slenderness limit as span/width. Past 15 a 1 mm bridge is a
+        # matchstick; the fix is a wider bridge, never a second one.
+        "max_aspect": 15.0,
+        # Bracing: a second bridge is added to a pair only when two bridges
+        # could be placed this many crossings apart, because that is when a
+        # single one acts as a hinge the pair can pivot about.
+        "max_per_pair": 2,
+        "hinge_ratio": 4.0,
+    },
 }
 
 

@@ -1,4 +1,16 @@
 {
+  "bridges": {
+    "anchor_penalty_mm": 2.0,
+    "angle_penalty_mm": 2.0,
+    "embed_mm": 1.0,
+    "hinge_ratio": 4.0,
+    "max_aspect": 15.0,
+    "max_per_pair": 2,
+    "max_span_mm": 5.0,
+    "min_anchor": 0.5,
+    "sample_mm": 0.25,
+    "width_mm": 1.0
+  },
   "crs": {
     "source": "EPSG:4326",
     "working": "EPSG:3347"

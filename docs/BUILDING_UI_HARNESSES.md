@@ -12,6 +12,7 @@ based on the ones that already exist. They all live in `harnesses/`:
 | `UI_border_stl.py`      | `LIB_border_stl.build_border_stl`      | flat 2-D footprint (matplotlib) + a 3-D mesh preview (vispy) |
 | `UI_border_split.py`    | `LIB_border_split.split_to_bed`        | mesh in, mesh out — two 3-D vispy panels |
 | `UI_dovetail_fitter.py` | `LIB_dovetail_fitter.fit_dovetails`    | multi-input list (border + province GeoJSON/STL pairs); 2-D reconciliation overlay + 3-D vispy preview |
+| `UI_island_bridges.py`  | `LIB_island_bridges.plan_bridges`      | a *plan* before a result: eleven print-mm parameters over two rows, the scored bridges drawn and labelled on the input panel, and a report of what the spanning tree could not reach |
 | `UI_terrain_trim.py`    | `LIB_terrain_trim.trim_terrain`        | mesh + GeoJSON in, mesh out: a 2-D placement overlay (slab extent vs reconciled province) beside a vispy solid coloured by elevation |
 | `UI_terrain_stl.py`    | `LIB_terrain_stl.terrain_to_stl`       | raster in, **mesh out**: matplotlib DEM on the left, vispy solid on the right; live triangle/bed estimate before meshing |
 | `UI_shared_border.py`  | `LIB_shared_border.simplify_shared_border` | a *pair* of GeoJSONs and the seam between them; before/after with vertex markers, the original seam ghosted behind the new one, and a Zoom-to-Seam because a border is invisible at full extent |
