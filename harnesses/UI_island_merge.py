@@ -13,7 +13,7 @@ Workflow
    land at the chosen buffer distance; the result is drawn on the right.
 4. **Save GeoJSON …** — write the merged set back out, CRS preserved.
 
-Run with:  python UI_island_merge.py
+Run with:  python harnesses/UI_island_merge.py
 
 A throwaway inspection tool, deliberately kept independent of the main ``app``
 window, and styled after ``UI_lake_removal.py``.
@@ -33,6 +33,10 @@ from shapely.geometry import Point
 from PySide6.QtWidgets import (QApplication, QDoubleSpinBox, QFileDialog,
                                QHBoxLayout, QLabel, QMainWindow, QMessageBox,
                                QPushButton, QVBoxLayout, QWidget)
+
+# Runnable by path from anywhere (python harnesses/UI_island_merge.py), so put the
+# project root on sys.path before importing lib.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib.LIB_island_merging import _polygons, merge_islands
 

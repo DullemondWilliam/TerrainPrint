@@ -22,7 +22,7 @@ through the recovered transform (blue) — if they coincide, the fit is good, an
 the title reports the overlap score.  On the **right**, the notched province is
 previewed in 3D (a GPU vispy scene); pick "◆ Border tabs" to see the tab piece.
 
-Run with:  python UI_dovetail_fitter.py
+Run with:  python harnesses/UI_dovetail_fitter.py
 
 Like the other UI_* harnesses this stays independent of the main ``app`` window.
 """
@@ -46,6 +46,10 @@ from PySide6.QtWidgets import (QApplication, QDoubleSpinBox, QFileDialog,
                                QHBoxLayout, QLabel, QListWidget,
                                QListWidgetItem, QMainWindow, QMessageBox,
                                QProgressBar, QPushButton, QVBoxLayout, QWidget)
+
+# Runnable by path from anywhere (python harnesses/UI_dovetail_fitter.py), so put the
+# project root on sys.path before importing lib.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib.LIB_border_connectors import ConnectorParams, EPSG_METRIC, _load_union_m
 from lib.LIB_dovetail_fitter import fit_dovetails, _base_footprint, _safe_name

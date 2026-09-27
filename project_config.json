@@ -1,22 +1,39 @@
 {
   "crs": {
-    "working": "EPSG:3347",
-    "source": "EPSG:4326"
+    "source": "EPSG:4326",
+    "working": "EPSG:3347"
   },
-  "print": {
-    "scale": 8000000,
-    "bed_mm": 256.0,
-    "bed_margin_mm": 10.0,
-    "border_thickness_mm": 2.0,
-    "dovetail_mm": 1.0
+  "island_editor": {
+    "brush_mm": 0.125,
+    "buffer_mm": 0.25,
+    "min_area_mm2": 0.02
   },
   "paths": {
     "provinces_in": "Data/JSon-Provinces-Orig",
     "provinces_out": "Data/JSonProvinces-Cleaned"
   },
-  "island_editor": {
-    "buffer_mm": 0.25,
-    "brush_mm": 0.125,
-    "min_area_mm2": 0.02
+  "print": {
+    "bed_margin_mm": 10.0,
+    "bed_mm": 256.0,
+    "border_thickness_mm": 2.0,
+    "dovetail_mm": 1.0,
+    "scale": 8000000
+  },
+  "seam": {
+    "max_deviation_mm": 1.5,
+    "min_angle_deg": 20.0,
+    "min_segment_mm": 0.3,
+    "nozzle_mm": 0.3,
+    "smooth_iterations": 0,
+    "spike_angle_deg": 20.0,
+    "tolerance_mm": 0.2
+  },
+  "terrain": {
+    "base_mm": 2.0,
+    "exaggeration": 10.0,
+    "floor_m": 0.0,
+    "max_triangles": 1500000,
+    "resampling": "max",
+    "spacing_mm": 0.4
   }
 }

@@ -64,10 +64,9 @@ flowchart TD
 ├── Canada120m/                        # Base geographic data
 ├── requirements.txt                   # Python dependencies
 ├── UI_island_editor.py                # Interactive per-file island editor (start here)
-├── UI_simplify_geo_borders.py         # Simplify borders preview UI → GeoJSON export
-├── UI_terrain_to_stl.py               # GeoJSON + GeoTIFF → 3D terrain STL
-├── UI_clip_geotiff.py                 # Clip GeoTIFF rasters to province boundaries (CLI)
-├── UI_quickstart.py                   # Quick batch-conversion entry point
+├── UI_terrain_editor.py               # National DEM → province STL, the whole pipeline
+├── UI_province_viewer.py              # Every province at once, at print size
+├── harnesses/                         # One throwaway visual harness per lib (UI_*.py)
 ├── docs/USING_DEMTO3D.md              # DEM -> STL is now done in QGIS (DEMto3D plugin)
 ├── lib/                               # Library modules (imported as lib.LIB_*)
 │   ├── LIB_border_connectors.py       # Border lobes / solid extrusion / province notching

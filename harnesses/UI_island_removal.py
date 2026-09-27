@@ -13,7 +13,7 @@ Workflow
    on the right.
 4. **Save GeoJSON …** — write the surviving islands back out, CRS preserved.
 
-Run with:  python UI_island_removal.py
+Run with:  python harnesses/UI_island_removal.py
 
 A throwaway inspection tool, deliberately kept independent of the main ``app``
 window, and styled after ``UI_island_merge.py``.
@@ -32,6 +32,10 @@ from matplotlib.figure import Figure
 from PySide6.QtWidgets import (QApplication, QDoubleSpinBox, QFileDialog,
                                QHBoxLayout, QLabel, QMainWindow, QMessageBox,
                                QPushButton, QVBoxLayout, QWidget)
+
+# Runnable by path from anywhere (python harnesses/UI_island_removal.py), so put the
+# project root on sys.path before importing lib.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib.LIB_island_removal import area_km2, is_below_area
 

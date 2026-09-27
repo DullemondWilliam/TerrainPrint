@@ -22,7 +22,7 @@ The input regions are drawn on the left ("before") and the carved result — the
 trimmed regions with the border region highlighted in red — on the right
 ("after"), sharing a view so pan/zoom keeps the two panels aligned.
 
-Run with:  python UI_border_regions.py
+Run with:  python harnesses/UI_border_regions.py
 
 Like the other UI_* harnesses this stays independent of the main ``app`` window
 so it can be pointed at any GeoJSON without setting up a project.  Imported
@@ -45,6 +45,10 @@ from PySide6.QtCore import QObject, QThread, Signal
 from PySide6.QtWidgets import (QApplication, QDoubleSpinBox, QFileDialog,
                                QHBoxLayout, QLabel, QMainWindow, QMessageBox,
                                QProgressBar, QPushButton, QVBoxLayout, QWidget)
+
+# Runnable by path from anywhere (python harnesses/UI_border_regions.py), so put the
+# project root on sys.path before importing lib.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib.LIB_border_regions import build_border_regions
 

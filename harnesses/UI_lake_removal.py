@@ -1,5 +1,5 @@
 """
-UI_lake_removal_tester.py
+UI_lake_removal.py
 
 A tiny standalone visual harness for ``LIB_lake_removal.remove_lakes``.
 
@@ -11,7 +11,7 @@ Workflow
    holes read as white gaps on the left and vanish on the right.
 4. **Save GeoJSON …** — write the cleaned features back out, CRS preserved.
 
-Run with:  python UI_lake_removal_tester.py
+Run with:  python harnesses/UI_lake_removal.py
 
 This is a throwaway inspection tool, deliberately kept independent of the main
 ``app`` window so it can be pointed at any GeoJSON without setting up a project.
@@ -30,6 +30,10 @@ from matplotlib.figure import Figure
 from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel,
                                QMainWindow, QMessageBox, QPushButton,
                                QVBoxLayout, QWidget)
+
+# Runnable by path from anywhere (python harnesses/UI_lake_removal.py), so put the
+# project root on sys.path before importing lib.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib.LIB_lake_removal import remove_lakes
 

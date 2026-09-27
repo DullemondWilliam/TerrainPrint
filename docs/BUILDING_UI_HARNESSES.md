@@ -1,7 +1,7 @@
 # Building UI Harnesses
 
 How to build a standalone visual harness (`UI_*.py`) for a `lib/LIB_*.py` module,
-based on the ones that already exist:
+based on the ones that already exist. They all live in `harnesses/`:
 
 | File | Wraps | Distinguishing feature |
 |------|-------|------------------------|
@@ -12,6 +12,16 @@ based on the ones that already exist:
 | `UI_border_stl.py`      | `LIB_border_stl.build_border_stl`      | flat 2-D footprint (matplotlib) + a 3-D mesh preview (vispy) |
 | `UI_border_split.py`    | `LIB_border_split.split_to_bed`        | mesh in, mesh out — two 3-D vispy panels |
 | `UI_dovetail_fitter.py` | `LIB_dovetail_fitter.fit_dovetails`    | multi-input list (border + province GeoJSON/STL pairs); 2-D reconciliation overlay + 3-D vispy preview |
+| `UI_terrain_trim.py`    | `LIB_terrain_trim.trim_terrain`        | mesh + GeoJSON in, mesh out: a 2-D placement overlay (slab extent vs reconciled province) beside a vispy solid coloured by elevation |
+| `UI_terrain_stl.py`    | `LIB_terrain_stl.terrain_to_stl`       | raster in, **mesh out**: matplotlib DEM on the left, vispy solid on the right; live triangle/bed estimate before meshing |
+| `UI_shared_border.py`  | `LIB_shared_border.simplify_shared_border` | a *pair* of GeoJSONs and the seam between them; before/after with vertex markers, the original seam ghosted behind the new one, and a Zoom-to-Seam because a border is invisible at full extent |
+
+The **editors and viewers stay in the project root**, not in `harnesses/`:
+`UI_island_editor.py` (the island harnesses folded into one tool with undo/redo),
+`UI_terrain_editor.py` (`LIB_raster_reproject` -> `LIB_geotiff_clip` ->
+`LIB_terrain_stl`, the whole pipeline in one window) and `UI_province_viewer.py`
+(every province at once, at print size). They borrow the patterns below, but they
+are kept tools with state, not throwaways — the folder is the dividing line.
 
 Each is a **throwaway inspection tool**, deliberately independent of the main
 `app/` window, so a lib can be pointed at any GeoJSON without setting up a
@@ -35,7 +45,7 @@ logic beyond a single GeoJSON round-trip, it belongs in `app/`, not here.
 
 | Thing | Pattern | Example |
 |-------|---------|---------|
-| File | `UI_<feature>.py` | `UI_island_merge.py` |
+| File | `harnesses/UI_<feature>.py` | `harnesses/UI_island_merge.py` |
 | Class | `<Feature>Tester(QMainWindow)` | `IslandMergeTester` |
 | Window title | `"<Feature> — Visual Tester"` | `"Island Merge — Visual Tester"` |
 | Import button | `"Import GeoJSON …"` (note the ellipsis) | |
@@ -67,8 +77,19 @@ from PySide6.QtWidgets import (QApplication, QDoubleSpinBox, QFileDialog,
                                QHBoxLayout, QLabel, QMainWindow, QMessageBox,
                                QPushButton, QVBoxLayout, QWidget)
 
+# Runnable by path from anywhere (python harnesses/UI_<feature>.py), so put the
+# project root on sys.path before importing lib.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from lib.LIB_<feature> import <the_one_function>
 ```
+
+`harnesses/` is one level below the project root, so `python
+harnesses/UI_<feature>.py` puts *that* folder on `sys.path`, not the root, and
+`from lib.…` would fail. The three-line bootstrap above — verbatim in every
+harness, immediately before the `lib` imports — is what keeps running a harness
+by its path (and the editor's run button) working. Tests import them as a
+package instead: `from harnesses import UI_<feature> as U`.
 
 When a lib's output is a **3-D mesh** (a `trimesh`/STL) rather than flat
 geometry, that panel is rendered with `vispy` on the GPU instead of matplotlib —
@@ -541,7 +562,9 @@ method, just as for the 2-D harnesses.
 
 - [ ] Module docstring: one-line purpose, numbered **Workflow**, `Run with:` line,
       the "throwaway / independent of `app`" note.
-- [ ] `UI_<feature>.py`, class `<Feature>Tester`, title `"<Feature> — Visual Tester"`.
+- [ ] `harnesses/UI_<feature>.py`, class `<Feature>Tester`, title
+      `"<Feature> — Visual Tester"`.
+- [ ] The `sys.path` bootstrap from §3, just above the `lib` imports.
 - [ ] Toolbar: Import (enabled), Action (disabled), Save (disabled), `addStretch(1)`.
 - [ ] Shared `ax_before` / `ax_after`; nav toolbar; scroll-to-zoom; status label.
 - [ ] Buttons start disabled and are enabled only when their precondition holds;

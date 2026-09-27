@@ -136,6 +136,9 @@ dmypy.json
 terrain stl/*
 json-stl/*
 *.stl
+# The frame sidecar LIB_terrain_stl writes beside each STL: same status
+# as the mesh it describes, so it follows the same rule.
+*.frame.json
 geojson-processed/
 
 # Geodata. Only the pipeline's *inputs* are tracked: Data/JSon-Provinces-Orig is

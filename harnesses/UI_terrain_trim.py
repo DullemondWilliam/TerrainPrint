@@ -24,7 +24,7 @@ is removed and that the cut sits where it should; the title reports the fit
 score.  The **right** panel previews the trimmed solid in 3D (a GPU vispy scene),
 coloured by elevation.
 
-Run with:  python UI_terrain_trim.py
+Run with:  python harnesses/UI_terrain_trim.py
 
 Like the other UI_* harnesses this stays independent of the main ``app`` window.
 """
@@ -50,6 +50,10 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QDoubleSpinBox,
                                QFileDialog, QHBoxLayout, QLabel, QMainWindow,
                                QMessageBox, QProgressBar, QPushButton,
                                QVBoxLayout, QWidget)
+
+# Runnable by path from anywhere (python harnesses/UI_terrain_trim.py), so put the
+# project root on sys.path before importing lib.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib.LIB_border_connectors import ConnectorParams, DEFAULT_SCALE
 from lib.LIB_terrain_trim import trim_terrain, _load_union_crs

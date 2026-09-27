@@ -21,7 +21,7 @@ extruded watertight solid is previewed on the right ("after") in a GPU-accelerat
 ``vispy`` scene (drag to rotate, scroll to zoom).  The output is a 3D mesh, so the
 panels do not share a view.
 
-Run with:  python UI_border_stl.py
+Run with:  python harnesses/UI_border_stl.py
 
 Like the other UI_* harnesses this stays independent of the main ``app`` window
 so it can be pointed at any GeoJSON without setting up a project.  Imported
@@ -48,6 +48,10 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QDoubleSpinBox,
                                QFileDialog, QHBoxLayout, QLabel, QMainWindow,
                                QMessageBox, QProgressBar, QPushButton,
                                QVBoxLayout, QWidget)
+
+# Runnable by path from anywhere (python harnesses/UI_border_stl.py), so put the
+# project root on sys.path before importing lib.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib.LIB_border_stl import build_border_stl
 

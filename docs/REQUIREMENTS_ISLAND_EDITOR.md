@@ -7,8 +7,9 @@ modules.
 
 ## 1. Purpose & scope
 
-Fold the three single-purpose harnesses ([UI_island_merge.py](../UI_island_merge.py),
-[UI_island_removal.py](../UI_island_removal.py), [UI_lake_removal.py](../UI_lake_removal.py))
+Fold the three single-purpose harnesses ([UI_island_merge.py](../harnesses/UI_island_merge.py),
+[UI_island_removal.py](../harnesses/UI_island_removal.py),
+[UI_lake_removal.py](../harnesses/UI_lake_removal.py))
 into one interactive editor, reusing:
 
 - `lib.LIB_island_merging.merge_islands(islands, buffer_km)`

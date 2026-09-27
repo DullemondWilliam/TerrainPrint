@@ -1,5 +1,10 @@
 # Converting a DEM to STL with the DEMto3D QGIS plugin
 
+> **Superseded.** `LIB_terrain_stl` now does this in-repo, and cuts the coastline
+> directly rather than leaving the rectangular skirt described in §3 — see
+> [USING_TERRAIN_STL.md](USING_TERRAIN_STL.md). This document is kept for the
+> plugin route and for the parameter cross-reference in §5.
+
 This project no longer ships its own DEM→STL code. The clip + terrain-STL libs
 (`LIB_geotiff_clip`, `LIB_terrain_stl`), their tests, and their UI harnesses were
 removed in favour of the **DEMto3D** QGIS plugin, which does the same job

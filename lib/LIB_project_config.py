@@ -68,6 +68,59 @@ DEFAULTS = {
         "border_thickness_mm": 2.0,
         "dovetail_mm": 1.0,
     },
+    "terrain": {
+        # Vertical exaggeration. At 1:8,000,000 one print-mm is 8 km, so true
+        # scale (x1) puts Newfoundland's 1578 m of relief at 0.20 mm -- invisible.
+        # Share one value across a whole map: pieces meshed at different
+        # exaggerations do not meet at the seam.
+        "exaggeration": 10.0,
+        # Solid base under the terrain (mm). Must exceed print.dovetail_mm, or
+        # the connector pocket cuts through the bottom of the piece.
+        "base_mm": 2.0,
+        # Elevation the base measures from. Sea level, so below-sea-level land
+        # (-17.7 m in Labrador) rests on the base instead of punching through.
+        # Shared across a map for the same reason as the exaggeration.
+        "floor_m": 0.0,
+        # Sampling pitch on paper: target_res_m = spacing_mm * print.scale/1000,
+        # so 0.4 mm at 1:8M is 3200 m -- about what a 0.4 mm nozzle resolves.
+        "spacing_mm": 0.4,
+        # How the warp resamples when coarsening. 'max' keeps the summits a big
+        # downsample otherwise loses: 1578 m against bilinear's 1165 m on
+        # Labrador, where the true peak is 1652 m.
+        "resampling": "max",
+        # Refuse to mesh a grid larger than this, checked before reading pixels.
+        "max_triangles": 1_500_000,
+    },
+    "seam": {
+        # Conditioning the border two provinces share, in printed millimetres.
+        # Every value is a printer limit expressed on paper, not a map opinion.
+        # Douglas-Peucker tolerance: detail finer than this says nothing at
+        # print scale.
+        "tolerance_mm": 0.2,
+        # The printer's resolution on paper. Two jobs: seam runs shorter than
+        # this are counted as unprintable in the report, and by default they
+        # are also what gets collapsed. Reporting always uses this number, so
+        # turning the filter down does not make the seam *look* printable.
+        "nozzle_mm": 0.3,
+        # Collapse seam runs shorter than this; defaults to nozzle_mm. DP
+        # measures perpendicular deviation and so leaves tight zigzag intact;
+        # this is what removes it. Set to 0 to skip the pass -- the report
+        # still measures against nozzle_mm.
+        "min_segment_mm": 0.3,
+        # The sharpest corner worth printing: below this a seam vertex comes
+        # out as a fragile spur on one province and a slot on the other. Used
+        # for the report, so a seam is described against the printer and not
+        # against how hard the filter was told to push.
+        "spike_angle_deg": 20.0,
+        # Remove corners sharper than this; defaults to spike_angle_deg. Set to
+        # 0 to skip the pass -- the report still measures against the limit.
+        "min_angle_deg": 20.0,
+        # Chaikin smoothing passes over what survives. 0 keeps the seam angular.
+        "smooth_iterations": 0,
+        # Refuse a simplification that drags the border further than this from
+        # where it really runs.
+        "max_deviation_mm": 1.5,
+    },
     "paths": {
         # Where the province pipeline reads and writes, relative to the repo.
         "provinces_in": "Data/JSon-Provinces-Orig",

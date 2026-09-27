@@ -439,7 +439,7 @@ Still present and functional, each with `.ini` settings persistence:
 
 | Tool | Purpose |
 |---|---|
-| `UI_border_regions.py` | Border corridor carving and GeoJSON export |
+| `harnesses/UI_border_regions.py` | Border corridor carving and GeoJSON export |
 | `UI_terrain_to_stl.py` | Terrain → 3MF/STL, with coloured elevation bands |
 | `UI_simplify_geo_borders.py` | Topology-aware simplification preview |
 | `UI_island_editor.py` | Island inspection, removal, merging |

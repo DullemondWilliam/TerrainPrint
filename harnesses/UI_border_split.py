@@ -19,7 +19,7 @@ each, on the right.  Both panels are GPU-accelerated ``vispy`` scenes (drag to
 rotate, scroll to zoom) — matplotlib's ``mplot3d`` is a CPU painter's-algorithm
 renderer that cannot keep up when a dense mesh is rotated.
 
-Run with:  python UI_border_split.py
+Run with:  python harnesses/UI_border_split.py
 
 Like the other UI_* harnesses this stays independent of the main ``app`` window
 so it can be pointed at any STL without setting up a project.  It works purely on
@@ -40,6 +40,10 @@ from PySide6.QtCore import QObject, QThread, Signal
 from PySide6.QtWidgets import (QApplication, QDoubleSpinBox, QFileDialog,
                                QHBoxLayout, QLabel, QMainWindow, QMessageBox,
                                QProgressBar, QPushButton, QVBoxLayout, QWidget)
+
+# Runnable by path from anywhere (python harnesses/UI_border_split.py), so put the
+# project root on sys.path before importing lib.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib.LIB_border_split import (DEFAULT_BED_MM, DEFAULT_MARGIN_MM,
                                   split_to_bed)
