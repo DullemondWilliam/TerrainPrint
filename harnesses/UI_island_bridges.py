@@ -113,6 +113,10 @@ class IslandBridgesTester(QMainWindow):
         self._thread: QThread | None = None
         self._worker: PlanWorker | None = None
 
+        #: Set while one panel is being matched to the other, so the
+        #: limit callbacks ignore our own writes coming back.
+        self._linking = False
+
         central = QWidget()
         root = QVBoxLayout(central)
 
@@ -254,10 +258,13 @@ class IslandBridgesTester(QMainWindow):
         # -- map: plan | result ---------------------------------------------
         self.figure = Figure(figsize=(11, 6))
         self.canvas = FigureCanvasQTAgg(self.figure)
+        # Deliberately NOT sharex/sharey. The panels must keep the size the
+        # window gives them whatever shape the islands are, which means
+        # ``adjustable="datalim"`` in _style_axis -- and matplotlib refuses that
+        # on shared axes at draw time. Both panels are the same islands in the
+        # same CRS, so they are linked by hand instead (_link_views).
         self.ax_before = self.figure.add_subplot(1, 2, 1)
-        # Share the view so pan/zoom on either panel keeps both aligned.
-        self.ax_after = self.figure.add_subplot(
-            1, 2, 2, sharex=self.ax_before, sharey=self.ax_before)
+        self.ax_after = self.figure.add_subplot(1, 2, 2)
         self._reset_axes("Import a GeoJSON to begin", "")
 
         self.mpl_toolbar = NavigationToolbar(self.canvas, self)
@@ -312,6 +319,7 @@ class IslandBridgesTester(QMainWindow):
         self.btn_zoom.setEnabled(False)
         self._draw_plan(preserve_view=True)
         self._style_axis(self.ax_after, "Bridged  (not yet planned)")
+        self._link_views()      # clearing reset it to matplotlib's 0..1 view
         self.canvas.draw_idle()
         self.status.setText("Parameters changed — plan again.")
 
@@ -336,13 +344,111 @@ class IslandBridgesTester(QMainWindow):
             self._style_axis(ax, title)
         self.canvas.draw_idle()
 
-    @staticmethod
-    def _style_axis(ax, title: str) -> None:
+    def _style_axis(self, ax, title: str) -> None:
         ax.clear()
         ax.set_title(title, fontsize=11)
-        ax.set_aspect("equal")
+        # Fixed panel, not a fixed view: with the default ``adjustable="box"``
+        # matplotlib satisfies "equal" by shrinking the axes box to the data's
+        # own shape, so a chain of Aleutian-style islands collapses the panel to
+        # a hairline and the window rearranges itself on every import.
+        # ``datalim`` holds the box and widens the *limits* instead.
+        ax.set_aspect("equal", adjustable="datalim")
         ax.set_xticks([])
         ax.set_yticks([])
+        self._watch_limits(ax)
+
+    def _watch_limits(self, ax) -> None:
+        """(Re)connect the callbacks that keep the two panels together.
+
+        ``ax.clear()`` throws the axes' callback registry away, so this has to
+        run again after every clear -- which is what makes _style_axis its
+        home. Without it matplotlib's own toolbar (pan, zoom-to-rectangle,
+        Home) would move one panel and leave the other behind; sharing used to
+        make that impossible, and unsharing for the fixed box gave it up.
+        """
+        ax.callbacks.connect("xlim_changed", self._link_views)
+        ax.callbacks.connect("ylim_changed", self._link_views)
+
+    def _set_view(self, ax, xlim, ylim) -> None:
+        """Move a panel to a new view, both limits at once.
+
+        The limit callbacks have to be held off in between: fired on the x
+        change alone, the link settles the aspect against a y that has not
+        moved yet, and ``apply_aspect`` pulls x straight back -- which cancels
+        a wheel zoom completely rather than subtly.
+        """
+        self._linking = True
+        try:
+            ax.set_xlim(xlim)
+            ax.set_ylim(ylim)
+        finally:
+            self._linking = False
+        self._link_views(ax)
+
+    def _link_views(self, changed=None) -> None:
+        """Match the result panel to the plan panel.
+
+        Replaces the ``sharex``/``sharey`` a fixed axes box cannot have. The
+        bridged result never reaches outside the islands it was built from, so
+        the plan panel is always the one that sets the frame.
+        """
+        if self._linking:
+            return              # our own write coming back as a callback
+        self._linking = True
+        try:
+            # Whichever panel moved is the one to follow, so a drag on either
+            # carries. Settle it first: ``datalim`` widens the limits during
+            # the draw, so reading them beforehand hands the other panel a
+            # data-shaped view it then has to override -- matplotlib logs
+            # "Ignoring fixed y limits to fulfill fixed data aspect" and picks
+            # the frame itself. apply_aspect does that widening now, so what is
+            # copied already fits.
+            source = changed if changed is self.ax_after else self.ax_before
+            target = (self.ax_after if source is self.ax_before
+                      else self.ax_before)
+            source.apply_aspect()
+            target.set_xlim(source.get_xlim())
+            target.set_ylim(source.get_ylim())
+        finally:
+            self._linking = False
+
+    def _panel_shape(self) -> float:
+        """Width / height of one panel's slot, in inches.
+
+        The slot, not the axes: with a fixed box they are the same thing, and
+        asking the subplot spec avoids a circular call through ``apply_aspect``.
+        """
+        fig_w, fig_h = self.figure.get_size_inches()
+        try:
+            pos = self.ax_before.get_subplotspec().get_position(self.figure)
+            width, height = pos.width * fig_w, pos.height * fig_h
+        except Exception:                     # no layout yet; a sane fallback
+            width, height = fig_w / 2.0, fig_h
+        return width / height if height else 1.0
+
+    def _fit_view(self, bounds, pad: float) -> None:
+        """Frame ``bounds`` in a view already shaped like the panel.
+
+        Limits set by hand have to satisfy "equal" before matplotlib sees them:
+        handed a view of the wrong shape, ``datalim`` reaches the aspect by
+        *cropping* it, and what you asked to see leaves the screen. Growing the
+        view to the panel's own ratio first leaves nothing to crop.
+        """
+        minx, miny, maxx, maxy = bounds
+        width = max(maxx - minx, 1e-9)
+        height = max(maxy - miny, 1e-9)
+        target = self._panel_shape()
+        if width / height < target:
+            width = height * target           # too tall for the panel: widen
+        else:
+            height = width / target           # too wide: heighten
+        # Proportional breathing room: the same padding added to a wide
+        # half-width and a narrow half-height would change the ratio again.
+        grow = 1.0 + 2.0 * pad
+        cx, cy = (minx + maxx) / 2.0, (miny + maxy) / 2.0
+        self._set_view(self.ax_before,
+                       (cx - width * grow / 2.0, cx + width * grow / 2.0),
+                       (cy - height * grow / 2.0, cy + height * grow / 2.0))
 
     def _on_scroll(self, event) -> None:
         """Zoom the panel under the cursor toward the pointer (wheel up = in)."""
@@ -353,9 +459,12 @@ class IslandBridgesTester(QMainWindow):
         (x0, x1), (y0, y1) = ax.get_xlim(), ax.get_ylim()
         xd, yd = event.xdata, event.ydata
         # Keep the point under the cursor fixed while the span grows/shrinks.
-        ax.set_xlim(xd - (xd - x0) * scale, xd + (x1 - xd) * scale)
-        ax.set_ylim(yd - (yd - y0) * scale, yd + (y1 - yd) * scale)
-        self.canvas.draw_idle()      # shared axes carry the change to both panels
+        # Both axes scale by the same factor, so a view that already fits the
+        # panel still fits it afterwards and nothing needs re-fitting.
+        self._set_view(ax,
+                       (xd - (xd - x0) * scale, xd + (x1 - xd) * scale),
+                       (yd - (yd - y0) * scale, yd + (y1 - yd) * scale))
+        self.canvas.draw_idle()
 
     def zoom_to_bridges(self) -> None:
         """Frame the bridges: 1 mm of causeway is nothing at province extent."""
@@ -366,9 +475,7 @@ class IslandBridgesTester(QMainWindow):
         y0 = min(b[1] for b in boxes)
         x1 = max(b[2] for b in boxes)
         y1 = max(b[3] for b in boxes)
-        pad = max(x1 - x0, y1 - y0, 1.0) * BRIDGE_ZOOM_PAD
-        self.ax_before.set_xlim(x0 - pad, x1 + pad)
-        self.ax_before.set_ylim(y0 - pad, y1 + pad)
+        self._fit_view((x0, y0, x1, y1), BRIDGE_ZOOM_PAD)
         self.canvas.draw_idle()
 
     # -- drawing ------------------------------------------------------------
@@ -398,8 +505,13 @@ class IslandBridgesTester(QMainWindow):
                         fontsize=7, color="#7B241C", zorder=4,
                         ha="center", va="bottom")
         if preserve_view:
-            self.ax_before.set_xlim(xlim)   # shared axes keep both aligned
+            self.ax_before.set_xlim(xlim)
             self.ax_before.set_ylim(ylim)
+        else:
+            # An autoscaled draw: let matplotlib settle the limits (datalim
+            # widens them out to the panel), then carry them across by hand.
+            self.ax_before.autoscale_view()
+        self._link_views()
         self.canvas.draw_idle()
 
     def _draw_result(self) -> None:
@@ -410,6 +522,9 @@ class IslandBridgesTester(QMainWindow):
             gpd.GeoSeries([self.result], crs=crs).plot(
                 ax=self.ax_after, facecolor=RESULT_COLOUR,
                 edgecolor=EDGE_COLOUR, linewidth=0.6)
+        # The result panel autoscaled to its own data just now; the plan panel
+        # owns the frame, so put it back.
+        self._link_views()
         self.canvas.draw_idle()
 
     # -- the report ---------------------------------------------------------
@@ -490,6 +605,7 @@ class IslandBridgesTester(QMainWindow):
 
         self._draw_plan()
         self._style_axis(self.ax_after, "Bridged  (not yet planned)")
+        self._link_views()      # clearing reset it to matplotlib's 0..1 view
         self.canvas.draw_idle()
 
         self.btn_run.setEnabled(True)

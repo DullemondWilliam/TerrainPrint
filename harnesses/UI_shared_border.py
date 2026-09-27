@@ -138,6 +138,10 @@ class SharedBorderTester(QMainWindow):
         self._thread: QThread | None = None
         self._worker: SimplifyWorker | None = None
 
+        #: Set while one panel is being matched to the other, so the
+        #: limit callbacks ignore our own writes coming back.
+        self._linking = False
+
         central = QWidget()
         root = QVBoxLayout(central)
 
@@ -265,13 +269,13 @@ class SharedBorderTester(QMainWindow):
             self._clear_ax(ax, title)
         self.canvas.draw_idle()
 
-    @staticmethod
-    def _clear_ax(ax, title: str) -> None:
+    def _clear_ax(self, ax, title: str) -> None:
         ax.clear()
         ax.set_title(title, fontsize=11)
         ax.set_aspect("equal", adjustable="datalim")
         ax.set_xticks([])
         ax.set_yticks([])
+        self._watch_limits(ax)
 
     def _panel_shape(self) -> float:
         """Width / height of one panel's slot, in inches.
@@ -312,20 +316,64 @@ class SharedBorderTester(QMainWindow):
         grow = 1.0 + 2.0 * SEAM_ZOOM_PAD
         cx, cy = (minx + maxx) / 2.0, (miny + maxy) / 2.0
         half_w, half_h = width * grow / 2.0, height * grow / 2.0
-        self.ax_before.set_xlim(cx - half_w, cx + half_w)
-        self.ax_before.set_ylim(cy - half_h, cy + half_h)
-        self._link_views()
+        self._set_view(self.ax_before, (cx - half_w, cx + half_w),
+                       (cy - half_h, cy + half_h))
         self.canvas.draw_idle()
 
-    def _link_views(self) -> None:
+    def _watch_limits(self, ax) -> None:
+        """(Re)connect the callbacks that keep the two panels together.
+
+        ``ax.clear()`` throws the axes' callback registry away, so this has to
+        run again after every clear -- which is what makes _style_axis its
+        home. Without it matplotlib's own toolbar (pan, zoom-to-rectangle,
+        Home) would move one panel and leave the other behind; sharing used to
+        make that impossible, and unsharing for the fixed box gave it up.
+        """
+        ax.callbacks.connect("xlim_changed", self._link_views)
+        ax.callbacks.connect("ylim_changed", self._link_views)
+
+    def _set_view(self, ax, xlim, ylim) -> None:
+        """Move a panel to a new view, both limits at once.
+
+        The limit callbacks have to be held off in between: fired on the x
+        change alone, the link settles the aspect against a y that has not
+        moved yet, and ``apply_aspect`` pulls x straight back -- which cancels
+        a wheel zoom completely rather than subtly.
+        """
+        self._linking = True
+        try:
+            ax.set_xlim(xlim)
+            ax.set_ylim(ylim)
+        finally:
+            self._linking = False
+        self._link_views(ax)
+
+    def _link_views(self, changed=None) -> None:
         """Match the after panel to the before panel.
 
         Replaces the ``sharex``/``sharey`` the other 2-D harnesses use, which a
         fixed axes box cannot have: both panels are the same provinces in the
         same CRS, so they should still move together.
         """
-        self.ax_after.set_xlim(self.ax_before.get_xlim())
-        self.ax_after.set_ylim(self.ax_before.get_ylim())
+        if self._linking:
+            return              # our own write coming back as a callback
+        self._linking = True
+        try:
+            # Whichever panel moved is the one to follow, so a drag on either
+            # carries. Settle it first: ``datalim`` widens the limits during
+            # the draw, so reading them beforehand hands the other panel a
+            # data-shaped view it then has to override -- matplotlib logs
+            # "Ignoring fixed y limits to fulfill fixed data aspect" and picks
+            # the frame itself. apply_aspect does that widening now, so what is
+            # copied already fits.
+            source = changed if changed is self.ax_after else self.ax_before
+            target = (self.ax_after if source is self.ax_before
+                      else self.ax_before)
+            source.apply_aspect()
+            target.set_xlim(source.get_xlim())
+            target.set_ylim(source.get_ylim())
+        finally:
+            self._linking = False
 
     def _on_scroll(self, event) -> None:
         """Zoom toward the pointer (wheel up = in)."""
@@ -337,12 +385,9 @@ class SharedBorderTester(QMainWindow):
         xd, yd = event.xdata, event.ydata
         # Both axes scale by the same factor, so a view that already fits the
         # panel still fits it afterwards and nothing needs re-fitting.
-        ax.set_xlim(xd - (xd - x0) * scale, xd + (x1 - xd) * scale)
-        ax.set_ylim(yd - (yd - y0) * scale, yd + (y1 - yd) * scale)
-        if ax is self.ax_after:
-            self.ax_before.set_xlim(ax.get_xlim())
-            self.ax_before.set_ylim(ax.get_ylim())
-        self._link_views()
+        self._set_view(ax,
+                       (xd - (xd - x0) * scale, xd + (x1 - xd) * scale),
+                       (yd - (yd - y0) * scale, yd + (y1 - yd) * scale))
         self.canvas.draw_idle()
 
     # -- import -------------------------------------------------------------

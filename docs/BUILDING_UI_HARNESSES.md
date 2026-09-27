@@ -146,12 +146,15 @@ class FeatureTester(QMainWindow):
         toolbar.addStretch(1)
         root.addLayout(toolbar)
 
-        # -- map: before | after, shared view ------------------------------
+        # -- map: before | after, linked by hand ---------------------------
+        # Deliberately NOT sharex/sharey: the panels keep the size the window
+        # gives them, and matplotlib refuses a fixed axes box on shared axes.
+        # See §5.
+        self._linking = False
         self.figure = Figure(figsize=(10, 5))
         self.canvas = FigureCanvasQTAgg(self.figure)
         self.ax_before = self.figure.add_subplot(1, 2, 1)
-        self.ax_after = self.figure.add_subplot(
-            1, 2, 2, sharex=self.ax_before, sharey=self.ax_before)
+        self.ax_after = self.figure.add_subplot(1, 2, 2)
         self._reset_axes("Import a GeoJSON to begin", "")
 
         self.toolbar = NavigationToolbar(self.canvas, self)
@@ -172,11 +175,31 @@ Layout order top to bottom: **toolbar → matplotlib nav toolbar → canvas
 
 ---
 
-## 5. The four reusable helpers
+## 5. The reusable helpers
 
 These are near-identical across the harnesses — copy them verbatim.
 
-### Axes reset + styling
+### A panel sized by the window, not by the data
+
+`set_aspect("equal")` is not optional — a distorted map is a wrong map — but
+matplotlib offers two ways to honour it, and the default is the wrong one here.
+`adjustable="box"` keeps the limits and reshapes the **axes box**: a
+north-south province turns the panel into a vertical hairline (measured: 0.4%
+of the figure width at 1:1000), an east-west one into a letterbox, and the
+window rearranges itself around whatever file was imported last.
+`adjustable="datalim"` keeps the box the window gave it and widens the
+**limits** instead. Always use `datalim`.
+
+Two consequences follow, and neither is optional either:
+
+1. **The panels cannot be `sharex`/`sharey`.** matplotlib refuses `datalim` on
+   shared axes, and it refuses at *draw* time, so a harness with both looks
+   fine until something is plotted. Link them by hand instead.
+2. **Limits set by hand must already fit the panel.** Handed a view of the
+   wrong shape, `datalim` reaches the aspect by *cropping* — ask for 20 units
+   of height and you get 1.2, with your subject off screen. Anything that
+   frames a region goes through `_fit_view` (§5, below); an autoscaled draw is
+   safe, because matplotlib grows the limits rather than shrinking them.
 
 ```python
 def _reset_axes(self, left_title: str, right_title: str) -> None:
@@ -185,13 +208,100 @@ def _reset_axes(self, left_title: str, right_title: str) -> None:
         self._style_axis(ax, title)
     self.canvas.draw_idle()
 
-@staticmethod
-def _style_axis(ax, title: str) -> None:
+def _style_axis(self, ax, title: str) -> None:
     ax.clear()
     ax.set_title(title, fontsize=11)
-    ax.set_aspect("equal")   # geometry must not be distorted
+    # Fixed panel, not a fixed view: the default adjustable="box" would shrink
+    # the axes box to the data's own shape instead.
+    ax.set_aspect("equal", adjustable="datalim")   # geometry must not be distorted
     ax.set_xticks([])
     ax.set_yticks([])
+    self._watch_limits(ax)        # ax.clear() threw the callbacks away
+```
+
+Note it is an instance method, not the `@staticmethod` it used to be: it has to
+put the limit callbacks back.
+
+### Linking the two panels
+
+```python
+def _watch_limits(self, ax) -> None:
+    """(Re)connect the callbacks that keep the two panels together."""
+    ax.callbacks.connect("xlim_changed", self._link_views)
+    ax.callbacks.connect("ylim_changed", self._link_views)
+
+def _set_view(self, ax, xlim, ylim) -> None:
+    """Move a panel to a new view, both limits at once."""
+    self._linking = True          # hold the callbacks off in between
+    try:
+        ax.set_xlim(xlim)
+        ax.set_ylim(ylim)
+    finally:
+        self._linking = False
+    self._link_views(ax)
+
+def _link_views(self, changed=None) -> None:
+    if self._linking:
+        return                    # our own write coming back as a callback
+    self._linking = True
+    try:
+        source = changed if changed is self.ax_after else self.ax_before
+        target = self.ax_after if source is self.ax_before else self.ax_before
+        source.apply_aspect()     # settle datalim's widening before copying
+        target.set_xlim(source.get_xlim())
+        target.set_ylim(source.get_ylim())
+    finally:
+        self._linking = False
+```
+
+`self._linking = False` goes in `__init__` before the first `_style_axis`.
+
+Three details, each of which was a bug first:
+
+* **The callbacks, not a call at each redraw.** matplotlib's own toolbar (pan,
+  zoom-to-rectangle, Home) reaches the axes directly, never through
+  `_on_scroll`. Without the callback, dragging one panel leaves the other
+  behind — which sharing used to make impossible.
+* **Reconnect after every clear.** `ax.clear()` replaces the axes' callback
+  registry, so a link connected once in `__init__` is gone after the first
+  redraw. That is why `_style_axis` ends with `_watch_limits`.
+* **`apply_aspect()` before copying.** `datalim` widens the source's limits
+  during the draw, so reading them beforehand hands the other panel a
+  data-shaped view it then has to override; matplotlib logs *"Ignoring fixed y
+  limits to fulfill fixed data aspect"* and picks the frame itself.
+
+### Framing a region
+
+Anything that frames a region by hand — Zoom to Seam, Zoom to Bridges — grows
+the view to the panel's shape first, so matplotlib has nothing left to crop:
+
+```python
+def _panel_shape(self) -> float:
+    """Width / height of one panel's slot, in inches."""
+    fig_w, fig_h = self.figure.get_size_inches()
+    try:
+        pos = self.ax_before.get_subplotspec().get_position(self.figure)
+        width, height = pos.width * fig_w, pos.height * fig_h
+    except Exception:                     # no layout yet; a sane fallback
+        width, height = fig_w / 2.0, fig_h
+    return width / height if height else 1.0
+
+def _fit_view(self, bounds, pad: float) -> None:
+    minx, miny, maxx, maxy = bounds
+    width = max(maxx - minx, 1e-9)
+    height = max(maxy - miny, 1e-9)
+    target = self._panel_shape()
+    if width / height < target:
+        width = height * target           # too tall for the panel: widen
+    else:
+        height = width / target           # too wide: heighten
+    # Proportional breathing room: the same padding added to a wide half-width
+    # and a narrow half-height would change the ratio again.
+    grow = 1.0 + 2.0 * pad
+    cx, cy = (minx + maxx) / 2.0, (miny + maxy) / 2.0
+    self._set_view(self.ax_before,
+                   (cx - width * grow / 2.0, cx + width * grow / 2.0),
+                   (cy - height * grow / 2.0, cy + height * grow / 2.0))
 ```
 
 ### Scroll-to-zoom (toward the pointer)
@@ -204,13 +314,20 @@ def _on_scroll(self, event) -> None:
     scale = 1 / 1.2 if event.button == "up" else 1.2
     (x0, x1), (y0, y1) = ax.get_xlim(), ax.get_ylim()
     xd, yd = event.xdata, event.ydata
-    ax.set_xlim(xd - (xd - x0) * scale, xd + (x1 - xd) * scale)
-    ax.set_ylim(yd - (yd - y0) * scale, yd + (y1 - yd) * scale)
-    self.canvas.draw_idle()   # shared axes carry the change to both panels
+    # Both limits at once, via _set_view: a link fired on the x change alone
+    # would settle the aspect against a y that has not moved yet, and
+    # apply_aspect would pull x straight back — cancelling the zoom entirely.
+    self._set_view(ax,
+                   (xd - (xd - x0) * scale, xd + (x1 - xd) * scale),
+                   (yd - (yd - y0) * scale, yd + (y1 - yd) * scale))
+    self.canvas.draw_idle()
 ```
 
 The matplotlib `NavigationToolbar` already gives pan, zoom-to-rectangle, and
 Home; scroll-to-zoom is added on top for quick inspection.
+
+`tests/test_harness_viewport.py` holds every harness to all of this, so a new
+one is covered by adding it to that file's `HARNESSES` list.
 
 ---
 
@@ -397,8 +514,9 @@ def _draw_original(self, preserve_view: bool = False) -> None:
     self._style_axis(self.ax_before, "…")
     # ... plot ...
     if preserve_view:
-        self.ax_before.set_xlim(xlim)
-        self.ax_before.set_ylim(ylim)
+        self._set_view(self.ax_before, xlim, ylim)   # both limits at once, §5
+    else:
+        self._link_views()
     self.canvas.draw_idle()
 ```
 
@@ -567,7 +685,10 @@ method, just as for the 2-D harnesses.
       `"<Feature> — Visual Tester"`.
 - [ ] The `sys.path` bootstrap from §3, just above the `lib` imports.
 - [ ] Toolbar: Import (enabled), Action (disabled), Save (disabled), `addStretch(1)`.
-- [ ] Shared `ax_before` / `ax_after`; nav toolbar; scroll-to-zoom; status label.
+- [ ] `ax_before` / `ax_after` **unshared**, `adjustable="datalim"`, linked by
+      hand (§5); nav toolbar; scroll-to-zoom; status label.
+- [ ] Added to `HARNESSES` in `tests/test_harness_viewport.py`, which holds
+      every harness to the panel rules in §5.
 - [ ] Buttons start disabled and are enabled only when their precondition holds;
       any input/parameter change invalidates `result` and disables Save.
 - [ ] Import loop tolerates per-file failures and unifies CRS.

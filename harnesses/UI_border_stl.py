@@ -241,7 +241,13 @@ class BorderStlTester(QMainWindow):
     def _clear_flat(ax, title: str) -> None:
         ax.clear()
         ax.set_title(title, fontsize=11)
-        ax.set_aspect("equal")   # geometry must not be distorted
+        # Fixed panel, not a fixed view: with the default
+        # ``adjustable="box"`` matplotlib satisfies "equal" by shrinking the
+        # axes box to the data's own shape, so a north-south sliver collapses
+        # the panel to a hairline and the window rearranges itself every time a
+        # differently shaped file is imported. ``datalim`` holds the box the
+        # window gave it and widens the *limits* instead.
+        ax.set_aspect("equal", adjustable="datalim")
         ax.set_xticks([])
         ax.set_yticks([])
 

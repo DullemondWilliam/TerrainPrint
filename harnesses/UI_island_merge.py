@@ -69,6 +69,10 @@ class IslandMergeTester(QMainWindow):
         #: CRS the files were loaded in; results are saved back into it.
         self.source_crs = None
 
+        #: Set while one panel is being matched to the other, so the
+        #: limit callbacks ignore our own writes coming back.
+        self._linking = False
+
         central = QWidget()
         root = QVBoxLayout(central)
 
@@ -111,10 +115,11 @@ class IslandMergeTester(QMainWindow):
 
         self.figure = Figure(figsize=(10, 5))
         self.canvas = FigureCanvasQTAgg(self.figure)
+        # Deliberately NOT sharex/sharey: the panels keep the size the window
+        # gives them (see the aspect note below), and matplotlib refuses a fixed
+        # axes box on shared axes. They are linked by hand (_link_views).
         self.ax_before = self.figure.add_subplot(1, 2, 1)
-        # Share the view so pan/zoom on either panel keeps both aligned.
-        self.ax_after = self.figure.add_subplot(
-            1, 2, 2, sharex=self.ax_before, sharey=self.ax_before)
+        self.ax_after = self.figure.add_subplot(1, 2, 2)
         self._reset_axes("Import a GeoJSON to begin", "")
 
         self.toolbar = NavigationToolbar(self.canvas, self)
@@ -136,13 +141,75 @@ class IslandMergeTester(QMainWindow):
             self._style_axis(ax, title)
         self.canvas.draw_idle()
 
-    @staticmethod
-    def _style_axis(ax, title: str) -> None:
+    def _style_axis(self, ax, title: str) -> None:
         ax.clear()
         ax.set_title(title, fontsize=11)
-        ax.set_aspect("equal")
+        # Fixed panel, not a fixed view: with the default ``adjustable="box"``
+        # matplotlib satisfies "equal" by shrinking the axes box to the data's
+        # own shape, so a north-south province collapses the panel to a sliver
+        # and the window rearranges itself every time a differently shaped file
+        # is imported. ``datalim`` holds the box the window gave it and widens
+        # the *limits* instead.
+        ax.set_aspect("equal", adjustable="datalim")
         ax.set_xticks([])
         ax.set_yticks([])
+        self._watch_limits(ax)
+
+    def _watch_limits(self, ax) -> None:
+        """(Re)connect the callbacks that keep the two panels together.
+
+        ``ax.clear()`` throws the axes' callback registry away, so this has to
+        run again after every clear -- which is what makes _style_axis its
+        home. Without it matplotlib's own toolbar (pan, zoom-to-rectangle,
+        Home) would move one panel and leave the other behind; sharing used to
+        make that impossible, and unsharing for the fixed box gave it up.
+        """
+        ax.callbacks.connect("xlim_changed", self._link_views)
+        ax.callbacks.connect("ylim_changed", self._link_views)
+
+    def _set_view(self, ax, xlim, ylim) -> None:
+        """Move a panel to a new view, both limits at once.
+
+        The limit callbacks have to be held off in between: fired on the x
+        change alone, the link settles the aspect against a y that has not
+        moved yet, and ``apply_aspect`` pulls x straight back -- which cancels
+        a wheel zoom completely rather than subtly.
+        """
+        self._linking = True
+        try:
+            ax.set_xlim(xlim)
+            ax.set_ylim(ylim)
+        finally:
+            self._linking = False
+        self._link_views(ax)
+
+    def _link_views(self, changed=None) -> None:
+        """Match the after panel to the before panel.
+
+        Replaces the ``sharex``/``sharey`` a fixed axes box cannot have:
+        matplotlib refuses ``adjustable="datalim"`` on shared axes at draw
+        time. Both panels hold the same geometry in the same CRS, and the
+        result never reaches outside the input, so before owns the frame.
+        """
+        if self._linking:
+            return              # our own write coming back as a callback
+        self._linking = True
+        try:
+            # Whichever panel moved is the one to follow, so a drag on either
+            # carries. Settle it first: ``datalim`` widens the limits during
+            # the draw, so reading them beforehand hands the other panel a
+            # data-shaped view it then has to override -- matplotlib logs
+            # "Ignoring fixed y limits to fulfill fixed data aspect" and picks
+            # the frame itself. apply_aspect does that widening now, so what is
+            # copied already fits.
+            source = changed if changed is self.ax_after else self.ax_before
+            target = (self.ax_after if source is self.ax_before
+                      else self.ax_before)
+            source.apply_aspect()
+            target.set_xlim(source.get_xlim())
+            target.set_ylim(source.get_ylim())
+        finally:
+            self._linking = False
 
     def _on_scroll(self, event) -> None:
         """Zoom the panel under the cursor toward the pointer (wheel up = in)."""
@@ -153,9 +220,10 @@ class IslandMergeTester(QMainWindow):
         (x0, x1), (y0, y1) = ax.get_xlim(), ax.get_ylim()
         xd, yd = event.xdata, event.ydata
         # Keep the point under the cursor fixed while the span grows/shrinks.
-        ax.set_xlim(xd - (xd - x0) * scale, xd + (x1 - xd) * scale)
-        ax.set_ylim(yd - (yd - y0) * scale, yd + (y1 - yd) * scale)
-        self.canvas.draw_idle()      # shared axes carry the change to both panels
+        self._set_view(ax,
+                       (xd - (xd - x0) * scale, xd + (x1 - xd) * scale),
+                       (yd - (yd - y0) * scale, yd + (y1 - yd) * scale))
+        self.canvas.draw_idle()
 
     # -- selection ----------------------------------------------------------
     def _on_click(self, event) -> None:
@@ -233,8 +301,9 @@ class IslandMergeTester(QMainWindow):
                     ax=self.ax_before, facecolor=SELECT_COLOUR,
                     edgecolor=SELECT_EDGE, linewidth=1.0)
         if preserve_view:
-            self.ax_before.set_xlim(xlim)   # shared axes keep both panels aligned
-            self.ax_before.set_ylim(ylim)
+            self._set_view(self.ax_before, xlim, ylim)
+        else:
+            self._link_views()
         self.canvas.draw_idle()
 
     def _draw_result(self) -> None:
@@ -247,6 +316,8 @@ class IslandMergeTester(QMainWindow):
             self.result.iloc[[-1]].plot(
                 ax=self.ax_after, facecolor=MERGED_COLOUR,
                 edgecolor=EDGE_COLOUR, linewidth=0.9)
+        # The after panel just autoscaled to its own data; before owns the frame.
+        self._link_views()
         self.canvas.draw_idle()
 
     # -- actions ------------------------------------------------------------
@@ -304,6 +375,7 @@ class IslandMergeTester(QMainWindow):
 
         self._draw_original()
         self._style_axis(self.ax_after, "Merged (not yet run)")
+        self._link_views()      # clearing reset it to matplotlib's 0..1 view
         self.canvas.draw_idle()
 
         self.btn_save.setEnabled(False)
