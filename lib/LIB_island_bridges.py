@@ -47,6 +47,13 @@ specific ways, which is why candidates are *scored* rather than taken:
   crossings are refused outright rather than scored.  Nothing is lost: hopping
   through that island is cheaper, and the tree takes it.
 
+An editor bridging a *selection* needs one more thing from that last rule: the
+islands it did not select are still on the map, and a bridge may not be run
+across them either.  They are passed as ``obstacles`` -- geometry to avoid but
+never to connect, and not counted as landmasses.  Without them the rule sees
+only what it was asked to bridge, and the plan quietly disagrees with the
+document it will be applied to.
+
 So each candidate costs::
 
     cost_mm = span_mm
@@ -230,6 +237,11 @@ class BridgePlan:
     islands: int = 0                #: land masses considered
     pairs_in_reach: int = 0         #: pairs inside ``max_span_mm``
     pairs_without_landing: int = 0  #: in reach, but no landing passed the floor
+    #: Of those, the ones whose landings were refused *mainly* because another
+    #: island lay across the crossing -- the most common single cause, counted
+    #: so a caller can say "something is in the way" rather than the useless
+    #: "no landing was good enough".
+    pairs_blocked: int = 0
     components_before: int = 0      #: landmasses as they arrived
     components_after: int = 0       #: landmasses once the bridges are applied
     #: Islands left out of the largest landmass -- too far for ``max_span_mm``.
@@ -334,7 +346,8 @@ def _pair_bounds(ga, gb, pad_m: float):
             max(ax1, bx1) + pad_m, max(ay1, by1) + pad_m)
 
 
-def _candidates(ia: int, ib: int, ga, gb, others, params: BridgeParams) -> list:
+def _candidates(ia: int, ib: int, ga, gb, others, params: BridgeParams,
+                tally: dict = None) -> list:
     """Every landing worth considering between two islands, cheapest first.
 
     ``others`` are the islands the slab may not touch.  A bridge that clips a
@@ -342,7 +355,13 @@ def _candidates(ia: int, ib: int, ga, gb, others, params: BridgeParams) -> list:
     welds three landmasses, so the count of bridges stops matching the count of
     joins -- and the shorter hops through that island are cheaper anyway, so
     refusing the crossing costs nothing the tree cannot recover.
+
+    ``tally``, if given, is counted up by reason for every landing refused, so
+    a caller that ends with nothing can say which limit to loosen.
     """
+    def refuse(reason):
+        if tally is not None:
+            tally[reason] = tally.get(reason, 0) + 1
     gap_m = ga.distance(gb)
     if gap_m <= 0 or gap_m > params.max_span_m:
         return []
@@ -385,9 +404,11 @@ def _candidates(ia: int, ib: int, ga, gb, others, params: BridgeParams) -> list:
                          slab.intersection(part_b).area) / ideal_m2
             anchor = min(1.0, max(0.0, anchor))
         if anchor < params.min_anchor:
+            refuse("anchor")
             continue
         if any(slab.intersects(other) for other in others):
-            continue        # it would land on a third island on the way
+            refuse("blocked")       # it would cross a third island on the way
+            continue
 
         incidence = min(_incidence_deg(part_a.exterior, p, direction, eps_m),
                         _incidence_deg(part_b.exterior, q, direction, eps_m))
@@ -399,6 +420,7 @@ def _candidates(ia: int, ib: int, ga, gb, others, params: BridgeParams) -> list:
                    and params.width_mm > 0
                    and span_mm / params.width_mm > params.max_aspect)
         if slender and params.drop_slender:
+            refuse("slender")
             continue
 
         out.append(Bridge(
@@ -453,17 +475,22 @@ def _brace(primary: Bridge, candidates: list,
 
 # -- the plan ---------------------------------------------------------------
 
-def plan_bridges(islands, params: BridgeParams = None) -> BridgePlan:
+def plan_bridges(islands, params: BridgeParams = None,
+                 obstacles=None) -> BridgePlan:
     """
     Decide where the bridges go and how many there are.
 
     Parameters
     ----------
-    islands : iterable of Shapely Polygon/MultiPolygon in a projected metre CRS
-              (the project uses EPSG:3347).  None/empty entries are skipped and
-              never referenced; ``Bridge.a``/``Bridge.b`` index this sequence as
-              it was passed in.
-    params  : BridgeParams, optional
+    islands   : iterable of Shapely Polygon/MultiPolygon in a projected metre
+                CRS (the project uses EPSG:3347).  None/empty entries are
+                skipped and never referenced; ``Bridge.a``/``Bridge.b`` index
+                this sequence as it was passed in.
+    params    : BridgeParams, optional
+    obstacles : geometry a bridge may not cross but is not there to connect --
+                for an editor bridging a selection, every island that was not
+                selected.  They are never nodes of the graph and never counted
+                as landmasses; they only refuse crossings.
 
     Returns
     -------
@@ -471,6 +498,7 @@ def plan_bridges(islands, params: BridgeParams = None) -> BridgePlan:
     that -- so the plan can be inspected, drawn or argued with first.
     """
     params = params or BridgeParams()
+    avoid = [g for g in (obstacles or []) if g is not None and not g.is_empty]
     present = [(i, g) for i, g in enumerate(islands)
                if g is not None and not g.is_empty]
     plan = BridgePlan(params=params, islands=len(present))
@@ -489,6 +517,7 @@ def plan_bridges(islands, params: BridgeParams = None) -> BridgePlan:
     # Pairs within reach, by bounding box first: the exact distance between two
     # province coastlines is not cheap, and most pairs are nowhere near.
     tree = STRtree(list(geoms))
+    avoid_tree = STRtree(avoid) if avoid else None
     pairs = set()
     for k, geom in enumerate(geoms):
         minx, miny, maxx, maxy = geom.bounds
@@ -521,14 +550,20 @@ def plan_bridges(islands, params: BridgeParams = None) -> BridgePlan:
         pair_box = box(*_pair_bounds(geoms[k], geoms[j], reach_m))
         others = [geoms[int(m)] for m in tree.query(pair_box)
                   if int(m) not in (k, j)]
+        if avoid_tree is not None:
+            others.extend(avoid[int(m)] for m in avoid_tree.query(pair_box))
+        tally: dict = {}
         try:
-            candidates = _candidates(k, j, geoms[k], geoms[j], others, params)
+            candidates = _candidates(k, j, geoms[k], geoms[j], others, params,
+                                     tally)
         except Exception as exc:
             log.warning("bridge search failed for pair (%s, %s): %s",
                         source[k], source[j], exc)
             candidates = []
         if not candidates:
             plan.pairs_without_landing += 1
+            if tally and max(tally, key=tally.get) == "blocked":
+                plan.pairs_blocked += 1
             continue
         best[(k, j)] = candidates
         rows.append(k)

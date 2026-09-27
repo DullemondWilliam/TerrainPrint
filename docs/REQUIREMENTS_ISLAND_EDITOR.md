@@ -138,6 +138,19 @@ tools. (The `app` window already offers a combined, undoable cleanup editor via
   keep the rest. Enabled only when ≥2 parts are selected. Report whether all
   bridged into one landmass or several groups remain (too far to bridge → raise
   the buffer).
+- **FR-3.1a Bridge Selected** — span ≥2 selected parts with straight bridges
+  of a fixed printed width via `plan_bridges(selected, params,
+  obstacles=unselected)` then `apply_bridges(all_parts, plan.bridges)`. Where
+  **Merge** is told a closing distance and hands back whatever necks that
+  produces, a bridge is told the width it must come out at, so the two answer
+  different questions about the same selection. The spanning tree spends one
+  bridge per join, not one per pair; a pair that would hinge gets a second.
+  The **unselected** parts are passed as obstacles — they are still on the map,
+  so a bridge may not cross one, but they are not what was asked to be joined,
+  and without them the plan would be answering a question about a different
+  province. When nothing can be placed the report names the control that would
+  change it: out of **Max span**, blocked by another island, or no landing able
+  to hold a bridge that wide.
 - **FR-3.2 Remove Selected** — drop the hand-picked selected parts.
 - **FR-3.3 Remove Small** — drop every part below **Min area (km²)** using
   `is_below_area` / `remove_small_islands`.
@@ -146,6 +159,9 @@ tools. (The `app` window already offers a combined, undoable cleanup editor via
   dissolve.
 - **FR-3.5** Parameters are **printed sizes**, converted to ground units through
   the print scale at the moment of use: **Buffer (mm)** for merge (default 0.25),
+  **Width (mm)** and **Max span (mm)** for bridging (defaults 1.0 and 5.0; the
+  rest of `BridgeParams` keeps its `bridges.*` defaults and is turned in
+  `harnesses/UI_island_bridges.py`),
   **Brush (mm)** for both freehand strokes (default 0.125, a **width** across the
   stroke, not a radius) and **Min area (mm²)** for removal (default 0.02). The
   defaults are what the tool previously held in km, read at 1:8 000 000 — 2 km,
@@ -246,6 +262,14 @@ tools. (The `app` window already offers a combined, undoable cleanup editor via
 - **Operation adapters** (thin wrappers over the libs, each `geometry -> geometry`):
   - merge: explode → `merge_islands(selected_parts, buffer_km)` → union with the
     unselected parts.
+  - bridge: explode → `plan_bridges(selected, params, obstacles=unselected)` →
+    `apply_bridges(all_parts, plan.bridges)`. The slabs are unioned onto the
+    **whole** document rather than onto the selection, so a strait a bridge
+    encloses is judged against the real coastline. Planning is the one slow
+    operation in the editor — 8 s on a whole-province selection in British
+    Columbia, over 100 s in Nunavut — so it runs on a `QThread` behind an
+    indeterminate progress bar, with every control that could change the
+    document locked meanwhile and the view controls deliberately left live.
   - remove selected / remove small: explode → keep the parts that are not picked
     / not below the threshold → reassemble a MultiPolygon.
   - remove lakes: `remove_lakes(document)` directly.

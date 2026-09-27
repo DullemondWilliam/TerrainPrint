@@ -14,6 +14,12 @@ Workflow
    all times; a left click with no drag toggles an island's selection):
    - **Merge Selected** — bridge two or more clicked islands with necks of land;
      **From Gap** first sets the buffer to the least that bridges them.
+   - **Bridge** — span the clicked islands with straight bridges of a fixed
+     printed width instead: the cheapest set that joins them all, one per join.
+     Where *Merge* thickens whatever coastline its closing distance touches and
+     lets the gap decide how wide the neck comes out, a bridge is a rectangle
+     you specify — so this is the one to reach for when the printed width is
+     the thing that matters.
    - **Draw Bridge** — paint a land bridge by hand at a chosen brush width, for
      the gaps no workable buffer closes (left-drag draws while the mode is on;
      Esc cancels a stroke, or leaves the mode).
@@ -47,10 +53,10 @@ result so a merge leaves the merged landmass selected.
 
 Run with:  python UI_island_editor.py
 
-Reuses ``lib.LIB_island_merging``, ``lib.LIB_island_bridging``,
-``lib.LIB_island_erasing``, ``lib.LIB_island_removal`` and
-``lib.LIB_lake_removal``; kept independent of the main ``app`` window like the
-other UI_* harnesses.
+Reuses ``lib.LIB_island_merging``, ``lib.LIB_island_bridges``,
+``lib.LIB_island_bridging``, ``lib.LIB_island_erasing``,
+``lib.LIB_island_removal`` and ``lib.LIB_lake_removal``; kept independent of the
+main ``app`` window like the other UI_* harnesses.
 """
 
 import logging
@@ -65,13 +71,16 @@ from matplotlib.figure import Figure
 from shapely.geometry import MultiPolygon, Point
 from shapely.ops import unary_union
 
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import QEvent, QObject, QThread, Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut, QUndoCommand, QUndoStack
 from PySide6.QtWidgets import (QApplication, QDoubleSpinBox, QFileDialog,
                                QFrame, QGroupBox, QHBoxLayout, QLabel,
-                               QLineEdit, QMainWindow, QMessageBox, QPushButton,
-                               QSpinBox, QVBoxLayout, QWidget)
+                               QLineEdit, QMainWindow, QMessageBox,
+                               QProgressBar, QPushButton, QSpinBox,
+                               QVBoxLayout, QWidget)
 
+from lib.LIB_island_bridges import (BridgeParams, apply_bridges,
+                                    plan_bridges)
 from lib.LIB_island_bridging import draw_bridge
 from lib.LIB_island_erasing import erase_stroke
 from lib.LIB_island_merging import merge_islands, _polygons
@@ -132,6 +141,16 @@ PRINT_SCALE_STEP = 500_000
 BUFFER_MM = (0.0, 50.0, cfg("island_editor.buffer_mm"), 3, 0.05)
 BRUSH_MM = (0.001, 25.0, cfg("island_editor.brush_mm"), 3, 0.05)
 AREA_MM2 = (0.0, 10_000.0, cfg("island_editor.min_area_mm2"), 4, 0.01)
+
+#: The bridge parameters, same shape and same reasoning: printed sizes, worth
+#: whatever the print scale makes them worth. Only the two that decide the
+#: outcome are on the toolbar -- the width the bridge comes out at, and how far
+#: it may reach. The rest of ``BridgeParams`` (embedment, sampling pitch, the
+#: scoring penalties, the anchorage floor, the slenderness limit, bracing) keep
+#: their ``bridges.*`` defaults, and ``harnesses/UI_island_bridges.py`` is where
+#: they are turned.
+BRIDGE_WIDTH_MM = (0.0, 50.0, cfg("bridges.width_mm"), 3, 0.05)
+BRIDGE_SPAN_MM = (0.0, 200.0, cfg("bridges.max_span_mm"), 2, 0.5)
 
 #: Scale-bar geometry, in fractions of the axes. The bars sit in the bottom-left
 #: corner — the km bar above the mm one — and each aims to span ``SCALE_SPAN`` of
@@ -229,6 +248,43 @@ class MapToolbar(NavigationToolbar):
                  if text in _NAV_KEEP]
 
 
+class BridgeWorker(QObject):
+    """Plans and applies the bridges off the UI thread.
+
+    The only long operation in the editor: every candidate landing on every
+    coastline in range is scored, which is 8 s on a whole-province selection in
+    British Columbia and 102 s in Nunavut.  A wait cursor over that reads as a
+    hang, and the editor is the tool people sit in.
+
+    It is handed geometry, never the document: shapely geometries are immutable
+    and the editor's controls are locked while this runs, so the worker cannot
+    be looking at something the window has since changed.
+    """
+
+    done = Signal(object, object)          # BridgePlan, bridged geometry
+    failed = Signal(str)
+
+    def __init__(self, chosen, everything, obstacles, params):
+        super().__init__()
+        self._chosen = chosen
+        self._everything = everything
+        self._obstacles = obstacles
+        self._params = params
+
+    def run(self) -> None:
+        try:
+            plan = plan_bridges(self._chosen, self._params,
+                                obstacles=self._obstacles)
+            # Unioned onto the whole document, not onto the selection: a strait
+            # a bridge encloses is then judged against the real coastline, and
+            # the islands nobody selected come through untouched.
+            geom = apply_bridges(self._everything, plan.bridges)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        self.done.emit(plan, geom)
+
+
 class EditCommand(QUndoCommand):
     """
     One undoable edit: swap the editor's document (and selection) between the
@@ -278,6 +334,8 @@ class IslandEditor(QMainWindow):
         self._gap_text = ""                # its status-line fragment
         self._scale_artists: list = []     # (bar, label) pairs, one per scale
         self._scale_key = None             # what those were last laid out for
+        self._bridge_thread: QThread | None = None
+        self._bridge_worker = None         # the plan in flight, if any
 
         central = QWidget()
         root = QVBoxLayout(central)
@@ -394,6 +452,34 @@ class IslandEditor(QMainWindow):
         self.btn_remove_sel = self._button("Remove", self.remove_selected, enabled=False)
         self.btn_remove_sel.setToolTip("Drop the selected islands.")
 
+        # Bridging is the deliberate counterpart to merging, and wants its own
+        # group rather than two more boxes in a crowded one: a merge is told a
+        # closing distance and hands back whatever necks that produces, while a
+        # bridge is told the width it must come out at. They are different
+        # questions about the same selection.
+        self.bridge_width_spin = self._spin(*BRIDGE_WIDTH_MM,
+            "Width every bridge comes out at, as it will print (mm) — a "
+            "specification, not a consequence of the gap the way the merge "
+            "buffer is. The km/mm box up beside the print scale says what one "
+            "millimetre is worth on the ground.")
+        self.bridge_span_spin = self._spin(*BRIDGE_SPAN_MM,
+            "The longest crossing a bridge may span, printed (mm). It also "
+            "decides what is left alone: selected islands further apart than "
+            "this stay separate rather than being joined by something too thin "
+            "to print.")
+        self.btn_bridge = self._button("Bridge", self.bridge_selected,
+                                       enabled=False)
+        self.btn_bridge.setToolTip(
+            "Span the selected islands with straight bridges of the width on "
+            "the left: the cheapest set that joins them all, one bridge per "
+            "join, each placed where it lands squarely on both shores. A pair "
+            "presenting each other a long coastline gets a second bridge, "
+            "because one alone would let them pivot; the water caught between "
+            "the two is kept (use ‘Remove Lakes’ if you did not want it). "
+            "Islands you did not select are never bridged *across*. Planning "
+            "reads every candidate landing, so a large selection takes a few "
+            "seconds.")
+
         self.area_spin = self._spin(*AREA_MM2,
             "Islands whose printed area falls below this (mm² at the print "
             "scale) are marked and removed by ‘Remove Small’.")
@@ -434,6 +520,9 @@ class IslandEditor(QMainWindow):
         self.grp_selected = self._group(
             "Selected islands", "Buffer (mm)", self.buffer_spin, self.btn_gap,
             self.btn_merge, self.btn_remove_sel)
+        self.grp_bridges = self._group(
+            "Bridges", "Width (mm)", self.bridge_width_spin,
+            "Max span (mm)", self.bridge_span_spin, self.btn_bridge)
         self.grp_province = self._group(
             "Whole province", "Min area (mm²)", self.area_spin,
             self.btn_remove_small, self.btn_lakes)
@@ -442,7 +531,7 @@ class IslandEditor(QMainWindow):
             self.brush_spin)
 
         edit = QHBoxLayout()
-        for group in (self.grp_selection, self.grp_selected,
+        for group in (self.grp_selection, self.grp_selected, self.grp_bridges,
                       self.grp_province, self.grp_freehand):
             edit.addWidget(group)
         edit.addStretch(1)
@@ -454,6 +543,13 @@ class IslandEditor(QMainWindow):
         self.status = QLabel("No file loaded.")
         self._emphasise(self.status)
         root.addWidget(self.status)
+
+        # Only the bridge planner is slow enough to need this; it is hidden
+        # whenever nothing is running, so the window looks as it always did.
+        self.progress = QProgressBar()
+        self.progress.setTextVisible(False)
+        self.progress.setVisible(False)
+        root.addWidget(self.progress)
 
         self.setCentralWidget(central)
 
@@ -1056,12 +1152,14 @@ class IslandEditor(QMainWindow):
         self._update_status()
 
     def _sync_buttons(self) -> None:
+        if self._bridge_thread is not None:
+            return          # _set_planning owns the controls until it is done
         has = bool(self.parts)
         picked = len(self.selected)
         # A group is only offered when there is a document to act on; within it
         # the members keep their own rules, so "needs a selection" still shows
         # per button rather than greying out the parameters beside them.
-        for group in (self.grp_selection, self.grp_selected,
+        for group in (self.grp_selection, self.grp_selected, self.grp_bridges,
                       self.grp_province, self.grp_freehand):
             group.setEnabled(has)
         self.btn_draw.setEnabled(has)
@@ -1069,6 +1167,7 @@ class IslandEditor(QMainWindow):
         if not has and self._brush_mode is not None:
             self._set_brush_mode(None)     # nothing to draw on, or rub out
         self.btn_merge.setEnabled(picked >= 2)
+        self.btn_bridge.setEnabled(picked >= 2)
         # Same ceiling as the status line's gap: past it, measuring would stall.
         self.btn_gap.setEnabled(2 <= picked <= GAP_MAX_SELECTION)
         self.btn_remove_sel.setEnabled(picked >= 1)
@@ -1150,6 +1249,126 @@ class IslandEditor(QMainWindow):
                + ("all bridged into one landmass." if groups == 1 else
                   f"{groups} group(s) remain; raise the buffer to bridge them."))
         self._apply(f"Merge {len(chosen)} islands at {buffer_mm:g} mm", new_doc, msg)
+
+    def _bridge_params(self) -> BridgeParams:
+        """The bridge parameters as the controls read them, at the print scale.
+
+        Only the two on the toolbar are read here; everything else in
+        ``BridgeParams`` keeps its ``bridges.*`` default, so the editor and the
+        harness plan the same bridges from the same numbers.
+        """
+        return BridgeParams(scale=self.scale_spin.value(),
+                            width_mm=self.bridge_width_spin.value(),
+                            max_span_mm=self.bridge_span_spin.value())
+
+    def bridge_selected(self) -> None:
+        """
+        Span the selected islands with straight bridges of the chosen width.
+
+        The islands that were *not* selected are handed over as obstacles: they
+        are still on the map, so a bridge may not be run across one, but they
+        are not what the user asked to join either.  Without that the plan would
+        be answering a question about a different province from the one on
+        screen -- it would happily weld a third island into the middle of a
+        crossing, and its own count of what it had joined would be wrong.
+
+        The slabs are then unioned onto the whole document rather than onto the
+        selection, so a strait a bridge encloses is judged against the real
+        coastline and the unselected islands come through untouched.
+        """
+        if len(self.selected) < 2 or self._bridge_thread is not None:
+            return
+        sel = set(self.selected)
+        chosen = [self.parts[i] for i in self.selected]
+        others = [p for i, p in enumerate(self.parts) if i not in sel]
+
+        self._planned_count = len(chosen)
+        self._planned_params = self._bridge_params()
+        self._set_planning(True)
+        self.status.setText(
+            f"Planning bridges for {len(chosen)} islands — the map still pans "
+            "and zooms while this runs …")
+        self._bridge_thread = QThread(self)
+        self._bridge_worker = BridgeWorker(chosen, list(self.parts), others,
+                                           self._planned_params)
+        self._bridge_worker.moveToThread(self._bridge_thread)
+        self._bridge_thread.started.connect(self._bridge_worker.run)
+        self._bridge_worker.done.connect(self._on_bridge_done)
+        self._bridge_worker.failed.connect(self._on_bridge_failed)
+        self._bridge_thread.start()
+
+    def _on_bridge_done(self, plan, bridged) -> None:
+        self._end_planning()
+        if not plan.bridges:
+            self._update_status(self._no_bridge_note(plan) + " — ")
+            return
+        self._apply(
+            f"Bridge {self._planned_count} islands at "
+            f"{self._planned_params.width_mm:g} mm",
+            _as_multi(bridged), self._bridge_note(plan))
+
+    def _on_bridge_failed(self, message: str) -> None:
+        self._end_planning()
+        QMessageBox.critical(self, "Bridge failed", message)
+        self._update_status("Bridging failed — ")
+
+    def _end_planning(self) -> None:
+        if self._bridge_thread is not None:
+            self._bridge_thread.quit()
+            self._bridge_thread.wait()
+        self._bridge_worker = self._bridge_thread = None
+        self._set_planning(False)
+
+    def _set_planning(self, busy: bool) -> None:
+        """Lock the editing controls while a plan is in flight.
+
+        Everything that could change the document goes grey -- including Undo,
+        Import and the freehand modes -- because the worker is planning against
+        the islands as they were when it started.  The view controls are left
+        alone on purpose: panning and zooming the map while it thinks is the
+        whole reason for not doing this on the UI thread.
+        """
+        self.progress.setVisible(busy)
+        self.progress.setRange(0, 0) if busy else self.progress.setRange(0, 1)
+        for widget in (self.grp_selection, self.grp_selected, self.grp_bridges,
+                       self.grp_province, self.grp_freehand, self.btn_import,
+                       self.btn_save, self.btn_undo, self.btn_redo):
+            widget.setEnabled(not busy)
+        if busy:
+            if self._brush_mode is not None:
+                self._set_brush_mode(None)     # no drawing onto a stale map
+        else:
+            self._sync_buttons()               # back to the ordinary rules
+
+    @staticmethod
+    def _no_bridge_note(plan) -> str:
+        """Why nothing was placed, named as the control that would change it.
+
+        The three reasons want opposite fixes, and "no bridges" on its own
+        invites turning the wrong knob.
+        """
+        if plan.pairs_in_reach == 0:
+            return "Nothing selected is within Max span"
+        if plan.pairs_blocked:
+            return ("Another island lies across every crossing — select it too, "
+                    "or bridge a nearer pair first")
+        return "No landing would hold a bridge this wide — try a narrower one"
+
+    def _bridge_note(self, plan) -> str:
+        """What was placed, and what is still separate."""
+        bits = [f"Placed {len(plan.bridges)} bridge(s) at "
+                f"{plan.params.width_mm:g} mm"]
+        if plan.braces:
+            bits.append(f"{len(plan.braces)} bracing a pair that would hinge")
+        if plan.slender:
+            worst = max(b.aspect for b in plan.slender)
+            bits.append(f"{len(plan.slender)} slender (worst {worst:.0f}x the "
+                        "width — widen them)")
+        bits.append(f"{plan.components_before} → {plan.components_after} "
+                    "landmass(es) among the selected")
+        if plan.unreachable:
+            bits.append(f"{len(plan.unreachable)} still out of reach")
+        return "; ".join(bits) + "."
 
     def remove_selected(self) -> None:
         if not self.selected:

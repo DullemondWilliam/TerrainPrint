@@ -235,6 +235,81 @@ class TestThirdIslands(BridgeTestCase):
         self.assertEqual(_candidates(0, 1, a, b, [blocker], params), [])
 
 
+class TestObstacles(BridgeTestCase):
+    """Islands to avoid but not to connect — an editor bridging a selection.
+
+    Without these the third-island rule sees only what it was asked to bridge,
+    so a bridge between two selected islands can be run straight across an
+    unselected one and the plan disagrees with the document it lands in.
+    """
+
+    def strait(self):
+        """Two islands 2 mm apart, with an islet sitting in the water."""
+        return (self.square(0.0, 0.0), self.square(6.0, 0.0),
+                box(4.5 * self.MM, 0, 5.5 * self.MM, 4 * self.MM))
+
+    def test_a_bridge_will_not_cross_an_obstacle(self):
+        a, b, islet = self.strait()
+        self.assertEqual(len(plan_bridges([a, b]).bridges), 1)
+        self.assertEqual(plan_bridges([a, b], obstacles=[islet]).bridges, [])
+
+    def test_an_obstacle_out_of_the_way_changes_nothing(self):
+        a, b, _ = self.strait()
+        far = self.square(50.0, 0.0)
+        plan = plan_bridges([a, b], obstacles=[far])
+        self.assertEqual(len(plan.bridges), 1)
+        self.assertEqual(plan.pairs_blocked, 0)
+
+    def test_an_obstacle_is_never_a_landmass(self):
+        # It is scenery, not a node: it cannot be bridged to, and it must not
+        # inflate the counts the caller reports.
+        a, b, islet = self.strait()
+        plan = plan_bridges([a, b], obstacles=[islet])
+        self.assertEqual(plan.islands, 2)
+        self.assertEqual(plan.components_before, 2)
+
+    def test_being_blocked_is_reported_as_such(self):
+        # "No landing was good enough" is useless advice; "something is in the
+        # way" tells the user what to do about it.
+        a, b, islet = self.strait()
+        plan = plan_bridges([a, b], obstacles=[islet])
+        self.assertEqual(plan.pairs_in_reach, 1)
+        self.assertEqual(plan.pairs_without_landing, 1)
+        self.assertEqual(plan.pairs_blocked, 1)
+
+    def test_a_failure_to_anchor_is_not_reported_as_blocked(self):
+        # The other reason a pair gets nothing, and it wants the opposite fix.
+        a = self.square(0.0, 0.0)
+        tiny = box(6 * self.MM, 1.9 * self.MM, 6.2 * self.MM, 2.1 * self.MM)
+        plan = plan_bridges([a, tiny])
+        self.assertEqual(plan.bridges, [])
+        self.assertEqual(plan.pairs_without_landing, 1)
+        self.assertEqual(plan.pairs_blocked, 0)
+
+    def test_an_obstacle_can_be_routed_around(self):
+        # Blocking the shortest crossing is not the same as blocking the pair:
+        # if the scorer can go round, it should.
+        a = box(0, 0, 4 * self.MM, 20 * self.MM)
+        b = box(6 * self.MM, 0, 10 * self.MM, 20 * self.MM)
+        plug = box(4.5 * self.MM, 8 * self.MM, 5.5 * self.MM, 12 * self.MM)
+        plan = plan_bridges([a, b], obstacles=[plug])
+        self.assertTrue(plan.bridges)           # bars this long are braced too
+        self.assertEqual(plan.components_after, 1)
+        for bridge in plan.bridges:
+            self.assertFalse(bridge.polygon.intersects(plug))
+
+    def test_no_obstacles_is_the_same_as_an_empty_list(self):
+        a, b, _ = self.strait()
+        self.assertEqual(len(plan_bridges([a, b], obstacles=[]).bridges),
+                         len(plan_bridges([a, b]).bridges))
+        self.assertEqual(len(plan_bridges([a, b], obstacles=None).bridges), 1)
+
+    def test_empty_entries_among_the_obstacles_are_ignored(self):
+        a, b, islet = self.strait()
+        plan = plan_bridges([a, b], obstacles=[None, Polygon(), islet])
+        self.assertEqual(plan.bridges, [])
+
+
 class TestBracingAHinge(BridgeTestCase):
     """A second bridge for a pair, and only for the reason that justifies one."""
 
