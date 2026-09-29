@@ -47,5 +47,8 @@
     "max_triangles": 1500000,
     "resampling": "max",
     "spacing_mm": 0.4
+  },
+  "thin": {
+    "width_mm": 1.0
   }
 }

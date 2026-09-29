@@ -133,6 +133,16 @@ DEFAULTS = {
         "brush_mm": 0.125,
         "min_area_mm2": 0.02,
     },
+    "thin": {
+        # The narrowest land worth printing, in printed millimetres. Land below
+        # this does not survive being a solid: a neck snaps when the piece is
+        # lifted, a spit breaks off in the post, an islet is simply not there.
+        # The same figure as bridges.width_mm, and for the same reason -- a neck
+        # you already have and a bridge you would add need the same width to
+        # survive handling -- but a separate knob, because one is a limit you
+        # measure against and the other is a size you build to.
+        "width_mm": 1.0,
+    },
     "bridges": {
         # Straight fixed-width bridges between islands, in printed millimetres.
         # Unlike the island_editor buffer, whose neck width falls out of the gap

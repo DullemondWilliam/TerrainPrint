@@ -34,15 +34,22 @@ Workflow
    the editor has, over the same two scale bars. The status line adds the one
    figure this tool exists for: how many millimetres across the loaded provinces
    come out at the current reduction.
+5. **Show thin** — mark, in red, every piece of land narrower than **Min width**
+   as it will print: the necks that snap when a piece is lifted, the spits that
+   break off in the post, the islets that are not there at all.  A whole layer
+   is measured at once, so this is the survey a single-file tool cannot give
+   you — *which* provinces have a printing problem, before any of them is
+   opened.  **Zoom to Worst** goes to the largest patch, because a one-
+   millimetre fault is invisible at the zoom a whole country is read at.
 
 Nothing here writes. There is no undo because there is nothing to undo; to
 change a province, open it in ``UI_island_editor``.
 
 Run with:  python UI_province_viewer.py
 
-Reuses ``lib.LIB_map_scale``, ``lib.LIB_project_config`` and
-``lib.LIB_screen_calibration``; kept independent of the main ``app`` window like
-the other UI_* harnesses.
+Reuses ``lib.LIB_map_scale``, ``lib.LIB_thin_features``,
+``lib.LIB_project_config`` and ``lib.LIB_screen_calibration``; kept independent
+of the main ``app`` window like the other UI_* harnesses.
 """
 
 import logging
@@ -60,15 +67,16 @@ from shapely.strtree import STRtree
 
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFrame,
-                               QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-                               QMainWindow, QMessageBox, QPushButton, QSpinBox,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QComboBox, QDoubleSpinBox,
+                               QFileDialog, QFrame, QGroupBox, QHBoxLayout,
+                               QLabel, QLineEdit, QMainWindow, QMessageBox,
+                               QPushButton, QSpinBox, QVBoxLayout, QWidget)
 
 from lib.LIB_island_merging import _polygons
 from lib.LIB_map_scale import (grouped, km_per_mm, printed_size_mm, scale_bars,
                                to_km)
 from lib.LIB_project_config import get as cfg
+from lib.LIB_thin_features import ThinParams, thin_features
 from lib.LIB_screen_calibration import (MM_PER_INCH, load_saved_ppi,
                                         monitor_at, px_per_mm)
 
@@ -99,6 +107,28 @@ SELECT_COLOUR = "#F5B041"
 EDGE_COLOUR = "#1B4F72"
 SELECT_EDGE = "#B9770E"
 SCALE_COLOUR = "#2C3E50"
+
+#: Land too thin to print. A saturated red rather than the palette's softer
+#: ``#E6787A``, because these patches are a millimetre across on a map of a
+#: whole country: whatever marks them has to win against six pastel fills at a
+#: zoom where it is only a few pixels wide.
+THIN_COLOUR = "#C0392B"
+
+#: Stroke on a thin patch, in points. The fill alone is sub-pixel at country
+#: zoom -- a patch a printed millimetre across is drawn as a line rather than
+#: as nothing. The mark sits exactly where the fault is; only its rendered
+#: width is generous.
+THIN_LINEWIDTH = 0.9
+
+#: The minimum width to measure against, printed mm, as ``(lo, hi, default,
+#: decimals, step)``. Printed sizes converted through the print scale at the
+#: moment of use, as everywhere else here.
+THIN_WIDTH_MM = (0.0, 50.0, cfg("thin.width_mm"), 3, 0.05)
+
+#: What share of the view the worst patch takes up once framed. Small enough to
+#: keep its surroundings on screen -- a neck means nothing without the two
+#: landmasses either side of it.
+THIN_ZOOM_SHARE = 0.15
 
 DEFAULT_PRINT_SCALE = cfg("print.scale")
 PRINT_SCALE_MIN, PRINT_SCALE_MAX = 1_000, 500_000_000
@@ -184,6 +214,8 @@ class Province:
     def __init__(self, path: Path, geometry, key: str = ""):
         self.path = path
         self.name = path.stem
+        self._thin_key = None            # radius the cached report used
+        self._thin = None                # last ThinReport, if any
         #: What identifies this province *across* layers: the file's name with
         #: the layer's stage suffix taken off. Colour and selection hang off it.
         self.key = key or path.stem
@@ -193,6 +225,24 @@ class Province:
     @property
     def area_km2(self) -> float:
         return self.geometry.area / 1e6
+
+    def thin_report(self, params: ThinParams):
+        """The too-thin land, measured once and kept.
+
+        Keyed on the ground radius rather than on the printed width, because
+        that is what the measurement actually used: turning the print scale
+        changes the answer exactly as turning the width does, and a cache keyed
+        on the width alone would keep serving the old verdict.
+
+        Kept because the viewer redraws on every layer swap and every click,
+        and measuring Nunavut is 0.6 s -- fine on a button press, not fine
+        thirty times a second.
+        """
+        key = round(params.radius_m, 6)
+        if self._thin_key != key:
+            self._thin = thin_features(self.geometry, params)
+            self._thin_key = key
+        return self._thin
 
 
 class Layer:
@@ -326,9 +376,40 @@ class ProvinceViewer(QMainWindow):
             "Selection", self.btn_select_all, self.btn_clear, self.btn_invert,
             self.lbl_count)
 
+        # Printability. The one thing here that is a *judgement* about the
+        # provinces rather than a way of looking at them -- and it belongs in a
+        # viewer rather than an editor because the question is which of thirteen
+        # provinces has a problem, which is not a question you can ask one file
+        # at a time.
+        self.thin_spin = self._spin(*THIN_WIDTH_MM,
+            "Land narrower than this, as it will print (mm), is marked in red. "
+            "Below about a millimetre a neck snaps when the piece is lifted and "
+            "a spit breaks off in the post. The km/mm box up beside the print "
+            "scale says what one millimetre is worth on the ground.")
+        self.thin_spin.valueChanged.connect(self._on_thin_width)
+        self.btn_thin = self._button("Show thin", self._toggle_thin,
+                                     enabled=False)
+        self.btn_thin.setCheckable(True)
+        self.btn_thin.setToolTip(
+            "Mark every piece of land narrower than the width on the left. "
+            "Measured by asking whether a disc that wide fits inside the land, "
+            "so it catches necks, spits and whole islets alike — and says which "
+            "are which. The whole layer is measured at once; Nunavut takes "
+            "about half a second.")
+        self.btn_worst = self._button("Zoom to Worst", self.zoom_to_worst,
+                                      enabled=False)
+        self.btn_worst.setToolTip(
+            "Go to the largest thin patch in this layer. A one-millimetre "
+            "fault is a few pixels wide on a map of the whole country, so it "
+            "has to be gone to rather than looked for.")
+        self.grp_thin = self._group(
+            "Printability", "Min width (mm)", self.thin_spin, self.btn_thin,
+            self.btn_worst)
+
         row = QHBoxLayout()
         row.addWidget(self.grp_layers)
         row.addWidget(self.grp_selection)
+        row.addWidget(self.grp_thin)
         row.addStretch(1)
         root.addLayout(row)
 
@@ -414,6 +495,16 @@ class ProvinceViewer(QMainWindow):
         for item in contents:
             row.addWidget(QLabel(item) if isinstance(item, str) else item)
         return box
+
+    @staticmethod
+    def _spin(lo, hi, val, decimals, step, tip) -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setDecimals(decimals)
+        spin.setRange(lo, hi)
+        spin.setSingleStep(step)
+        spin.setValue(val)
+        spin.setToolTip(tip)
+        return spin
 
     def _button(self, text, slot, enabled=True):
         b = QPushButton(text)
@@ -647,10 +738,26 @@ class ProvinceViewer(QMainWindow):
                 edgecolor=SELECT_EDGE if chosen else EDGE_COLOUR,
                 linewidth=1.0 if chosen else 0.6,
                 zorder=3 if chosen else 2)
+        self._draw_thin()
         if preserve_view:
             self.ax.set_xlim(xlim)
             self.ax.set_ylim(ylim)
         self.canvas.draw_idle()
+
+    def _draw_thin(self) -> None:
+        """Mark the land too narrow to print, over the provinces it is in."""
+        if not self.btn_thin.isChecked():
+            return
+        params = self._thin_params()
+        for province in self.provinces:
+            report = province.thin_report(params)
+            if report.thin is None or report.thin.is_empty:
+                continue
+            # One artist for the whole province's thin land, not one per patch:
+            # Nunavut has 7 250 of them and geopandas would make 7 250 artists.
+            gpd.GeoSeries([report.thin]).plot(
+                ax=self.ax, facecolor=THIN_COLOUR, edgecolor=THIN_COLOUR,
+                linewidth=THIN_LINEWIDTH, zorder=4)
 
     # -- pan / selection ----------------------------------------------------
     def _shift_view(self, dx: float, dy: float) -> None:
@@ -761,9 +868,112 @@ class ProvinceViewer(QMainWindow):
         self.btn_drop_layer.setEnabled(bool(self.layers))
         self.btn_prev.setEnabled(many)
         self.btn_next.setEnabled(many)
+        self.grp_thin.setEnabled(has)
+        self.btn_thin.setEnabled(has)
+        if not has and self.btn_thin.isChecked():
+            self.btn_thin.setChecked(False)      # nothing left to measure
+        self.btn_worst.setEnabled(has and self.btn_thin.isChecked())
         self.lbl_count.setText(
             f"{len(self.picked)} of {len(self.provinces)} selected" if has
             else "none loaded")
+
+    # -- printability -------------------------------------------------------
+    def _thin_params(self) -> ThinParams:
+        """What counts as too thin, as the controls now read it."""
+        return ThinParams(scale=self.scale_spin.value(),
+                          width_mm=self.thin_spin.value())
+
+    def _toggle_thin(self, checked: bool) -> None:
+        """Measure the layer and mark it, or take the marks away."""
+        if checked and self.provinces:
+            # First look at a width costs a measurement per province; after
+            # that they are kept. Half a second on Nunavut, so the cursor says
+            # so rather than the window appearing to stall.
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            try:
+                params = self._thin_params()
+                for province in self.provinces:
+                    province.thin_report(params)
+            finally:
+                QApplication.restoreOverrideCursor()
+        self._redraw(preserve_view=True)
+        self._sync_buttons()
+        self._update_status()
+        self.canvas.setFocus()
+
+    def _on_thin_width(self, _value: float) -> None:
+        """A new width is a new question; the old marks are not its answer."""
+        if not self.btn_thin.isChecked():
+            return
+        self._toggle_thin(True)
+
+    def thin_reports(self) -> list:
+        """``(province, report)`` for the layer on show, measuring as needed."""
+        params = self._thin_params()
+        return [(province, province.thin_report(params))
+                for province in self.provinces]
+
+    def _worst_patch(self):
+        """The largest thin patch anywhere in this layer, or None."""
+        best = None
+        for _, report in self.thin_reports():
+            for patch in report.worst:
+                if best is None or patch.area > best.area:
+                    best = patch
+        return best
+
+    def zoom_to_worst(self) -> None:
+        """Take the view to the largest thin patch in the layer."""
+        if not self.btn_thin.isChecked() or not self.provinces:
+            return
+        patch = self._worst_patch()
+        if patch is None:
+            self._update_status("Nothing too thin to go to — ")
+            return
+        minx, miny, maxx, maxy = patch.bounds
+        centre_x, centre_y = (minx + maxx) / 2.0, (miny + maxy) / 2.0
+        (x0, x1), (y0, y1) = self.ax.get_xlim(), self.ax.get_ylim()
+        wanted = max(maxx - minx, maxy - miny, 1.0) / THIN_ZOOM_SHARE
+        # One factor on both spans, as Real Size does it and for the same
+        # reason: the limits matplotlib holds have already been through
+        # apply_aspect, and scaling them together keeps that agreement where
+        # fresh limits would fight it.
+        factor = wanted / max(x1 - x0, 1e-9)
+        half_x, half_y = (x1 - x0) * factor / 2.0, (y1 - y0) * factor / 2.0
+        self.ax.set_xlim(centre_x - half_x, centre_x + half_x)
+        self.ax.set_ylim(centre_y - half_y, centre_y + half_y)
+        self.canvas.draw_idle()
+        params = self._thin_params()
+        self._update_status(
+            f"At the worst patch: {patch.area / params.mpm ** 2:.2f} mm² of "
+            f"land under {params.width_mm:g} mm — ")
+
+    def _thin_fragment(self) -> str:
+        """The status line's printability segment, or empty when not showing."""
+        if not self.btn_thin.isChecked() or not self.provinces:
+            return ""
+        reports = self.thin_reports()
+        width = self.thin_spin.value()
+        unmeasured = [name for name, report in
+                      ((p.name, r) for p, r in reports) if not report.measured]
+        flagged = [p.name for p, report in reports if not report.clean]
+        patches = sum(report.patches for _, report in reports)
+        area = sum(report.thin_area_mm2 for _, report in reports)
+        whole = sum(report.whole_parts for _, report in reports)
+        if not flagged and not unmeasured:
+            return f"nothing under {width:g} mm"
+        bits = []
+        if flagged:
+            bits.append(f"{patches} thin patch(es) in {len(flagged)} "
+                        f"province(s), {area:.1f} mm² under {width:g} mm")
+            if whole:
+                # A different problem with a different fix, so it is said
+                # separately: these want removing, not widening.
+                bits.append(f"{whole} island(s) too thin end to end")
+        if unmeasured:
+            # Never folded into "nothing found": not measured is not clean.
+            bits.append(f"{len(unmeasured)} could not be measured")
+        return "; ".join(bits)
 
     # -- printed size / real size -------------------------------------------
     def _perkm_text(self) -> str:
@@ -771,6 +981,11 @@ class ProvinceViewer(QMainWindow):
 
     def _on_print_scale(self, _denom: int) -> None:
         self.perkm_box.setText(self._perkm_text())
+        if self.btn_thin.isChecked():
+            # The width is printed millimetres, so a new reduction is a new
+            # question about the same land: re-measure rather than leave the
+            # old marks sitting under a scale that no longer produced them.
+            self._toggle_thin(True)
         self.canvas.draw_idle()
         self._update_status("Print scale changed — ")
 
@@ -979,6 +1194,7 @@ class ProvinceViewer(QMainWindow):
             bits.append(f"{len(names)} selected ({shown}; {area:,.0f} km²)")
         bits.append(self._printed_extent_text())
         bits.append(f"at 1:{grouped(self.scale_spin.value())}")
+        bits.append(self._thin_fragment())
         self.status.setText(f"{prefix}{', '.join(b for b in bits if b)}.")
 
     def _update_title(self) -> None:
