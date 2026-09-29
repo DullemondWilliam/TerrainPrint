@@ -63,6 +63,17 @@ So each candidate costs::
 Both penalties are in print-mm, so they trade directly against span: at the
 defaults, a fully grazing landing has to save 2 mm of span to be worth taking.
 
+**And it stops at the coast.**  Each end is driven ``embed_mm`` past its landing
+so the union with the shore is a lap joint and not a kiss.  That assumes there is
+land under the overhang to lap onto, and often there is not: 1 mm is 8 km of
+ground at 1:8,000,000, which is thicker than most islets and than every spit.
+Driven through one of those the end comes out of the far coast and stands a tab
+of bridge, at full width, in open water -- a bridge to nowhere, on the far side
+of an island the crossing had already reached, and land that ``area_mm2`` does
+not admit to.  So the ends of the bridges the tree chose are trimmed back to the
+land actually under them (``_trim_ends``); what a bridge adds is then exactly
+its width times its span, wherever it lands.
+
 **How many bridges?**  That is global, and not a question about any pair.
 Islands are the nodes of a graph, candidate bridges its edges weighted by
 ``cost_mm``, and the answer is the **minimum spanning tree**: for n landmasses
@@ -324,6 +335,9 @@ def _slab(p, q, width_m: float, embed_m: float):
     Flat caps, so the slab is exactly the rectangle between the two embedded
     ends -- round or square caps would add a width's worth of land nobody asked
     for, which is the thing this module exists to avoid.
+
+    The overhang is a lap joint and assumes there is land under it to lap onto;
+    :func:`_trim_ends` takes back the part of it that hangs over water.
     """
     dx, dy = q.x - p.x, q.y - p.y
     span_m = math.hypot(dx, dy)
@@ -334,6 +348,41 @@ def _slab(p, q, width_m: float, embed_m: float):
                        (q.x + ux * embed_m, q.y + uy * embed_m)])
     slab = ends.buffer(width_m / 2.0, cap_style="flat", join_style="mitre")
     return slab, (ux, uy), span_m
+
+
+def _trim_ends(bridge: Bridge, ga, gb, params: BridgeParams) -> None:
+    """Cut a bridge's embedded ends back to the land they were driven into.
+
+    The overhang exists so the union with the coast is a lap joint rather than
+    a kiss.  It assumes the island is at least ``embed_mm`` thick where the
+    bridge lands, and plenty are not: 1 mm is 8 km of ground at 1:8,000,000, so
+    every spit and most islets are thinner than the joint driven into them.
+    Untrimmed, the end comes out of the far coast and stands a tab of land --
+    full bridge width -- in open water: a bridge to nowhere, and land nobody
+    asked for by giving a span.  It also makes ``area_mm2`` a lie, because the
+    slab then adds more than width x span.
+
+    What is kept is the crossing -- coast to coast, every bit of it over the
+    water the bridge is there to cross -- plus whatever of the slab actually
+    lies on the two islands.  So the joint is untouched wherever there was land
+    to make it in, and gone where there was not.
+
+    Done here, on the handful of bridges the tree chose, rather than in
+    :func:`_candidates` on every landing scored: the shape only matters once a
+    bridge is going to be built, and the candidates are thousands.  The
+    anchorage that *chose* the landing is measured on the untrimmed slab either
+    way -- it asks how much land the end has to hold on to, which is exactly
+    what is kept here.
+    """
+    if params.embed_m <= 0 or bridge.polygon is None or bridge.line is None:
+        return
+    crossing = bridge.line.buffer(params.width_m / 2.0, cap_style="flat",
+                                  join_style="mitre")
+    laps = (_polygons(bridge.polygon.intersection(ga))
+            + _polygons(bridge.polygon.intersection(gb)))
+    trimmed = unary_union([crossing] + laps)
+    if not trimmed.is_empty:
+        bridge.polygon = trimmed
 
 
 # -- candidate scoring ------------------------------------------------------
@@ -406,6 +455,10 @@ def _candidates(ia: int, ib: int, ga, gb, others, params: BridgeParams,
         if anchor < params.min_anchor:
             refuse("anchor")
             continue
+        # Asked of the slab with its embedment on, not of the trimmed shape: a
+        # crossing whose end would be driven through a third island is refused
+        # outright rather than cut back to fit past it. Hopping through that
+        # island is cheaper anyway, and the tree takes it.
         if any(slab.intersects(other) for other in others):
             refuse("blocked")       # it would cross a third island on the way
             continue
@@ -599,6 +652,9 @@ def plan_bridges(islands, params: BridgeParams = None,
             plan.bridges.append(brace)
 
     lookup = {original: k for k, original in enumerate(source)}
+    for bridge in plan.bridges:
+        _trim_ends(bridge, geoms[lookup[bridge.a]], geoms[lookup[bridge.b]],
+                   params)
     linked = [(lookup[b.a], lookup[b.b]) for b in plan.bridges]
     bridged = _graph(touch_rows + [k for k, _ in linked],
                      touch_cols + [j for _, j in linked],

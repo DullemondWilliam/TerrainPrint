@@ -183,6 +183,46 @@ class TestUnselectedIslandsAreObstacles:
         assert "3 → 1 landmass(es)" in strait.status.text()
 
 
+class TestABridgeStopsAtTheCoast:
+    """Bridge onto a thin islet and no land appears on its far side.
+
+    The shape itself is the lib's business and is pinned there
+    (test_island_bridges.py, ``TestTheEmbeddedEnds``).  This asks it the way
+    the editor does -- a whole document in, a whole document out -- because
+    that is where it shows: you bridge to an islet, and a tab of land is left
+    standing in the water behind it, past a coast the crossing had already
+    reached.
+
+    0.6 mm is 4.8 km at the project's 1:8,000,000, so the islet here is an
+    entirely ordinary one, and the default 1 mm embedment is 8 km.
+    """
+
+    @pytest.fixture
+    def islet(self, qtbot):
+        """A 4 mm island and, 2 mm east, an islet 0.6 mm thick."""
+        return _editor(qtbot, [square(0.0, 0.0),
+                               box(6.0 * MM, 0, 6.6 * MM, 4.0 * MM)])
+
+    def test_nothing_is_laid_down_past_the_far_coast(self, islet):
+        _select(islet, 0, 1)
+        _bridge(islet)
+        assert islet.doc.bounds[2] <= 6.6 * MM + 1e-6
+
+    def test_the_islet_is_joined_all_the_same(self, islet):
+        _select(islet, 0, 1)
+        _bridge(islet)
+        assert len(islet.parts) == 1
+        assert "2 → 1 landmass(es)" in islet.status.text()
+
+    def test_the_document_gains_the_crossing_and_nothing_else(self, islet):
+        before = islet.doc.area
+        _select(islet, 0, 1)
+        _bridge(islet)
+        crossing = islet.bridge_width_spin.value() * 2.0        # width x span
+        assert (islet.doc.area - before) / MM / MM == pytest.approx(crossing,
+                                                                    abs=1e-3)
+
+
 class TestWhenNothingCanBePlaced:
     """Three causes, three different fixes — so three different sentences."""
 
