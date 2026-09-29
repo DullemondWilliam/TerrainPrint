@@ -490,6 +490,17 @@ class IslandEditor(QMainWindow):
         # Left unstyled deliberately: it inherits the palette, so it stays
         # legible on a dark theme. The group title carries the hierarchy.
         self.lbl_count = QLabel()
+        # …and given a fixed width, because its text changes on every click.
+        # "none selected" is 20 px wider than "3 selected", so the group box
+        # breathed in and out and slid ‘Whole province’ sideways each time the
+        # selection went empty or stopped being empty. Reserving the room up
+        # front costs those pixels once. Measured from the font rather than
+        # guessed, as the km/mm box is, so it survives a theme with a wider
+        # one; four digits is more islands than any province has (Nunavut, the
+        # worst of them, is 223 parts).
+        self.lbl_count.setFixedWidth(max(
+            self.lbl_count.fontMetrics().horizontalAdvance(text)
+            for text in ("none selected", "8888 selected")) + 4)
 
         self.buffer_spin = self._spin(*BUFFER_MM,
             "Merge closing distance, as it will print (mm). Islands closer than "

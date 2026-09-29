@@ -14,6 +14,11 @@ questions a reader of the window asks: what document am I in, what is this edit
 pointed at, and how does it reshape the land. A control that drifts into the
 wrong row still works and quietly stops answering, which no other test would
 notice -- so the grid positions and the group memberships are pinned here.
+
+The other thing pinned here is that the arrangement **holds still**. A control
+that moves while you are working is worse than one in the wrong place: the map
+is clicked over and over, and anything that shifts between clicks is something
+you can click by mistake.
 """
 
 import pytest
@@ -219,3 +224,52 @@ class TestUnderTheMap:
         assert sum(1 for r in rows if r is not None
                    and r.indexOf(editor.status) >= 0) == 1
         assert under_the_map(editor)[1].indexOf(editor.status) >= 0
+
+
+class TestTheControlsHoldStillWhileSelecting:
+    """Clicking an island moves nothing but the island's colour.
+
+    The selection count is the one label whose text changes on every click, and
+    the widths do not match: "none selected" ran 20 px wider than "3 selected",
+    so the Selection group breathed in and out and carried *Whole province*
+    sideways with it -- 20 px, on the first click and again on the last, under
+    a pointer that may have been on its way to a button there.
+    """
+
+    SELECTIONS = [[], [0], [0, 1], [0, 1, 2], list(range(12)),
+                  list(range(223))]           # Nunavut, the worst real case
+
+    def settle(self, editor, selection):
+        """Put a selection on the window and let the layout answer for it."""
+        editor.selected = list(selection)
+        editor._sync_buttons()
+        editor.centralWidget().layout().activate()
+
+    @pytest.mark.parametrize("selection", SELECTIONS)
+    def test_the_count_label_keeps_its_width(self, editor, selection):
+        self.settle(editor, [])
+        empty = editor.lbl_count.sizeHint().width()
+        self.settle(editor, selection)
+        assert editor.lbl_count.sizeHint().width() == empty
+
+    @pytest.mark.parametrize("selection", SELECTIONS)
+    def test_the_selection_group_keeps_its_width(self, editor, selection):
+        self.settle(editor, [])
+        empty = editor.grp_selection.sizeHint().width()
+        self.settle(editor, selection)
+        assert editor.grp_selection.sizeHint().width() == empty
+
+    @pytest.mark.parametrize("selection", SELECTIONS)
+    def test_whole_province_does_not_slide(self, editor, selection):
+        """The group next along the row, which is what the movement was seen as."""
+        self.settle(editor, [])
+        where = editor.grp_province.x()
+        self.settle(editor, selection)
+        assert editor.grp_province.x() == where
+
+    def test_the_label_does_say_the_count(self, editor):
+        """A width held by saying nothing would pass the tests above."""
+        self.settle(editor, [0, 1])
+        assert editor.lbl_count.text() == "2 selected"
+        self.settle(editor, [])
+        assert editor.lbl_count.text() == "none selected"

@@ -181,6 +181,14 @@ class IslandBridgesTester(QMainWindow):
             "Click an island on the left panel to bridge only some of them.\n"
             "Everything not selected becomes an obstacle: still on the map, "
             "and\nnever bridged across. Nothing selected means bridge the lot.")
+        # A fixed width, measured from the font: this text changes on every
+        # click, and "none selected" is 20 px wider than "3 selected". Nothing
+        # sits to its right in the toolbar today, so only the label itself
+        # twitches -- but a control added after it would be dragged across the
+        # row on every click, and that is a horrible thing to have to find.
+        self.lbl_selection.setFixedWidth(max(
+            self.lbl_selection.fontMetrics().horizontalAdvance(text)
+            for text in ("none selected", "8888 selected")) + 4)
         for widget in (self.btn_import, self.btn_run, self.btn_zoom,
                        self.btn_save, self.btn_select_all, self.btn_clear_sel,
                        self.lbl_selection):

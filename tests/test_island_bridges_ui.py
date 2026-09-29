@@ -341,6 +341,18 @@ class TestSelecting:
             window._thread = None
         assert window.selected == []
 
+    def test_the_count_label_does_not_change_width(self):
+        """It says a different thing on every click, and must take the same
+        room saying it: anything placed to its right would be dragged across
+        the toolbar each time the selection emptied or stopped being empty."""
+        window = _loaded()
+        empty = window.lbl_selection.sizeHint().width()
+        for selection in ([0], [0, 1], [0, 1, 2]):
+            window.selected = list(selection)
+            window._selection_changed()
+            assert window.lbl_selection.sizeHint().width() == empty
+        assert window.lbl_selection.text() == "3 selected"
+
     def test_select_all_and_clear_are_the_two_ends_of_it(self):
         window = _loaded()
         window.select_all()
