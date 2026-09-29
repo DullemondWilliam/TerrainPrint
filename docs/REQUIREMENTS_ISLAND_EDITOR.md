@@ -78,6 +78,35 @@ tools. (The `app` window already offers a combined, undoable cleanup editor via
   map is where the keyboard rests unless a number is being edited. This depends
   on the canvas being given a focus policy at all: matplotlib only sets one in
   its own managed (pyplot) window, and leaves an embedded canvas at `NoFocus`.
+- **FR-2.6.1** **Every button carries a keyboard shortcut**, hung on the button
+  itself (`QPushButton.setShortcut`) rather than on a free-standing `QShortcut`.
+  That makes `setEnabled` the single gate for mouse and keyboard alike — the
+  keyboard can no more merge with nothing selected than the mouse can — and the
+  button flashes as the key fires, so a press made with the pointer out over the
+  map is visibly *this* control acting. The tooltip names the key, since the
+  label cannot: an ampersand mnemonic would claim Alt, which is a different
+  mechanism, and "Merge (M)" on the face of a button spends width the row has
+  not got. The map:
+
+  | | |
+  | --- | --- |
+  | Import / Save | Ctrl+O / Ctrl+S |
+  | Undo / Redo | Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y |
+  | Home / Back / Forward (the *view* history) | Home / Alt+Left / Alt+Right |
+  | Pan / Zoom (the nav modes) | P / Z |
+  | Real Size / Recalculate | Ctrl+R / F5 |
+  | All / None / Invert | Ctrl+A / Ctrl+Shift+A / Ctrl+I |
+  | From Gap / Merge / Bridge / Remove | G / M / B / Delete |
+  | Remove Small / Amputate / Remove Lakes | S / A / L |
+  | Draw Bridge / Erase | D / E |
+
+  The modified sequences are the ones that must work from anywhere; the bare
+  letters are for the map in hand, and they give way to a focused spin box,
+  which takes the keys it would accept as input before shortcut dispatch sees
+  them — so typing a value can never set off an edit. Undo and redo keep their
+  free-standing bindings, because they answer to more than one sequence and a
+  button holds only one; binding a second would make both ambiguous, and Qt
+  answers an ambiguous shortcut by firing neither.
 - **FR-2.7** Controls sit in **three rows** with the **Scores** panel in the
   top-right spanning the first two: *document and view* (Import, Save, Undo,
   Redo, navigation tools, print scale), then *editing*, divided into titled

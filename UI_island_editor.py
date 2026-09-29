@@ -35,13 +35,22 @@ Workflow
      faults costs three times as much coastline.
    - **Remove Lakes** — strip interior rings (lakes) from the whole province.
 3. **Undo / Redo** (Ctrl+Z / Ctrl+Shift+Z) — every edit is one step on a stack.
-4. **Scores** (bottom right) — what the session has cost, against the province
+4. **Scores** (top right) — what the session has cost, against the province
    as it was imported: how much **coast** is left, how much **land**, and how
    much of the print would still **agree** with the original.  The first two
    are arithmetic and follow every edit; the third rasterises both versions at
    a quarter of the nozzle width and sits behind **Recalculate**, because
    running it on every brush stroke would make the editor feel slow.
 5. **Save GeoJSON …** — write the province back out, CRS preserved.
+6. **Keyboard** — every button carries a shortcut, named at the foot of its
+   tooltip. Ctrl+O / Ctrl+S open and save; Ctrl+A, Ctrl+Shift+A and Ctrl+I work
+   the selection; F5 recalculates the scores; Home, Alt+Left / Alt+Right and
+   P / Z move the *view*; and each edit takes the initial of the word that
+   tells it apart — G, M, B, S, A, L, D, E — with Delete for *Remove*.
+   The keys hang on the buttons, so a key is live exactly when its button is:
+   no merging with nothing selected. The bare letters give way to a focused
+   spin box, which takes the keystrokes it would accept as input before any
+   shortcut sees them, so typing a value cannot set off an edit.
 
 Everything is sized **as it will print**. An editable **Print scale**
 (1:8 000 000 to start) sits in the top row with a read-only **km/mm** readout
@@ -251,6 +260,14 @@ def _differs(a, b) -> bool:
 _NAV_KEEP = ("Home", "Back", "Forward", "Pan", "Zoom")
 _NAV_TIPS = {"Back": "Back to the previous view (this is not Undo)",
              "Forward": "Forward to the next view (this is not Redo)"}
+#: …and the keys they answer to. Back and Forward take the browser sequences
+#: every desktop already spells the same way; Home takes the key of its name.
+#: They step the *view* history, so they are deliberately nowhere near Ctrl+Z.
+#: Pan and Zoom are modes like the brushes and take a bare initial as those do —
+#: and P earns its keeping: with a brush on, the toolbar's pan tool is the only
+#: way left to drag the map.
+_NAV_KEYS = {"Home": "Home", "Back": "Alt+Left", "Forward": "Alt+Right",
+             "Pan": "P", "Zoom": "Z"}
 
 
 class MapToolbar(NavigationToolbar):
@@ -443,7 +460,9 @@ class IslandEditor(QMainWindow):
         self.btn_import = self._button("Import GeoJSON …", self.import_geojson)
         self.btn_save = self._button("Save GeoJSON …", self.save_geojson, enabled=False)
         self.btn_undo = self._button("Undo", self.undo_stack.undo, enabled=False)
+        self.btn_undo.setToolTip("Step back through the edit history.")
         self.btn_redo = self._button("Redo", self.undo_stack.redo, enabled=False)
+        self.btn_redo.setToolTip("Step forward again through the edit history.")
         for widget in (self.btn_import, self.btn_save, self._separator(),
                        self.btn_undo, self.btn_redo, self._separator(), self.nav,
                        self._separator(), QLabel("Print scale"), self.scale_spin,
@@ -688,7 +707,11 @@ class IslandEditor(QMainWindow):
         # -- undo/redo wiring ----------------------------------------------
         self.undo_stack.canUndoChanged.connect(self.btn_undo.setEnabled)
         self.undo_stack.canRedoChanged.connect(self.btn_redo.setEnabled)
-        self.undo_stack.cleanChanged.connect(lambda *_: self._update_title())
+        # A bound method, not a lambda: a lambda has no receiver, so Qt keeps
+        # the connection alive after the window is destroyed and fires it into
+        # a half-freed editor. Connecting a method of ``self`` gives Qt a
+        # receiver to watch, and the connection dies with the window.
+        self.undo_stack.cleanChanged.connect(self._on_clean_changed)
         # Bind every sequence the platform lists for undo/redo, not just the
         # first one: on Windows StandardKey.Redo resolves to Ctrl+Y alone, so
         # Ctrl+Shift+Z would otherwise do nothing.
@@ -697,10 +720,18 @@ class IslandEditor(QMainWindow):
                    "Ctrl+Shift+Z", "Ctrl+Y")
         # …and keep the text entries from swallowing them (see ``eventFilter``).
         for entry in (self.buffer_spin, self.area_spin, self.width_spin,
-                      self.scale_spin, self.perkm_box):
+                      self.bridge_width_spin, self.bridge_span_spin,
+                      self.brush_spin, self.scale_spin, self.perkm_box):
             entry.installEventFilter(self)
+
+        # -- and a key for every other button --------------------------------
+        self._wire_shortcuts()
         self._update_scores()     # …and the scoreboard saying there is nothing yet
         self._sync_buttons()      # start with the groups greyed and the count set
+        self._update_title()
+
+    def _on_clean_changed(self, *_) -> None:
+        """The title carries the unsaved-changes mark, so it follows the stack."""
         self._update_title()
 
     def eventFilter(self, obj, event):
@@ -736,6 +767,82 @@ class IslandEditor(QMainWindow):
                 continue
             seen.add(text)
             QShortcut(seq, self, activated=slot)
+
+    def _wire_shortcuts(self) -> None:
+        """
+        Give every button a key, and say so in its tooltip.
+
+        One table rather than a line per button, because the only hard question
+        about a shortcut is what else has claimed the key, and that is
+        answerable at a glance only if they all sit together.
+
+        The keys hang on the *buttons* (``QPushButton.setShortcut``) rather than
+        on free-standing ``QShortcut``s, which buys two things: a disabled
+        button disables its key, so the keyboard can no more merge with nothing
+        selected than the mouse can, and the button flashes as it fires, so a
+        press made over the map is visibly *this* control acting.
+
+        Plain letters are safe next to the spin boxes. A focused entry accepts
+        the keys it would take as input before shortcut dispatch ever sees them,
+        so typing into a box cannot set off an edit — which is also why the
+        modified keys below are the ones that must work from anywhere, and the
+        bare letters are the ones reached for with the map in hand.
+
+        Undo and redo are annotated but not rebound: they already answer to
+        every sequence the platform lists plus two more (see ``_bind``), and a
+        button holds only one. Binding a second here would make both ambiguous,
+        and Qt answers an ambiguous shortcut by firing neither.
+        """
+        for widget, sequence in (
+                # The document and the view. All modified: these have to work
+                # with the keyboard parked in a spin box.
+                (self.btn_import, "Ctrl+O"),
+                (self.btn_save, "Ctrl+S"),
+                (self.btn_real, "Ctrl+R"),
+                (self.btn_recalc, "F5"),
+                # The selection, likewise — and Ctrl+A only reaches the islands
+                # from outside a spin box, where it still selects the text.
+                (self.btn_select_all, "Ctrl+A"),
+                (self.btn_clear, "Ctrl+Shift+A"),
+                (self.btn_invert, "Ctrl+I"),
+                # The edits, on the initial of the word that tells them apart.
+                (self.btn_gap, "G"),
+                (self.btn_merge, "M"),
+                (self.btn_bridge, "B"),
+                (self.btn_remove_sel, QKeySequence.StandardKey.Delete),
+                (self.btn_remove_small, "S"),
+                (self.btn_amputate, "A"),
+                (self.btn_lakes, "L"),
+                (self.btn_draw, "D"),
+                (self.btn_erase, "E"),
+        ):
+            widget.setShortcut(QKeySequence(sequence))
+            self._hint(widget, widget.shortcut())
+        self._hint(self.btn_undo, QKeySequence.StandardKey.Undo)
+        self._hint(self.btn_redo, "Ctrl+Shift+Z")
+
+        # And the view tools, which live on the nav toolbar's actions rather
+        # than on buttons -- but an action takes a shortcut and a tooltip the
+        # same way, so the same two lines serve.
+        for action in self.nav.actions():
+            sequence = _NAV_KEYS.get(action.text())
+            if sequence is not None:
+                action.setShortcut(QKeySequence(sequence))
+                self._hint(action, action.shortcut())
+
+    @staticmethod
+    def _hint(widget, sequence) -> None:
+        """Append ``sequence`` to ``widget``'s tooltip, as the desktop spells it.
+
+        The label cannot carry it: an ampersand mnemonic would underline a
+        letter of the text and claim Alt, which is a different mechanism, and
+        "Merge (M)" on the face of a button spends width the row has not got.
+        """
+        keys = QKeySequence(sequence).toString(
+            QKeySequence.SequenceFormat.NativeText)
+        tip = widget.toolTip()
+        tail = "Shortcut: " + keys
+        widget.setToolTip(f"{tip}\n\n{tail}" if tip else tail)
 
     def _bind_pan(self, sequence, fx: float, fy: float) -> None:
         """Pan by ``(fx, fy)`` of the view on a key, while the canvas has focus."""

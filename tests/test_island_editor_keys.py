@@ -1,8 +1,8 @@
 """
 test_island_editor_keys.py
 
-Keyboard behaviour of UI_island_editor.py — arrow-key panning, and the widgets
-whose own key handling must survive it.
+Keyboard behaviour of UI_island_editor.py — arrow-key panning, the shortcut on
+every button, and the widgets whose own key handling must survive both.
 
 These are pytest-style (not unittest) because they need pytest-qt's ``qtbot``
 fixture, which cannot be injected into a TestCase.
@@ -19,6 +19,7 @@ import pytest
 from shapely.geometry import box
 
 from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QPushButton
 
 import UI_island_editor as M
 
@@ -26,6 +27,9 @@ pytestmark = pytest.mark.usefixtures("qapp")
 
 WEST = box(0, 0, 10_000, 10_000)
 EAST = box(20_000, 0, 30_000, 10_000)
+
+#: Long enough for a key's ``animateClick`` to have landed if it was going to.
+KEY_SETTLE_MS = 300
 
 
 @pytest.fixture
@@ -184,5 +188,140 @@ class TestUndoShortcutsSurvive:
         qtbot.keyClick(editor.canvas if focus_on == "canvas"
                        else getattr(editor, focus_on),
                        Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+        assert editor.undo_stack.index() == 0
+        assert editor.doc.equals(doc)
+
+
+class TestButtonShortcuts:
+    """Every button answers to a key, and the key is the button.
+
+    The keys hang on the buttons rather than on free-standing ``QShortcut``s,
+    which is what makes ``setEnabled`` the single gate for both the mouse and
+    the keyboard; these pin that down, and that nothing is bound twice.
+    """
+
+    EXPECTED = {
+        "btn_import": "Ctrl+O",
+        "btn_save": "Ctrl+S",
+        "btn_real": "Ctrl+R",
+        "btn_recalc": "F5",
+        "btn_select_all": "Ctrl+A",
+        "btn_clear": "Ctrl+Shift+A",
+        "btn_invert": "Ctrl+I",
+        "btn_gap": "G",
+        "btn_merge": "M",
+        "btn_bridge": "B",
+        "btn_remove_sel": "Del",
+        "btn_remove_small": "S",
+        "btn_amputate": "A",
+        "btn_lakes": "L",
+        "btn_draw": "D",
+        "btn_erase": "E",
+    }
+
+    @pytest.mark.parametrize("name, keys", sorted(EXPECTED.items()))
+    def test_each_button_carries_its_key(self, editor, name, keys):
+        assert getattr(editor, name).shortcut().toString() == keys
+
+    @pytest.mark.parametrize("name, keys", sorted(EXPECTED.items()))
+    def test_the_tooltip_says_so(self, editor, name, keys):
+        """A key nobody can find is not a shortcut."""
+        assert f"Shortcut: {keys}" in getattr(editor, name).toolTip()
+
+    def test_undo_and_redo_are_annotated_but_not_rebound(self, editor):
+        """Binding a button to Ctrl+Z as well would make both ambiguous, and Qt
+        answers an ambiguous shortcut by firing neither."""
+        assert editor.btn_undo.shortcut().isEmpty()
+        assert editor.btn_redo.shortcut().isEmpty()
+        assert "Shortcut: Ctrl+Z" in editor.btn_undo.toolTip()
+        assert "Shortcut: Ctrl+Shift+Z" in editor.btn_redo.toolTip()
+
+    def test_the_view_history_keys_are_nowhere_near_undo(self, editor):
+        """Back/Forward step the view, not the edits — so they take the browser
+        sequences, not anything that reads as Undo."""
+        bound = {a.text(): a.shortcut().toString() for a in editor.nav.actions()
+                 if not a.shortcut().isEmpty()}
+        assert bound == {"Home": "Home", "Back": "Alt+Left",
+                         "Forward": "Alt+Right", "Pan": "P", "Zoom": "Z"}
+
+    def test_no_key_is_claimed_twice(self, editor):
+        """Including by the arrows, which are the canvas's own."""
+        from PySide6.QtGui import QShortcut
+        claimed = [w.shortcut().toString()
+                   for w in editor.findChildren(QPushButton) + editor.nav.actions()
+                   if not w.shortcut().isEmpty()]
+        claimed += [s.key().toString() for s in editor.findChildren(QShortcut)]
+        assert len(claimed) == len(set(claimed))
+
+
+class TestKeysActAsTheirButtonsDo:
+    """Pressed, a key does what clicking would — and only when clicking would.
+
+    A key on a button fires it through ``animateClick``, so the press lands a
+    tenth of a second later with the button visibly down; that flash is the
+    point of hanging the keys on the buttons, and it is why these wait rather
+    than assert on the next line.
+    """
+
+    def test_a_key_fires_its_action(self, editor, qtbot):
+        editor.canvas.setFocus()
+        qtbot.keyClick(editor.canvas, Qt.Key.Key_A,
+                       Qt.KeyboardModifier.ControlModifier)
+        qtbot.waitUntil(lambda: editor.selected == [0, 1])
+
+    def test_a_toggle_key_toggles(self, editor, qtbot):
+        editor.canvas.setFocus()
+        qtbot.keyClick(editor.canvas, Qt.Key.Key_D)
+        qtbot.waitUntil(lambda: editor._brush_mode == M.DRAW)
+        qtbot.keyClick(editor.canvas, Qt.Key.Key_E)
+        qtbot.waitUntil(lambda: editor._brush_mode == M.ERASE)   # a radio pair
+
+    def test_a_key_edits_the_document(self, editor, qtbot):
+        editor.selected = [0]
+        editor._sync_buttons()
+        editor.canvas.setFocus()
+        qtbot.keyClick(editor.canvas, Qt.Key.Key_Delete)
+        qtbot.waitUntil(lambda: editor.undo_stack.count() == 1)
+        assert len(editor.parts) == 1
+
+    def test_a_nav_key_works_the_toolbar(self, editor, qtbot):
+        """P reaches the pan tool — the one way left to drag with a brush on."""
+        pan = next(a for a in editor.nav.actions() if a.text() == "Pan")
+        editor.canvas.setFocus()
+        qtbot.keyClick(editor.canvas, Qt.Key.Key_P)
+        qtbot.waitUntil(lambda: pan.isChecked())
+
+    def test_a_disabled_button_is_a_dead_key(self, editor, qtbot):
+        """Nothing selected, so Merge is greyed — and M is greyed with it."""
+        editor.clear_selection()
+        assert not editor.btn_merge.isEnabled()
+        editor.canvas.setFocus()
+        qtbot.keyClick(editor.canvas, Qt.Key.Key_M)
+        qtbot.wait(KEY_SETTLE_MS)
+        assert editor.undo_stack.count() == 0
+
+    @pytest.mark.parametrize("spin", ["buffer_spin", "brush_spin",
+                                      "bridge_width_spin"])
+    def test_a_focused_spin_box_keeps_its_letters(self, editor, qtbot, spin):
+        """The entry takes the keys it would accept as input before shortcut
+        dispatch sees them, so typing a value cannot set off an edit."""
+        editor.select_all()
+        getattr(editor, spin).setFocus()
+        for key in (Qt.Key.Key_M, Qt.Key.Key_S, Qt.Key.Key_A, Qt.Key.Key_E):
+            qtbot.keyClick(getattr(editor, spin), key)
+        qtbot.wait(KEY_SETTLE_MS)
+        assert editor.undo_stack.count() == 0
+        assert editor._brush_mode is None
+
+    @pytest.mark.parametrize("spin", ["brush_spin", "bridge_width_spin",
+                                      "bridge_span_spin"])
+    def test_undo_still_fires_from_every_spin_box(self, editor, qtbot, spin):
+        """Every entry filters the undo override, not just the first three."""
+        doc = editor.doc
+        editor.undo_stack.push(
+            M.EditCommand(editor, "probe", doc, M._as_multi(WEST), [], []))
+        getattr(editor, spin).setFocus()
+        qtbot.keyClick(getattr(editor, spin), Qt.Key.Key_Z,
+                       Qt.KeyboardModifier.ControlModifier)
         assert editor.undo_stack.index() == 0
         assert editor.doc.equals(doc)
