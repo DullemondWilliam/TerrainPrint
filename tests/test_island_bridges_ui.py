@@ -19,6 +19,10 @@ What this file guards is the harness being an honest front end for the lib:
   produced it.
 * **The report is the plan's own numbers**, not a second count that could drift
   away from what was actually placed.
+* **What is drawn is the plan's own numbers too.**  The anchor marks are read
+  off ``Bridge.line``, so they are the landings the scorer actually chose; a
+  mark drawn from anything else would be a second opinion about where the
+  bridge went.
 * **A selection asks a different question of the lib**, and the harness has to
   ask all three parts of it: bridge *these*, avoid *those*, and union the slabs
   onto the whole map.  Getting the third wrong loses every island left out of
@@ -471,6 +475,84 @@ class TestTheSelectionReachesTheLib:
         _plan(window)
         assert "another island lies across" in window.status.text().lower()
         assert "Select the islands in the way" in window.status.text()
+
+
+class TestTheAnchorPoints:
+    """Both ends of every bridge are marked: where it was tied to each coast.
+
+    The span is legible from the picture already; *where along the coastline*
+    the crossing was put is not, and it is what the anchorage floor and the
+    angle penalty are choosing between. So the marks have to come off the same
+    line the scorer measured -- ``Bridge.line`` is the crossing coast to coast,
+    and its two ends are the landings.
+    """
+
+    def marks(self, window):
+        """The plotted anchor points, as a set of rounded (x, y)."""
+        assert len(window.ax_before.lines) <= 1, "one artist for all of them"
+        if not window.ax_before.lines:
+            return set()
+        return {(round(x, 3), round(y, 3))
+                for x, y in window.ax_before.lines[0].get_xydata()}
+
+    def landings(self, plan):
+        return {(round(x, 3), round(y, 3))
+                for bridge in plan.bridges for x, y in bridge.line.coords}
+
+    def test_they_are_shown_by_default(self):
+        window = _loaded()
+        assert window.anchors_check.isChecked()
+
+    def test_every_landing_is_marked(self):
+        window = _loaded()
+        plan = _plan(window)
+        assert len(plan.bridges) == 2
+        assert self.marks(window) == self.landings(plan)
+        assert len(self.marks(window)) == 2 * len(plan.bridges)
+
+    def test_a_brace_is_marked_like_any_other_bridge(self):
+        # Two long facing coasts: the pair is braced, and the second bridge has
+        # landings of its own worth seeing.
+        window = _loaded([_square(0.0, 0.0, 12.0), _square(14.0, 0.0, 12.0)])
+        plan = _plan(window)
+        assert plan.braces, "the fixture is meant to provoke a brace"
+        assert self.marks(window) == self.landings(plan)
+
+    def test_turning_them_off_takes_them_away(self):
+        window = _loaded()
+        _plan(window)
+        window.anchors_check.setChecked(False)
+        assert self.marks(window) == set()
+
+    def test_and_back_on_brings_them_back(self):
+        window = _loaded()
+        plan = _plan(window)
+        window.anchors_check.setChecked(False)
+        window.anchors_check.setChecked(True)
+        assert self.marks(window) == self.landings(plan)
+
+    def test_toggling_them_does_not_touch_the_plan(self):
+        """A drawing option, not a parameter: it must not invalidate anything."""
+        window = _loaded()
+        plan = _plan(window)
+        result = window.result
+        window.anchors_check.setChecked(False)
+        assert window.plan is plan
+        assert window.result is result
+        assert window.btn_save.isEnabled()
+
+    def test_nothing_is_marked_before_there_is_a_plan(self):
+        window = _loaded()
+        window._draw_plan()
+        assert self.marks(window) == set()
+
+    def test_they_survive_a_redraw_that_keeps_the_view(self):
+        """Every pan and zoom goes through a redraw; the marks are not a
+        one-off decoration of the draw that placed them."""
+        window = _loaded()
+        plan = _plan(window)
+        window._draw_plan(preserve_view=True)
+        assert self.marks(window) == self.landings(plan)
 
 
 class TestFraming:

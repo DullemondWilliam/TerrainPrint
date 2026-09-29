@@ -31,7 +31,12 @@ Workflow
 
 The **left** panel is the plan: islands in blue, the selected ones in yellow,
 each primary bridge in red and each brace in orange, dashed where a bridge is
-slender, labelled with its span in millimetres.  The **right** panel is the same
+slender, labelled with its span in millimetres, and its two **anchor points**
+marked — the landings, where the bridge meets each coast.  They are the answer
+to the question the scoring is really about: not how long a crossing is, which
+the eye reads anyway, but *where on the coastline* it was decided to put it, and
+whether that is the headland you would have picked. Toggle them with **Show
+anchors**.  The **right** panel is the same
 geometry once the slabs are unioned on — the *whole* map, selection or not, so
 the islands left out of the job come through visibly untouched.  The report
 under them is the part worth reading — how many pairs were in reach, how many
@@ -77,10 +82,16 @@ SELECT_EDGE = "#B7950B"
 RESULT_COLOUR = "#ABEBC6"     # green  — the bridged result
 BRIDGE_COLOUR = "#E6787A"     # red    — a primary bridge (added land)
 BRACE_COLOUR = "#F5B041"      # orange — a second bridge against hinging
+ANCHOR_COLOUR = "#7D3C98"     # purple — where a bridge lands on a coast
 EDGE_COLOUR = "#1B4F72"       # dark blue outline
 
 #: Label bridges with their span only while few enough to read.
 MAX_BRIDGE_LABELS = 60
+#: Anchor markers, in points. Screen units on purpose: a landing is a *place*,
+#: not a thing with a size, so the mark stays the same however far in you zoom
+#: — and zooming in is the only way to see one, since at province extent the
+#: bridge it belongs to is a hairline.
+ANCHOR_MARKER_PT = 4.5
 #: Padding around the bridges when framing them, as a fraction of their extent.
 BRIDGE_ZOOM_PAD = 0.15
 
@@ -286,6 +297,15 @@ class IslandBridgesTester(QMainWindow):
             "A strait closed by a single bridge is filled either way.\n"
             "Re-applies the plan without re-planning it.")
         self.lagoon_check.stateChanged.connect(self._reapply)
+        self.anchors_check = QCheckBox("Show anchors")
+        self.anchors_check.setChecked(True)
+        self.anchors_check.setToolTip(
+            "Mark where each bridge lands on each coast.\nThis is what the "
+            "anchorage floor and the angle penalty are choosing between,\nso "
+            "it is the thing to watch while turning them.\nA drawing option: "
+            "it does not re-plan anything.")
+        self.anchors_check.stateChanged.connect(
+            lambda *_: self._draw_plan(preserve_view=True))
         for label, widget in (("Sample:", self.sample_spin),
                               ("Angle pen.:", self.angle_spin),
                               ("Anchor pen.:", self.anchor_pen_spin),
@@ -295,6 +315,7 @@ class IslandBridgesTester(QMainWindow):
             search_bar.addWidget(QLabel(label))
             search_bar.addWidget(widget)
         search_bar.addWidget(self.lagoon_check)
+        search_bar.addWidget(self.anchors_check)
         search_bar.addStretch(1)
         root.addLayout(search_bar)
 
@@ -657,6 +678,7 @@ class IslandBridgesTester(QMainWindow):
                     ax=self.ax_before, facecolor=colour, edgecolor=EDGE_COLOUR,
                     linewidth=1.4 if bridge.slender else 0.8,
                     linestyle="--" if bridge.slender else "-", zorder=3)
+            self._draw_anchors()
             if len(self.plan.bridges) <= MAX_BRIDGE_LABELS:
                 for bridge in self.plan.bridges:
                     point = bridge.line.interpolate(0.5, normalized=True)
@@ -673,6 +695,35 @@ class IslandBridgesTester(QMainWindow):
             self.ax_before.autoscale_view()
         self._link_views()
         self.canvas.draw_idle()
+
+    def _draw_anchors(self) -> None:
+        """Mark both ends of every bridge: the coastline points it was tied to.
+
+        One artist for every landing rather than one each. A province's worth
+        of them is a few hundred points, and a few hundred artists is felt on
+        every pan of a panel that has islands to draw as well.
+
+        ``Bridge.line`` is the crossing coast to coast, so its two ends *are*
+        the landings -- the same two points the anchorage and the incidence
+        were measured at. Drawn over the slab, since the slab is what covers
+        them, and with a pale edge so a mark reads against the red of a bridge
+        as well as against the blue of an island.
+        """
+        if not self.anchors_check.isChecked():
+            return
+        xs, ys = [], []
+        for bridge in self.plan.bridges:
+            if bridge.line is None or bridge.line.is_empty:
+                continue
+            for x, y in bridge.line.coords:
+                xs.append(x)
+                ys.append(y)
+        if not xs:
+            return
+        self.ax_before.plot(
+            xs, ys, linestyle="none", marker="o",
+            markersize=ANCHOR_MARKER_PT, markerfacecolor=ANCHOR_COLOUR,
+            markeredgecolor="white", markeredgewidth=0.7, zorder=5)
 
     def _draw_result(self) -> None:
         parts = 0 if self.result is None else len(_polygons(self.result))
@@ -865,7 +916,8 @@ class IslandBridgesTester(QMainWindow):
                        self.embed_spin, self.span_spin, self.aspect_spin,
                        self.sample_spin, self.angle_spin, self.anchor_pen_spin,
                        self.anchor_spin, self.per_pair_spin, self.hinge_spin,
-                       self.drop_slender_check, self.lagoon_check):
+                       self.drop_slender_check, self.lagoon_check,
+                       self.anchors_check):
             widget.setEnabled(not busy)
 
     def _teardown_thread(self) -> None:
