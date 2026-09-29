@@ -89,8 +89,8 @@ from shapely.ops import unary_union
 from PySide6.QtCore import QEvent, QObject, QThread, Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut, QUndoCommand, QUndoStack
 from PySide6.QtWidgets import (QApplication, QDoubleSpinBox, QFileDialog,
-                               QFrame, QGroupBox, QHBoxLayout, QLabel,
-                               QLineEdit, QMainWindow, QMessageBox,
+                               QFrame, QGridLayout, QGroupBox, QHBoxLayout,
+                               QLabel, QLineEdit, QMainWindow, QMessageBox,
                                QProgressBar, QPushButton, QSpinBox,
                                QVBoxLayout, QWidget)
 
@@ -450,7 +450,6 @@ class IslandEditor(QMainWindow):
                        self.perkm_box, self.btn_real):
             top.addWidget(widget)
         top.addStretch(1)
-        root.addLayout(top)
 
         # -- row 2: editing, grouped by what each control acts on ------------
         # The recurring question in this tool is whether an action hits the
@@ -586,19 +585,18 @@ class IslandEditor(QMainWindow):
 
         edit = QHBoxLayout()
         for group in (self.grp_selection, self.grp_selected, self.grp_bridges,
-                      self.grp_province, self.grp_freehand):
+                      self.grp_freehand):
             edit.addWidget(group)
         edit.addStretch(1)
-        root.addLayout(edit)
 
-        root.addWidget(self.caption)
-        root.addWidget(self.canvas, stretch=1)
-
-        # -- bottom row: the running commentary, then the scoreboard ---------
-        # The status line says what just happened; the panel beside it says
-        # where the province has got to overall. They answer different
-        # questions, so they sit side by side rather than one replacing the
-        # other, and the scores go right because that is where a total belongs.
+        # -- the scoreboard, top right ---------------------------------------
+        # The status line at the foot of the window says what just happened;
+        # this says where the province has got to overall, which is a standing
+        # figure rather than a running commentary -- so it sits up with the
+        # document-level controls instead of down with the last thing said.
+        # It is laid out vertically because its cell is two rows tall: three
+        # lines of figures with the button under them, rather than beside them
+        # eating a hundred pixels of a row that has none to spare.
         self.lbl_scores = QLabel()
         self.lbl_scores.setToolTip(
             "Against the province as imported.\n\n"
@@ -623,15 +621,44 @@ class IslandEditor(QMainWindow):
             "the province at a quarter of the nozzle width — a fifth of a "
             "second on Nunavut, and more at a finer print scale — so it is "
             "asked for rather than run after every stroke.")
-        self.grp_scores = self._group("Scores", self.lbl_scores,
-                                      self.btn_recalc)
+        self.grp_scores = QGroupBox("Scores")
+        scores_column = QVBoxLayout(self.grp_scores)
+        scores_column.setContentsMargins(8, 2, 8, 4)
+        scores_column.setSpacing(4)
+        scores_column.addWidget(self.lbl_scores)
+        scores_column.addWidget(self.btn_recalc,
+                                alignment=Qt.AlignmentFlag.AlignRight)
 
-        bottom = QHBoxLayout()
+        # -- rows 1 and 2, with the scoreboard alongside both -----------------
+        # A grid rather than three box layouts: the scoreboard has to span the
+        # two rows of controls, and only a grid can say that. Column 0 takes
+        # all the slack so the controls keep the width they had and the panel
+        # keeps the width it needs.
+        head = QGridLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        head.setHorizontalSpacing(8)
+        head.setVerticalSpacing(4)
+        head.addLayout(top, 0, 0)
+        head.addLayout(edit, 1, 0)
+        head.addWidget(self.grp_scores, 0, 1, 2, 1)
+        head.setColumnStretch(0, 1)
+        root.addLayout(head)
+
+        # -- row 3: the whole province ----------------------------------------
+        # On its own line because the row above was full: four groups of
+        # controls and a scoreboard do not fit one row at any window width
+        # anybody would choose.
+        province_row = QHBoxLayout()
+        province_row.addWidget(self.grp_province)
+        province_row.addStretch(1)
+        root.addLayout(province_row)
+
+        root.addWidget(self.caption)
+        root.addWidget(self.canvas, stretch=1)
+
         self.status = QLabel("No file loaded.")
         self._emphasise(self.status)
-        bottom.addWidget(self.status, stretch=1)
-        bottom.addWidget(self.grp_scores)
-        root.addLayout(bottom)
+        root.addWidget(self.status)
 
         # Only the bridge planner is slow enough to need this; it is hidden
         # whenever nothing is running, so the window looks as it always did.

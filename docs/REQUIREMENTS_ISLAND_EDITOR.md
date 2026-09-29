@@ -78,10 +78,14 @@ tools. (The `app` window already offers a combined, undoable cleanup editor via
   map is where the keyboard rests unless a number is being edited. This depends
   on the canvas being given a focus policy at all: matplotlib only sets one in
   its own managed (pyplot) window, and leaves an embedded canvas at `NoFocus`.
-- **FR-2.7** Controls sit in **two rows**: *document and view* (Import, Save,
-  Undo, Redo, navigation tools, print scale) above *editing*, which is divided into titled
+- **FR-2.7** Controls sit in **three rows** with the **Scores** panel in the
+  top-right spanning the first two: *document and view* (Import, Save, Undo,
+  Redo, navigation tools, print scale), then *editing*, divided into titled
   groups naming **what each group acts on** — **Selection**, **Selected
-  islands**, **Whole province**, **Freehand**. The recurring question in this
+  islands**, **Bridges**, **Freehand** — and then **Whole province** on a row
+  of its own, because four groups of controls and a scoreboard do not fit one
+  row at any window width anybody would choose. Moving it down took the
+  window's minimum width from 3198 px to 2344 px. The recurring question in this
   tool is whether an action hits the islands you clicked or the whole province,
   so the titles answer it; members then drop the qualifier from their own labels
   ("Merge", not "Merge Selected"), and the live selection count sits with the
