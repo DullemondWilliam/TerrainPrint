@@ -8,24 +8,34 @@ Workflow
 1. **Import GeoJSON …** — load one or more province files; every polygon part
                           becomes an island (worked in EPSG:3347 metres, so the
                           printed millimetres below are real ground distances).
-2. **The bridge**       — width, embedment, the longest span allowed and the
+2. **Select islands**   — optional: click one on the left panel to bridge only
+                          some of them.  With nothing selected the job is the
+                          whole map, as it always was.  With a selection it is
+                          the question the island editor asks — bridge *these*,
+                          and treat every island left out as an obstacle a
+                          bridge may not be run across.  Two uses: trying a
+                          corner of a province without waiting on the whole of
+                          it (102 s on Nunavut, under a second on a handful),
+                          and watching what the obstacle rule actually refuses.
+3. **The bridge**       — width, embedment, the longest span allowed and the
                           slenderness limit.  All printed millimetres: at
                           1:8,000,000 a 1 mm bridge is 8 km of causeway.
-3. **The search**       — coastline sampling pitch, what a grazing or badly
+4. **The search**       — coastline sampling pitch, what a grazing or badly
                           anchored landing costs in mm of span, the anchorage
                           floor, and the bracing rule.
-4. **Plan Bridges**     — score the landings, take the minimum spanning tree and
+5. **Plan Bridges**     — score the landings, take the minimum spanning tree and
                           union the slabs on (off the UI thread, with a progress
                           bar: 9 s on Newfoundland, 20 s on British Columbia).
-5. **Zoom to Bridges**  — a 1 mm bridge is invisible at province extent.
-6. **Save GeoJSON …**   — write the bridged geometry back out, CRS preserved.
+6. **Zoom to Bridges**  — a 1 mm bridge is invisible at province extent.
+7. **Save GeoJSON …**   — write the bridged geometry back out, CRS preserved.
 
-The **left** panel is the plan: islands in blue, each primary bridge in red and
-each brace in orange, dashed where a bridge is slender, labelled with its span in
-millimetres.  The **right** panel is the same geometry once the slabs are
-unioned on.  The report under them is the part worth reading — how many pairs
-were in reach, how many had no landing good enough to use, and how many separate
-landmasses are left.
+The **left** panel is the plan: islands in blue, the selected ones in yellow,
+each primary bridge in red and each brace in orange, dashed where a bridge is
+slender, labelled with its span in millimetres.  The **right** panel is the same
+geometry once the slabs are unioned on — the *whole* map, selection or not, so
+the islands left out of the job come through visibly untouched.  The report
+under them is the part worth reading — how many pairs were in reach, how many
+had no landing good enough to use, and how many separate landmasses are left.
 
 Run with:  python harnesses/UI_island_bridges.py
 
@@ -42,6 +52,8 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.backends.backend_qtagg import \
     NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
+
+from shapely.geometry import Point
 
 from PySide6.QtCore import QObject, QThread, Signal
 from PySide6.QtWidgets import (QApplication, QCheckBox, QDoubleSpinBox,
@@ -60,6 +72,8 @@ from lib.LIB_island_merging import _polygons
 GEOJSON_FILTER = "GeoJSON (*.geojson *.json);;All files (*)"
 
 ISLAND_COLOUR = "#AED6F1"     # blue   — the islands as imported
+SELECT_COLOUR = "#F9E79F"     # yellow — clicked: the islands to bridge
+SELECT_EDGE = "#B7950B"
 RESULT_COLOUR = "#ABEBC6"     # green  — the bridged result
 BRIDGE_COLOUR = "#E6787A"     # red    — a primary bridge (added land)
 BRACE_COLOUR = "#F5B041"      # orange — a second bridge against hinging
@@ -72,13 +86,21 @@ BRIDGE_ZOOM_PAD = 0.15
 
 
 class PlanWorker(QObject):
-    """Runs the planner off the UI thread (20 s on British Columbia)."""
+    """Runs the planner off the UI thread (20 s on British Columbia).
+
+    Three lists, not one, because a selection makes them three different
+    things: the islands to bridge, the islands a bridge may not be run across,
+    and the islands the slabs are finally unioned onto.  With nothing selected
+    all three are the same list and this is the job it always was.
+    """
     done = Signal(object, object)    # BridgePlan, bridged geometry
     failed = Signal(str)
 
-    def __init__(self, islands, params, keep_lagoons):
+    def __init__(self, chosen, everything, obstacles, params, keep_lagoons):
         super().__init__()
-        self._islands = islands
+        self._chosen = chosen
+        self._everything = everything
+        self._obstacles = obstacles
         self._params = params
         self._keep_lagoons = keep_lagoons
 
@@ -87,8 +109,12 @@ class PlanWorker(QObject):
             # Geometries, not a path: the harness has already read and
             # reprojected them, and re-reading here would let the picture and
             # the plan disagree about what was bridged.
-            plan = plan_bridges(self._islands, self._params)
-            geom = apply_bridges(self._islands, plan,
+            plan = plan_bridges(self._chosen, self._params,
+                                obstacles=self._obstacles)
+            # Unioned onto everything rather than onto the selection, so a
+            # strait a bridge encloses is judged against the real coastline and
+            # the islands left out survive the edit.
+            geom = apply_bridges(self._everything, plan,
                                  keep_lagoons=self._keep_lagoons)
         except Exception as exc:
             self.failed.emit(str(exc))
@@ -106,6 +132,9 @@ class IslandBridgesTester(QMainWindow):
         # -- state ----------------------------------------------------------
         #: One row per polygon part: the islands the plan is built over.
         self.islands: gpd.GeoDataFrame | None = None
+        #: Row indices clicked on the map. Empty means the whole map, which is
+        #: what this harness did before it could select at all.
+        self.selected: list[int] = []
         self.plan = None                 #: last BridgePlan, for drawing
         self.result = None               #: bridged geometry, ready to save
         self.source_paths: list[Path] = []
@@ -133,8 +162,28 @@ class IslandBridgesTester(QMainWindow):
         self.btn_save = QPushButton("Save GeoJSON …")
         self.btn_save.clicked.connect(self.save_geojson)
         self.btn_save.setEnabled(False)
+        # Clicking is the selection; these are for the two ends of it, which
+        # clicking is tedious at -- and All is the honest way to say "the whole
+        # map" without leaving the answer to an empty list.
+        self.btn_select_all = QPushButton("Select All")
+        self.btn_select_all.clicked.connect(self.select_all)
+        self.btn_select_all.setEnabled(False)
+        self.btn_select_all.setToolTip(
+            "Select every island — the same job as selecting none, said out "
+            "loud.")
+        self.btn_clear_sel = QPushButton("Clear Selection")
+        self.btn_clear_sel.clicked.connect(self.clear_selection)
+        self.btn_clear_sel.setEnabled(False)
+        self.btn_clear_sel.setToolTip(
+            "Back to bridging the whole map.")
+        self.lbl_selection = QLabel("none selected")
+        self.lbl_selection.setToolTip(
+            "Click an island on the left panel to bridge only some of them.\n"
+            "Everything not selected becomes an obstacle: still on the map, "
+            "and\nnever bridged across. Nothing selected means bridge the lot.")
         for widget in (self.btn_import, self.btn_run, self.btn_zoom,
-                       self.btn_save):
+                       self.btn_save, self.btn_select_all, self.btn_clear_sel,
+                       self.lbl_selection):
             toolbar.addWidget(widget)
         toolbar.addStretch(1)
         root.addLayout(toolbar)
@@ -269,6 +318,7 @@ class IslandBridgesTester(QMainWindow):
 
         self.mpl_toolbar = NavigationToolbar(self.canvas, self)
         self.canvas.mpl_connect("scroll_event", self._on_scroll)
+        self.canvas.mpl_connect("button_press_event", self._on_click)
         root.addWidget(self.mpl_toolbar)
         root.addWidget(self.canvas, stretch=1)
 
@@ -309,15 +359,16 @@ class IslandBridgesTester(QMainWindow):
             max_per_pair=self.per_pair_spin.value(),
             hinge_ratio=self.hinge_spin.value())
 
-    def _invalidate(self, *_) -> None:
-        """A changed parameter makes the last plan stale; drop it."""
+    def _invalidate(self, *_, redraw=True) -> None:
+        """A changed question makes the last answer stale; drop it."""
         if self.plan is None and self.result is None:
             return
         self.plan = None
         self.result = None
         self.btn_save.setEnabled(False)
         self.btn_zoom.setEnabled(False)
-        self._draw_plan(preserve_view=True)
+        if redraw:
+            self._draw_plan(preserve_view=True)
         self._style_axis(self.ax_after, "Bridged  (not yet planned)")
         self._link_views()      # clearing reset it to matplotlib's 0..1 view
         self.canvas.draw_idle()
@@ -329,13 +380,103 @@ class IslandBridgesTester(QMainWindow):
             return
         try:
             self.result = apply_bridges(
-                list(self.islands.geometry), self.plan,
+                self._plan_inputs()[1], self.plan,
                 keep_lagoons=self.lagoon_check.isChecked())
         except Exception as exc:
             QMessageBox.critical(self, "Apply failed", str(exc))
             return
         self._draw_result()
         self.status.setText(self._report())
+
+    # -- the selection ------------------------------------------------------
+    def _on_click(self, event) -> None:
+        """Toggle the island under a left click on the plan panel.
+
+        Only that panel: the right one is the answer, not the question.  The
+        nav toolbar is given right of way while it has a mode, because a pan or
+        a zoom-rectangle starts with exactly this event and must not also
+        change what is being asked.
+        """
+        if (self.islands is None or self._thread is not None
+                or event.inaxes is not self.ax_before
+                or event.button != 1 or str(self.mpl_toolbar.mode)
+                or event.xdata is None or event.ydata is None):
+            return
+        index = self._island_at(event.xdata, event.ydata)
+        if index is None:
+            return
+        if index in self.selected:
+            self.selected.remove(index)
+        else:
+            self.selected.append(index)
+        self._selection_changed()
+
+    def _island_at(self, x: float, y: float):
+        """Index of the island under a point, or None.
+
+        No pick tolerance, deliberately: a tolerance in data units is a
+        different distance at every zoom, and the wheel is right there. An
+        island too small to hit is an island too small to see.
+        """
+        point = Point(x, y)
+        for index, geom in enumerate(self.islands.geometry):
+            if geom is not None and not geom.is_empty and geom.contains(point):
+                return index
+        return None
+
+    def select_all(self) -> None:
+        if self.islands is None:
+            return
+        self.selected = list(range(len(self.islands)))
+        self._selection_changed()
+
+    def clear_selection(self) -> None:
+        self.selected = []
+        self._selection_changed()
+
+    def _selection_changed(self) -> None:
+        """Redraw, and drop any plan the old selection produced."""
+        # ``redraw=False``: the draw below covers it, and on a province-sized
+        # import re-plotting every island twice per click is felt. Its status
+        # line is overwritten below on purpose -- after a click the useful
+        # sentence is what is now selected, and the note ends by asking for the
+        # plan anyway.
+        self._invalidate(redraw=False)
+        self.lbl_selection.setText(
+            f"{len(self.selected)} selected" if self.selected
+            else "none selected")
+        self.btn_clear_sel.setEnabled(bool(self.selected))
+        self._draw_plan(preserve_view=True)
+        self.status.setText(self._selection_note())
+
+    def _selection_note(self) -> str:
+        total = 0 if self.islands is None else len(self.islands)
+        if not self.selected:
+            return (f"Nothing selected — Plan Bridges will bridge all {total} "
+                    "island(s). Click one on the left to bridge only some.")
+        left_out = total - len(self.selected)
+        note = f"{len(self.selected)} of {total} island(s) selected"
+        if left_out:
+            note += (f"; the other {left_out} are obstacles — still on the map, "
+                     "never bridged across")
+        return note + ". Plan Bridges."
+
+    def _plan_inputs(self):
+        """``(to bridge, to union onto, to avoid)`` for the selection as it is.
+
+        The three are one list with nothing selected, which is why the harness
+        could ignore the distinction until it could select.  They come apart
+        the moment it can: what is bridged is the selection, what is avoided is
+        everything else, and what the slabs go onto is the whole map either
+        way.
+        """
+        everything = ([] if self.islands is None
+                      else list(self.islands.geometry))
+        if not self.selected:
+            return everything, everything, []
+        picked = set(self.selected)
+        return ([everything[i] for i in self.selected], everything,
+                [g for i, g in enumerate(everything) if i not in picked])
 
     # -- axes helpers -------------------------------------------------------
     def _reset_axes(self, left_title: str, right_title: str) -> None:
@@ -485,10 +626,21 @@ class IslandBridgesTester(QMainWindow):
             xlim, ylim = self.ax_before.get_xlim(), self.ax_before.get_ylim()
         title = "Islands" if self.plan is None else (
             f"Islands + {len(self.plan.bridges)} bridge(s)")
+        if self.selected and self.islands is not None:
+            title += f"  ({len(self.selected)} of {len(self.islands)} selected)"
         self._style_axis(self.ax_before, title)
         if self.islands is not None and not self.islands.empty:
-            self.islands.plot(ax=self.ax_before, facecolor=ISLAND_COLOUR,
-                              edgecolor=EDGE_COLOUR, linewidth=0.5)
+            # Two plots rather than a colour column, so an island that is not
+            # selected is drawn exactly as it was before there was a selection.
+            picked = set(self.selected)
+            rest = self.islands.drop(index=list(picked), errors="ignore")
+            if not rest.empty:
+                rest.plot(ax=self.ax_before, facecolor=ISLAND_COLOUR,
+                          edgecolor=EDGE_COLOUR, linewidth=0.5)
+            if picked:
+                self.islands.loc[sorted(picked)].plot(
+                    ax=self.ax_before, facecolor=SELECT_COLOUR,
+                    edgecolor=SELECT_EDGE, linewidth=0.8, zorder=2)
         if self.plan is not None and self.plan.bridges:
             crs = self.islands.crs if self.islands is not None else None
             for bridge in self.plan.bridges:
@@ -535,7 +687,12 @@ class IslandBridgesTester(QMainWindow):
             return "No plan yet."
         braces = len(plan.braces)
         slender = len(plan.slender)
-        bits = [f"{len(plan.bridges)} bridge(s)"]
+        bits = []
+        total = len(self.islands) if self.islands is not None else plan.islands
+        if plan.islands < total:
+            bits.append(f"{plan.islands} of {total} island(s) bridged, "
+                        f"{total - plan.islands} held as obstacles")
+        bits.append(f"{len(plan.bridges)} bridge(s)")
         if braces:
             bits.append(f"{braces} brace(s)")
         if slender:
@@ -545,8 +702,10 @@ class IslandBridgesTester(QMainWindow):
                     f"landmass(es)")
         bits.append(f"{plan.land_added_mm2:.1f} mm² of land added")
         if plan.pairs_without_landing:
+            blocked = (f", {plan.pairs_blocked} of them with another island "
+                       "across the crossing" if plan.pairs_blocked else "")
             bits.append(f"{plan.pairs_without_landing} of {plan.pairs_in_reach} "
-                        "pairs in reach had no landing good enough")
+                        f"pairs in reach had no landing good enough{blocked}")
         if plan.unreachable:
             bits.append(f"{len(plan.unreachable)} island(s) still separate")
         return "; ".join(bits) + ". Inspect on the right, then save."
@@ -601,6 +760,8 @@ class IslandBridgesTester(QMainWindow):
         self.islands = gdf.explode(index_parts=False, ignore_index=True)
         self.plan = None
         self.result = None
+        self.selected = []          # the old indices meant the old islands
+        self.lbl_selection.setText("none selected")
         self.source_paths = [Path(p) for p in paths]
 
         self._draw_plan()
@@ -611,11 +772,14 @@ class IslandBridgesTester(QMainWindow):
         self.btn_run.setEnabled(True)
         self.btn_zoom.setEnabled(False)
         self.btn_save.setEnabled(False)
+        self.btn_select_all.setEnabled(True)
+        self.btn_clear_sel.setEnabled(False)
         loaded = (self.source_paths[0].name if len(self.source_paths) == 1
                   else f"{len(self.source_paths)} files")
         self.status.setText(
             f"Loaded {len(self.islands)} island(s) from {loaded}. "
-            "Set the width, then Plan Bridges.")
+            "Set the width, then Plan Bridges — or click islands first to "
+            "bridge only some.")
 
     def run(self) -> None:
         if self.islands is None or self.islands.empty:
@@ -629,13 +793,24 @@ class IslandBridgesTester(QMainWindow):
                 "A bridge needs a width and a span to be allowed: set both "
                 "above zero.")
             return
+        chosen, everything, obstacles = self._plan_inputs()
+        if len(chosen) < 2:
+            # Only reachable with exactly one island clicked: a bridge has two
+            # ends, and the empty selection means the whole map rather than
+            # nothing.
+            QMessageBox.warning(
+                self, "Nothing to plan",
+                "A bridge joins two islands, and one is selected. Select "
+                "another, or clear the selection to bridge the whole map.")
+            return
 
         self._set_busy(True)
         self.status.setText(
-            f"Planning bridges for {len(self.islands)} island(s) at "
-            f"{params.width_mm:g} mm wide …")
+            f"Planning bridges for {len(chosen)} island(s) at "
+            f"{params.width_mm:g} mm wide"
+            + (f", avoiding {len(obstacles)} more …" if obstacles else " …"))
         self._thread = QThread(self)
-        self._worker = PlanWorker(list(self.islands.geometry), params,
+        self._worker = PlanWorker(chosen, everything, obstacles, params,
                                   self.lagoon_check.isChecked())
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
@@ -653,6 +828,13 @@ class IslandBridgesTester(QMainWindow):
         self.btn_save.setEnabled(geom is not None)
         self.btn_zoom.setEnabled(bool(plan.bridges))
         if not plan.bridges:
+            if plan.pairs_blocked:
+                self.status.setText(
+                    f"No bridges: another island lies across the crossing for "
+                    f"{plan.pairs_blocked} of the {plan.pairs_in_reach} pair(s) "
+                    "in reach. Select the islands in the way as well, and they "
+                    "can be stepped through instead of crossed.")
+                return
             self.status.setText(
                 "No bridges: nothing was both within Max span and able to hold "
                 "a bridge of this width. Try a longer span, a narrower bridge, "
@@ -670,7 +852,8 @@ class IslandBridgesTester(QMainWindow):
         self.progress.setVisible(busy)
         self.progress.setRange(0, 0) if busy else self.progress.setRange(0, 1)
         for widget in (self.btn_import, self.btn_run, self.btn_save,
-                       self.btn_zoom, self.scale_spin, self.width_spin,
+                       self.btn_zoom, self.btn_select_all, self.btn_clear_sel,
+                       self.scale_spin, self.width_spin,
                        self.embed_spin, self.span_spin, self.aspect_spin,
                        self.sample_spin, self.angle_spin, self.anchor_pen_spin,
                        self.anchor_spin, self.per_pair_spin, self.hinge_spin,

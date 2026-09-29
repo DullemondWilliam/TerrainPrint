@@ -19,7 +19,14 @@ What this file guards is the harness being an honest front end for the lib:
   produced it.
 * **The report is the plan's own numbers**, not a second count that could drift
   away from what was actually placed.
+* **A selection asks a different question of the lib**, and the harness has to
+  ask all three parts of it: bridge *these*, avoid *those*, and union the slabs
+  onto the whole map.  Getting the third wrong loses every island left out of
+  the job, and the picture would not show it — the panel would simply frame
+  what survived.
 """
+
+import types
 
 import geopandas as gpd
 import pytest
@@ -56,15 +63,38 @@ def _loaded(islands=None):
     window.islands = gpd.GeoDataFrame(geometry=list(islands), crs=WORK_CRS)
     window.source_crs = WORK_CRS
     window.btn_run.setEnabled(True)
+    window.btn_select_all.setEnabled(True)
     return window
 
 
+def _click(window, x, y, ax=None, button=1):
+    """A left click at a point on the plan panel.
+
+    A stand-in for matplotlib's MouseEvent, carrying the four fields the
+    handler reads. The handler is the harness's, and matplotlib delivering
+    events is matplotlib's business.
+    """
+    return window._on_click(types.SimpleNamespace(
+        inaxes=window.ax_before if ax is None else ax,
+        xdata=x, ydata=y, button=button))
+
+
+def _click_island(window, index, **kw):
+    point = window.islands.geometry[index].representative_point()
+    return _click(window, point.x, point.y, **kw)
+
+
 def _plan(window):
-    """Run the lib synchronously, mirroring ``PlanWorker.run``."""
+    """Run the lib synchronously, mirroring ``PlanWorker.run``.
+
+    Through ``_plan_inputs`` for the same reason the worker goes through it:
+    the split into bridge / avoid / union-onto is the harness's answer to the
+    selection, and a test that made up its own would not be testing it.
+    """
     from lib.LIB_island_bridges import apply_bridges, plan_bridges
-    islands = list(window.islands.geometry)
-    plan = plan_bridges(islands, window.params())
-    geom = apply_bridges(islands, plan,
+    chosen, everything, obstacles = window._plan_inputs()
+    plan = plan_bridges(chosen, window.params(), obstacles=obstacles)
+    geom = apply_bridges(everything, plan,
                          keep_lagoons=window.lagoon_check.isChecked())
     window._on_done(plan, geom)
     return plan
@@ -254,6 +284,181 @@ class TestTheReport:
         window = _loaded()
         plan = _plan(window)
         assert f"{len(plan.bridges)} bridge" in window.ax_before.get_title()
+
+
+class TestSelecting:
+    """Clicking an island is how the job is narrowed."""
+
+    def test_nothing_is_selected_to_begin_with(self):
+        window = _loaded()
+        assert window.selected == []
+        assert window.lbl_selection.text() == "none selected"
+
+    def test_a_click_selects_the_island_under_it(self):
+        window = _loaded()
+        _click_island(window, 1)
+        assert window.selected == [1]
+        assert window.lbl_selection.text() == "1 selected"
+
+    def test_a_second_click_deselects_it(self):
+        window = _loaded()
+        _click_island(window, 1)
+        _click_island(window, 1)
+        assert window.selected == []
+
+    def test_a_click_on_open_water_changes_nothing(self):
+        window = _loaded()
+        _click_island(window, 0)
+        _click(window, ORIGIN[0] + 5.0 * MM, ORIGIN[1] + 30.0 * MM)
+        assert window.selected == [0]
+
+    def test_the_result_panel_is_not_a_place_to_click(self):
+        """It is the answer, not the question."""
+        window = _loaded()
+        point = window.islands.geometry[0].representative_point()
+        _click(window, point.x, point.y, ax=window.ax_after)
+        assert window.selected == []
+
+    def test_the_nav_toolbar_keeps_its_drag(self):
+        """Pan and zoom-to-rectangle start with this very event."""
+        window = _loaded()
+        window.mpl_toolbar.mode = "pan/zoom"
+        _click_island(window, 0)
+        assert window.selected == []
+
+    def test_only_the_left_button_selects(self):
+        window = _loaded()
+        _click_island(window, 0, button=3)
+        assert window.selected == []
+
+    def test_clicking_while_it_plans_is_ignored(self):
+        """The controls lock during a plan; the map has to lock with them."""
+        window = _loaded()
+        window._thread = object()
+        try:
+            _click_island(window, 0)
+        finally:
+            window._thread = None
+        assert window.selected == []
+
+    def test_select_all_and_clear_are_the_two_ends_of_it(self):
+        window = _loaded()
+        window.select_all()
+        assert window.selected == [0, 1, 2]
+        assert window.btn_clear_sel.isEnabled()
+        window.clear_selection()
+        assert window.selected == []
+        assert not window.btn_clear_sel.isEnabled()
+
+    def test_changing_the_selection_drops_the_plan(self):
+        """It is a different question, so the answer on screen is stale."""
+        window = _loaded()
+        _plan(window)
+        assert window.plan is not None
+        _click_island(window, 0)
+        assert window.plan is None
+        assert window.result is None
+        assert not window.btn_save.isEnabled()
+        assert "not yet planned" in window.ax_after.get_title()
+        assert "Plan Bridges" in window.status.text()
+
+    def test_importing_again_clears_the_selection(self, monkeypatch, tmp_path):
+        # The indices meant the old islands; keeping them would point at land
+        # that is no longer there.
+        window = _loaded()
+        window.select_all()
+        path = tmp_path / "one.geojson"
+        gpd.GeoDataFrame(geometry=[_square(0.0, 0.0)],
+                         crs=WORK_CRS).to_file(path, driver="GeoJSON")
+        monkeypatch.setattr(U.QFileDialog, "getOpenFileNames",
+                            lambda *a, **k: ([str(path)], ""))
+        window.import_geojson()
+        assert window.selected == []
+        assert window.lbl_selection.text() == "none selected"
+
+
+class TestTheSelectionReachesTheLib:
+    """Three lists, and the harness has to get all three right."""
+
+    def test_nothing_selected_is_the_whole_map(self):
+        window = _loaded()
+        chosen, everything, obstacles = window._plan_inputs()
+        assert len(chosen) == len(everything) == 3
+        assert obstacles == []
+
+    def test_a_selection_splits_them(self):
+        window = _loaded()
+        window.selected = [0, 2]
+        chosen, everything, obstacles = window._plan_inputs()
+        assert len(chosen) == 2
+        assert len(everything) == 3
+        assert len(obstacles) == 1
+        assert obstacles[0].equals(window.islands.geometry[1])
+
+    def test_an_unselected_island_is_an_obstacle_not_a_node(self):
+        # Two islands 2 mm apart with an islet in the water between them: the
+        # crossing is refused, exactly as the editor refuses it.
+        islet = box(ORIGIN[0] + 4.5 * MM, ORIGIN[1],
+                    ORIGIN[0] + 5.5 * MM, ORIGIN[1] + 4.0 * MM)
+        window = _loaded([_square(0.0, 0.0), _square(6.0, 0.0), islet])
+        window.selected = [0, 1]
+        plan = _plan(window)
+        assert plan.bridges == []
+        assert plan.pairs_blocked == 1
+        assert plan.islands == 2          # the islet was never a node
+
+    def test_selecting_the_islet_too_lets_them_hop_through_it(self):
+        islet = box(ORIGIN[0] + 4.5 * MM, ORIGIN[1],
+                    ORIGIN[0] + 5.5 * MM, ORIGIN[1] + 4.0 * MM)
+        window = _loaded([_square(0.0, 0.0), _square(6.0, 0.0), islet])
+        window.per_pair_spin.setValue(1)        # no braces to count past
+        window.select_all()
+        plan = _plan(window)
+        assert len(plan.bridges) == 2
+        assert plan.components_after == 1
+
+    def test_the_islands_left_out_survive_the_result(self):
+        """The slabs go onto the whole map, not onto the selection -- and this
+        is the one that would go unnoticed, since the panel simply frames
+        whatever is left."""
+        window = _loaded()
+        window.selected = [0, 1]
+        _plan(window)
+        from lib.LIB_island_merging import _polygons
+        assert len(_polygons(window.result)) == 2      # the bridged pair, and
+        assert window.result.contains(                 # the one left out
+            window.islands.geometry[2].representative_point())
+
+    def test_the_lagoon_toggle_still_reapplies_over_everything(self):
+        window = _loaded()
+        window.selected = [0, 1]
+        _plan(window)
+        window.lagoon_check.setChecked(False)
+        from lib.LIB_island_merging import _polygons
+        assert len(_polygons(window.result)) == 2
+
+    def test_one_island_selected_is_refused_before_launching(self):
+        window = _loaded()
+        window.selected = [1]
+        window.run()
+        assert window._thread is None
+        assert window.plan is None
+
+    def test_the_report_says_how_many_were_held_back(self):
+        window = _loaded()
+        window.selected = [0, 1]
+        _plan(window)
+        assert "2 of 3 island(s) bridged, 1 held as obstacles" in \
+            window.status.text()
+
+    def test_a_blocked_plan_names_the_way_out(self):
+        islet = box(ORIGIN[0] + 4.5 * MM, ORIGIN[1],
+                    ORIGIN[0] + 5.5 * MM, ORIGIN[1] + 4.0 * MM)
+        window = _loaded([_square(0.0, 0.0), _square(6.0, 0.0), islet])
+        window.selected = [0, 1]
+        _plan(window)
+        assert "another island lies across" in window.status.text().lower()
+        assert "Select the islands in the way" in window.status.text()
 
 
 class TestFraming:
