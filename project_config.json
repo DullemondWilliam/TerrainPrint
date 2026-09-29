@@ -34,8 +34,8 @@
   "seam": {
     "max_deviation_mm": 1.5,
     "min_angle_deg": 20.0,
-    "min_segment_mm": 0.3,
-    "nozzle_mm": 0.3,
+    "min_segment_mm": 0.4,
+    "nozzle_mm": 0.4,
     "smooth_iterations": 0,
     "spike_angle_deg": 20.0,
     "tolerance_mm": 0.2

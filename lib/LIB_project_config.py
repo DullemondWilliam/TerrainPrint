@@ -101,12 +101,16 @@ DEFAULTS = {
         # this are counted as unprintable in the report, and by default they
         # are also what gets collapsed. Reporting always uses this number, so
         # turning the filter down does not make the seam *look* printable.
-        "nozzle_mm": 0.3,
-        # Collapse seam runs shorter than this; defaults to nozzle_mm. DP
+        # 0.4 is the nozzle the rest of the pipeline already assumed:
+        # terrain.spacing_mm below, and the sampling rule in LIB_geotiff_clip,
+        # were both written for 0.4 while this said 0.3.
+        "nozzle_mm": 0.4,
+        # Collapse seam runs shorter than this; defaults to nozzle_mm, and
+        # kept equal to it here so the filter and the limit move together. DP
         # measures perpendicular deviation and so leaves tight zigzag intact;
         # this is what removes it. Set to 0 to skip the pass -- the report
         # still measures against nozzle_mm.
-        "min_segment_mm": 0.3,
+        "min_segment_mm": 0.4,
         # The sharpest corner worth printing: below this a seam vertex comes
         # out as a fragile spur on one province and a slot on the other. Used
         # for the report, so a seam is described against the printer and not
@@ -147,7 +151,7 @@ DEFAULTS = {
         # Straight fixed-width bridges between islands, in printed millimetres.
         # Unlike the island_editor buffer, whose neck width falls out of the gap
         # it is closing, these are a specification: every bridge is this wide.
-        # 1 mm is 8 km at 1:8,000,000 and 3.3 nozzle widths -- a causeway you
+        # 1 mm is 8 km at 1:8,000,000 and 2.5 nozzle widths -- a causeway you
         # can print and handle.
         "width_mm": 1.0,
         # How far each end is pushed past the coastline into the land, so the

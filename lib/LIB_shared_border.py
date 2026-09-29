@@ -22,8 +22,8 @@ What "printable" means here, in numbers
 ---------------------------------------
 At 1:8,000,000 the Ontario/Québec seam is 132 print-mm long and carries 235
 vertices.  Measured on that seam, **54.5% of its segments are shorter than
-0.4 mm** and 21% are shorter than 0.2 mm -- detail finer than a nozzle can lay
-down.  It is not merely wasted: sub-nozzle zigzag becomes ragged extrusion, and
+0.4 mm** and 21% are shorter than 0.2 mm -- detail finer than the 0.4 mm nozzle
+can lay down.  It is not merely wasted: sub-nozzle zigzag becomes ragged extrusion, and
 the needle-thin wedges it creates snap off a thin map tile.
 
 How much of that is the *short-segment* problem varies a lot by seam, which is
@@ -32,12 +32,18 @@ why the passes are separate knobs.  Measured at the shipped defaults:
 =========================  =============  ==============  ===============
 Seam                       Vertices       Sub-nozzle      Drift
 =========================  =============  ==============  ===============
-British Columbia/Alberta   768 -> 102     679 -> 0        0.19 mm
-Ontario/Quebec             235 -> 40       97 -> 0        0.19 mm
+British Columbia/Alberta   768 -> 102     732 -> 0        0.19 mm
+Ontario/Quebec             235 -> 40      127 -> 0        0.19 mm
 Manitoba/Ontario            51 -> 4         1 -> 0        0.12 mm
 Alberta/Saskatchewan        35 -> 2         2 -> 0        0.01 mm
 New Brunswick/Nova Scotia   19 -> 3        18 -> 0        0.17 mm
 =========================  =============  ==============  ===============
+
+The sub-nozzle column is measured against the shipped 0.4 mm nozzle, so it
+counts more than it did at 0.3 mm -- 732 of the Rockies seam's 768 segments
+rather than 679.  The vertex and drift columns are unchanged: the conditioning
+removes the same detail, and the nozzle only decides how much of it was
+unprintable in the first place.
 
 The Rockies seam is almost entirely sub-nozzle chatter; the Manitoba/Ontario one
 has just one short segment in fifty and is thinned by the tolerance pass alone.

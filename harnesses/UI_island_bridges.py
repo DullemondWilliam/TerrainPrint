@@ -156,7 +156,7 @@ class IslandBridgesTester(QMainWindow):
         self.width_spin = self._spin(
             0.0, 50.0, defaults.width_mm, 3,
             "Bridge width — the specification, not a consequence.\nEvery bridge "
-            "comes out exactly this wide. 1 mm is 3.3 nozzle\nwidths, about the "
+            "comes out exactly this wide. 1 mm is 2.5 nozzle\nwidths, about the "
             "thinnest run worth printing.")
         self.embed_spin = self._spin(
             0.0, 50.0, defaults.embed_mm, 3,

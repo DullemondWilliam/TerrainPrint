@@ -20,8 +20,8 @@ listed in the plan::
 
 All lengths are **print-mm** and convert through ``print.scale`` at the moment
 of use, as in :class:`lib.LIB_shared_border.SeamParams`.  At 1:8,000,000 a
-1 mm bridge is 8 km of ground -- a causeway, not a footbridge -- and 3.3 times
-the 0.3 mm nozzle, which is about the thinnest run worth printing.  Geometry is
+1 mm bridge is 8 km of ground -- a causeway, not a footbridge -- and 2.5 times
+the 0.4 mm nozzle, which is about the thinnest run worth printing.  Geometry is
 expected in a projected metre CRS (the project uses EPSG:3347).
 
 Two questions, two different answers

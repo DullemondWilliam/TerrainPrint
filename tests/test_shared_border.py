@@ -39,9 +39,17 @@ ORIGIN = (7_000_000.0, 2_000_000.0)
 
 
 def _params(**kw):
-    defaults = dict(scale=SCALE, tolerance_mm=0.2, min_segment_mm=0.3,
-                    min_angle_deg=20.0, smooth_iterations=0,
-                    max_deviation_mm=1.5)
+    """The shipped conditioning, with whatever a test wants to move.
+
+    ``min_segment_mm`` is deliberately *not* pinned here. It defaults to
+    ``nozzle_mm``, and pinning the filter while leaving the limit to the config
+    is what silently decoupled the two when the project moved to a 0.4 mm
+    nozzle: the filter went on collapsing runs under 0.3 mm while the report
+    began counting everything under 0.4 mm as unprintable, which is the
+    behaviour the lib documents and not a thing to hide from.
+    """
+    defaults = dict(scale=SCALE, tolerance_mm=0.2, min_angle_deg=20.0,
+                    smooth_iterations=0, max_deviation_mm=1.5)
     defaults.update(kw)
     return SeamParams(**defaults)
 
@@ -271,11 +279,32 @@ class TestPrintability:
         dp_only = simplify_shared_border(a, b, _params(tolerance_mm=0.0,
                                                        min_segment_mm=0.0,
                                                        min_angle_deg=0.0))
-        with_spacing = simplify_shared_border(a, b, _params(tolerance_mm=0.0,
-                                                            min_segment_mm=0.3,
-                                                            min_angle_deg=0.0))
+        # The filter set to the printer's own limit, which is what clears the
+        # report: asking for less than the limit cannot, by construction.
+        nozzle = _params().nozzle_mm
+        at_the_limit = simplify_shared_border(
+            a, b, _params(tolerance_mm=0.0, min_segment_mm=nozzle,
+                          min_angle_deg=0.0))
         assert dp_only.short_segments_after > 50
-        assert with_spacing.short_segments_after == 0
+        assert at_the_limit.short_segments_after == 0
+
+    def test_a_filter_below_the_limit_does_not_clear_the_report(self):
+        """Turning the filter down must not make a seam *look* printable.
+
+        The separation the lib insists on: the passes are driven by the filter
+        strengths, the counts are measured against the printer limits. Collapse
+        runs under three quarters of the nozzle and the ones between there and
+        the nozzle are still unprintable -- and must still be counted. This is
+        the guard the suite was missing, and its absence is why moving the
+        nozzle to 0.4 mm first showed up as a test failure rather than as the
+        reported-versus-filtered distinction working exactly as written.
+        """
+        a, b = _pair(_zigzag_seam(amplitude_mm=0.02, step_mm=0.1))
+        nozzle = _params().nozzle_mm
+        detuned = simplify_shared_border(
+            a, b, _params(tolerance_mm=0.0, min_segment_mm=nozzle * 0.75,
+                          min_angle_deg=0.0))
+        assert detuned.short_segments_after > 0
 
     def test_drift_is_reported_and_bounded(self):
         a, b = _pair(_zigzag_seam(amplitude_mm=0.05))
