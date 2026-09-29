@@ -154,6 +154,15 @@ tools. (The `app` window already offers a combined, undoable cleanup editor via
 - **FR-3.2 Remove Selected** — drop the hand-picked selected parts.
 - **FR-3.3 Remove Small** — drop every part below **Min area (km²)** using
   `is_below_area` / `remove_small_islands`.
+- **FR-3.3a Amputate** — drop every piece of land narrower than **Min width**
+  via `printable(document, params)`: the morphological opening the thin-feature
+  detector already computes, returned as geometry instead of as a report, so
+  what the province viewer marks in red is exactly what this takes. Reaches the
+  necks *inside* a landmass, which no island-at-a-time removal can. Refuse by
+  name when the whole province is below the width, and — because an opening
+  reorders the vertices of a shape it did not change — treat a geometrically
+  equal result as no edit rather than letting the WKB comparison in `_apply`
+  put a no-op on the undo stack (FR-2.13).
 - **FR-3.4 Remove Lakes** — strip interior rings via `remove_lakes` applied to
   the **whole document**, preserving genuine in-lake islands through the lib's
   dissolve.
@@ -161,7 +170,9 @@ tools. (The `app` window already offers a combined, undoable cleanup editor via
   the print scale at the moment of use: **Buffer (mm)** for merge (default 0.25),
   **Width (mm)** and **Max span (mm)** for bridging (defaults 1.0 and 5.0; the
   rest of `BridgeParams` keeps its `bridges.*` defaults and is turned in
-  `harnesses/UI_island_bridges.py`),
+  `harnesses/UI_island_bridges.py`), **Min width (mm)** for amputation (default
+  `thin.width_mm`, 1.0 — its own knob rather than the bridge width, because one
+  is a limit you measure against and the other a size you build to),
   **Brush (mm)** for both freehand strokes (default 0.125, a **width** across the
   stroke, not a radius) and **Min area (mm²)** for removal (default 0.02). The
   defaults are what the tool previously held in km, read at 1:8 000 000 — 2 km,
@@ -291,6 +302,9 @@ tools. (The `app` window already offers a combined, undoable cleanup editor via
   - remove selected / remove small: explode → keep the parts that are not picked
     / not below the threshold → reassemble a MultiPolygon.
   - remove lakes: `remove_lakes(document)` directly.
+  - amputate: `printable(document, ThinParams(scale, width_mm))` directly, then
+    re-measure with `thin_features` so the report can admit the slivers that
+    survive at sharp corners instead of claiming a perfect cut.
   - scores: `outline_mm` / `land_mm2` on every state change, and
     `score_shapes(original, document, params)` on demand. The baseline is the
     document as imported and is set in exactly one place, so undo walks back

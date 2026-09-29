@@ -32,7 +32,7 @@ import shapely
 from shapely.geometry import Polygon, box
 
 from lib.LIB_thin_features import (WORST_KEPT, ThinParams, ThinReport,
-                                   thin_features)
+                                   printable, thin_features)
 
 
 class ThinTestCase(unittest.TestCase):
@@ -210,6 +210,72 @@ class TestTheReport(ThinTestCase):
         report = thin_features(shapely.union_all(teeth))
         self.assertGreater(report.patches, WORST_KEPT)
         self.assertEqual(len(report.worst), WORST_KEPT)
+
+
+class TestPrintable(ThinTestCase):
+    """The other half: removing the thin land rather than reporting it."""
+
+    def test_it_is_the_complement_of_the_thin_land(self):
+        """``thin_features(g).thin == g - printable(g)``, exactly.
+
+        The two are one operation read two ways, and a caller that highlights
+        with one and cuts with the other has to be able to rely on that: what
+        the map marked in red is what the button takes.
+        """
+        land = self.necked(0.4)
+        kept = printable(land)
+        thin = thin_features(land).thin
+        self.assertAlmostEqual(land.difference(kept).area, thin.area, places=3)
+
+    def test_a_clean_province_survives_whole(self):
+        square = self.square(0.0, 0.0, 10.0)
+        self.assertAlmostEqual(printable(square).area, square.area, places=3)
+        self.assertTrue(printable(square).equals(square))
+
+    def test_a_neck_is_cut(self):
+        from lib.LIB_island_merging import _polygons
+        land = self.necked(0.4)
+        self.assertEqual(len(_polygons(land)), 1)
+        self.assertEqual(len(_polygons(printable(land))), 2)
+
+    def test_an_islet_below_the_width_comes_back_empty(self):
+        """It must be possible to tell, not merely to get nothing useful."""
+        self.assertTrue(printable(self.square(0.0, 0.0, 0.5)).is_empty)
+
+    def test_what_is_left_has_nothing_thin_in_it(self):
+        report = thin_features(printable(self.necked(0.4)))
+        self.assertTrue(report.clean)
+
+    def test_it_is_settled_after_one_pass(self):
+        once = printable(self.necked(0.4))
+        twice = printable(once)
+        self.assertAlmostEqual(twice.area, once.area, places=3)
+
+    def test_no_width_is_a_no_op(self):
+        land = self.necked(0.4)
+        self.assertIs(printable(land, ThinParams(width_mm=0.0)), land)
+
+    def test_nothing_in_nothing_out(self):
+        self.assertIsNone(printable(None))
+        self.assertTrue(printable(Polygon()).is_empty)
+
+    def test_invalid_geometry_is_repaired_rather_than_refused(self):
+        mm = self.MM
+        bad = Polygon([(0, 0), (4 * mm, 0), (4 * mm, 4 * mm), (0, 4 * mm),
+                       (0, 2.05 * mm), (9 * mm, 2.0 * mm), (0, 1.95 * mm)])
+        self.assertFalse(bad.is_valid)
+        kept = printable(bad)
+        self.assertTrue(kept.is_valid)
+        self.assertGreater(kept.area, 0.0)
+
+    def test_it_follows_the_print_scale(self):
+        # A 0.9 mm neck is thin at 1:8M and comfortable at 1:4M.
+        from lib.LIB_island_merging import _polygons
+        land = self.necked(0.9)
+        self.assertEqual(
+            len(_polygons(printable(land, ThinParams(scale=8_000_000)))), 2)
+        self.assertEqual(
+            len(_polygons(printable(land, ThinParams(scale=4_000_000)))), 1)
 
 
 class TestPrintScale(ThinTestCase):

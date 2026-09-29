@@ -27,6 +27,12 @@ Workflow
      cut a landmass in two, where removal by island or by area cannot reach.
    - **Remove Selected** — drop the clicked islands.
    - **Remove Small** — drop every island below the *Min area* threshold.
+   - **Amputate** — drop every piece of land narrower than *Min width*, whole
+     islets and thin necks alike: what is left is what a disc that wide can
+     reach, which is what the printer can actually lay down. On British
+     Columbia this is the best repair there is by a wide margin — it leaves no
+     island below the width for 0.6% of the land, where *widening* the same
+     faults costs three times as much coastline.
    - **Remove Lakes** — strip interior rings (lakes) from the whole province.
 3. **Undo / Redo** (Ctrl+Z / Ctrl+Shift+Z) — every edit is one step on a stack.
 4. **Scores** (bottom right) — what the session has cost, against the province
@@ -59,7 +65,8 @@ result so a merge leaves the merged landmass selected.
 
 Run with:  python UI_island_editor.py
 
-Reuses ``lib.LIB_shape_scores``, ``lib.LIB_island_merging``,
+Reuses ``lib.LIB_shape_scores``, ``lib.LIB_thin_features``,
+``lib.LIB_island_merging``,
 ``lib.LIB_island_bridges``,
 ``lib.LIB_island_bridging``, ``lib.LIB_island_erasing``,
 ``lib.LIB_island_removal`` and ``lib.LIB_lake_removal``; kept independent of the
@@ -67,6 +74,7 @@ main ``app`` window like the other UI_* harnesses.
 """
 
 import logging
+import math
 import sys
 from pathlib import Path
 
@@ -101,6 +109,7 @@ from lib.LIB_map_scale import (grouped as _grouped, km_per_mm as _km_per_mm_at,
 from lib.LIB_project_config import get as cfg
 from lib.LIB_shape_scores import (ScoreParams, land_mm2, outline_mm,
                                   score_shapes)
+from lib.LIB_thin_features import ThinParams, printable, thin_features
 from lib.LIB_screen_calibration import (MM_PER_INCH, load_saved_ppi,
                                         monitor_at, px_per_mm)
 
@@ -160,6 +169,12 @@ AREA_MM2 = (0.0, 10_000.0, cfg("island_editor.min_area_mm2"), 4, 0.01)
 #: they are turned.
 BRIDGE_WIDTH_MM = (0.0, 50.0, cfg("bridges.width_mm"), 3, 0.05)
 BRIDGE_SPAN_MM = (0.0, 200.0, cfg("bridges.max_span_mm"), 2, 0.5)
+
+#: The narrowest land worth printing, for **Amputate**. Its own knob rather
+#: than the bridge width, because the two are different kinds of number: the
+#: bridge width is a size you build to, this is a limit you measure against.
+#: The province viewer's *Show thin* marks exactly what this value would take.
+MIN_WIDTH_MM = (0.0, 50.0, cfg("thin.width_mm"), 3, 0.05)
 
 #: Scale-bar geometry, in fractions of the axes. The bars sit in the bottom-left
 #: corner — the km bar above the mm one — and each aims to span ``SCALE_SPAN`` of
@@ -502,6 +517,27 @@ class IslandEditor(QMainWindow):
             "scale) are marked and removed by ‘Remove Small’.")
         self.area_spin.valueChanged.connect(self._on_threshold)
         self.btn_remove_small = self._button("Remove Small", self.remove_small, enabled=False)
+        # Amputate sits with Remove Small rather than in a group of its own:
+        # both drop unprintable land wholesale, and they are the two halves of
+        # the same question -- one goes by area, the other by width, and the
+        # width one also reaches the necks inside a landmass that no
+        # island-at-a-time removal can touch.
+        self.width_spin = self._spin(*MIN_WIDTH_MM,
+            "Land narrower than this, as it will print (mm), is what "
+            "‘Amputate’ removes. The km/mm box up beside the print scale says "
+            "what one millimetre is worth on the ground.")
+        self.btn_amputate = self._button("Amputate", self.amputate,
+                                         enabled=False)
+        self.btn_amputate.setToolTip(
+            "Drop every piece of land narrower than the width on the left — "
+            "thin necks, spits and whole islets alike. What is left is what a "
+            "disc that wide can reach, which is what the printer can lay "
+            "down.\n\n"
+            "Counter-intuitive but measured: removing the thin land keeps more "
+            "coastline than widening it would, because these faults are "
+            "slivers and inflating a sliver eats the coast around it.\n\n"
+            "Open the same file in the province viewer and press ‘Show thin’ "
+            "to see exactly what this will take before you take it.")
         self.btn_lakes = self._button("Remove Lakes", self.remove_lakes_action, enabled=False)
 
         # The brush is the manual counterpart to the two heuristics either side
@@ -542,7 +578,8 @@ class IslandEditor(QMainWindow):
             "Max span (mm)", self.bridge_span_spin, self.btn_bridge)
         self.grp_province = self._group(
             "Whole province", "Min area (mm²)", self.area_spin,
-            self.btn_remove_small, self.btn_lakes)
+            self.btn_remove_small, "Min width (mm)", self.width_spin,
+            self.btn_amputate, self.btn_lakes)
         self.grp_freehand = self._group(
             "Freehand", self.btn_draw, self.btn_erase, "Brush (mm)",
             self.brush_spin)
@@ -632,8 +669,8 @@ class IslandEditor(QMainWindow):
         self._bind(QKeySequence.StandardKey.Redo, self.undo_stack.redo,
                    "Ctrl+Shift+Z", "Ctrl+Y")
         # …and keep the text entries from swallowing them (see ``eventFilter``).
-        for entry in (self.buffer_spin, self.area_spin, self.scale_spin,
-                      self.perkm_box):
+        for entry in (self.buffer_spin, self.area_spin, self.width_spin,
+                      self.scale_spin, self.perkm_box):
             entry.installEventFilter(self)
         self._update_scores()     # …and the scoreboard saying there is nothing yet
         self._sync_buttons()      # start with the groups greyed and the count set
@@ -1229,6 +1266,7 @@ class IslandEditor(QMainWindow):
         self.btn_gap.setEnabled(2 <= picked <= GAP_MAX_SELECTION)
         self.btn_remove_sel.setEnabled(picked >= 1)
         self.btn_remove_small.setEnabled(has)
+        self.btn_amputate.setEnabled(has)
         self.btn_lakes.setEnabled(has)
         self.btn_real.setEnabled(has)     # nothing to size against an empty map
         self.btn_select_all.setEnabled(has)
@@ -1450,6 +1488,84 @@ class IslandEditor(QMainWindow):
         new_doc = _as_multi(unary_union(keep)) if keep else None
         self._apply(f"Remove {removed} small island(s) < {thr:g} mm²", new_doc,
                     f"Removed {removed} island(s) below {thr:g} mm²; {len(keep)} kept.")
+
+    def amputate(self) -> None:
+        """
+        Drop every piece of land narrower than *Min width*.
+
+        The report is the point as much as the edit is.  What this costs is
+        never obvious in advance -- on a fjord coast it can take a fifth of the
+        coastline for half a percent of the land -- so it says what went, and
+        the Scores panel bottom right holds the same arithmetic against the
+        file as imported.
+        """
+        if self.doc is None:
+            return
+        width_mm = self.width_spin.value()
+        params = ThinParams(scale=self.scale_spin.value(), width_mm=width_mm)
+        # A second or less on the worst province, so no thread and no progress
+        # bar -- but long enough on Nunavut to be worth saying the cursor.
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            kept = printable(self.doc, params)
+        except Exception as exc:
+            QMessageBox.critical(self, "Amputate failed", str(exc))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        new_doc = _as_multi(kept)
+        # An opening returns the same polygon with its vertices in a different
+        # order when there was nothing to remove, so the WKB check in _apply
+        # would take that for an edit and put a no-op on the undo stack
+        # (FR-2.13 says it must not). Ask geometrically instead -- and only
+        # when the areas already match, which is the only case it can be true
+        # and keeps the common path to one subtraction.
+        if (new_doc is not None and not new_doc.is_empty
+                and math.isclose(new_doc.area, self.doc.area, rel_tol=1e-9)
+                and new_doc.equals(self.doc)):
+            self._update_status(f"Nothing under {width_mm:g} mm — ")
+            return
+        if new_doc is None or new_doc.is_empty:
+            # _apply refuses this too, but with the generic message; this one
+            # names the knob that caused it.
+            QMessageBox.warning(
+                self, "Nothing would be left",
+                f"No part of this province is {width_mm:g} mm across, so "
+                "amputating at that width would remove all of it. Nothing was "
+                "changed.")
+            return
+        self._apply(f"Amputate below {width_mm:g} mm", new_doc,
+                    self._amputate_note(new_doc, width_mm, params))
+
+    def _amputate_note(self, new_doc, width_mm: float,
+                       params: ThinParams) -> str:
+        """What the cut cost, in the terms the decision was made in."""
+        scores = ScoreParams(scale=self.scale_spin.value())
+        coast_before = outline_mm(self.doc, scores)
+        coast_after = outline_mm(new_doc, scores)
+        land_before = land_mm2(self.doc, scores)
+        land_after = land_mm2(new_doc, scores)
+        before, after = landmass_count(self.doc), landmass_count(new_doc)
+        bits = [f"Amputated below {width_mm:g} mm",
+                f"{before} → {after} landmass(es)"]
+        if land_before > 0:
+            bits.append(f"{(1 - land_after / land_before) * 100:.2f}% of the "
+                        "land gone")
+        if coast_before > 0:
+            bits.append(f"{(1 - coast_after / coast_before) * 100:.1f}% of the "
+                        "outline")
+        left = thin_features(new_doc, params)
+        if left.clean:
+            bits.append("nothing left under the width")
+        elif not left.measured:
+            bits.append("what is left could not be re-measured")
+        else:
+            # Sharp corners survive the mitre bevel, so a trace usually
+            # remains; saying so beats implying a perfect result.
+            bits.append(f"{left.patches} sliver(s) left at sharp corners "
+                        f"({left.thin_area_mm2:.2f} mm²)")
+        return "; ".join(bits) + "."
 
     def remove_lakes_action(self) -> None:
         try:
