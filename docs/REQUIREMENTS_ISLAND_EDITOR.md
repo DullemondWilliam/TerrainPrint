@@ -221,6 +221,24 @@ tools. (The `app` window already offers a combined, undoable cleanup editor via
   like FR-3.8. A stroke covering the whole document returns an **empty**
   geometry, which FR-3.6 refuses with a warning, leaving the document unchanged.
 
+### Scores (bottom right, not an operation — it changes nothing)
+
+- **FR-3.9** Report, against the document **as imported**: total outline
+  (print-mm), land area (print-mm²), and the share of the printed land the two
+  versions agree on. The first two are arithmetic and follow every edit; the
+  third rasterises both at **a quarter of the nozzle width** and sits behind
+  **Recalculate**.
+- **FR-3.10** The rasterised reading is *held*, and retired the moment the
+  document or the print scale moves. A figure that no longer describes what is
+  on screen must never be shown as though it did — a blank is better.
+- **FR-3.11** "Could not be measured" is never rendered as agreement, and a
+  coarsened pixel is declared as coarsened.
+- **FR-3.12** Outline is the whole boundary: outer coastline, any shared land
+  border, and every lake shore. For a province with a straight border that is
+  not all coastline (23% of British Columbia's boundary is the Alberta and
+  Yukon line), but the part that cannot change cancels out of a
+  before-and-after, so within one session it is the right measure.
+
 ## 5. Undo / redo
 
 - **FR-4.1** One `QUndoCommand` per operation on a single `QUndoStack`,
@@ -273,6 +291,10 @@ tools. (The `app` window already offers a combined, undoable cleanup editor via
   - remove selected / remove small: explode → keep the parts that are not picked
     / not below the threshold → reassemble a MultiPolygon.
   - remove lakes: `remove_lakes(document)` directly.
+  - scores: `outline_mm` / `land_mm2` on every state change, and
+    `score_shapes(original, document, params)` on demand. The baseline is the
+    document as imported and is set in exactly one place, so undo walks back
+    through it and saving does not move it.
   - draw bridge: `draw_bridge(document, stroke_points, brush_km)` directly —
     the stroke's polyline buffered by half the brush width, unioned on.
   - erase: `erase_stroke(document, stroke_points, brush_km)` directly — the same

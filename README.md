@@ -78,6 +78,7 @@ flowchart TD
 │   ├── LIB_island_merging.py          # Merge two islands with a connecting neck of land
 │   ├── LIB_island_removal.py          # Small-island detection and removal
 │   ├── LIB_lake_removal.py            # Interior ring (lake) removal helper
+│   ├── LIB_shape_scores.py            # Score an edited province against the original
 │   ├── LIB_stl_reconcile.py           # Recover a printed STL's metres→print-mm frame
 │   ├── LIB_terrain_trim.py            # Clip a DEMto3D slab STL to the province coastline
 │   └── LIB_thin_features.py           # Find land too narrow to print (necks, spits, islets)

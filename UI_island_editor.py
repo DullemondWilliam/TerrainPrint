@@ -29,7 +29,13 @@ Workflow
    - **Remove Small** — drop every island below the *Min area* threshold.
    - **Remove Lakes** — strip interior rings (lakes) from the whole province.
 3. **Undo / Redo** (Ctrl+Z / Ctrl+Shift+Z) — every edit is one step on a stack.
-4. **Save GeoJSON …** — write the province back out, CRS preserved.
+4. **Scores** (bottom right) — what the session has cost, against the province
+   as it was imported: how much **coast** is left, how much **land**, and how
+   much of the print would still **agree** with the original.  The first two
+   are arithmetic and follow every edit; the third rasterises both versions at
+   a quarter of the nozzle width and sits behind **Recalculate**, because
+   running it on every brush stroke would make the editor feel slow.
+5. **Save GeoJSON …** — write the province back out, CRS preserved.
 
 Everything is sized **as it will print**. An editable **Print scale**
 (1:8 000 000 to start) sits in the top row with a read-only **km/mm** readout
@@ -53,7 +59,8 @@ result so a merge leaves the merged landmass selected.
 
 Run with:  python UI_island_editor.py
 
-Reuses ``lib.LIB_island_merging``, ``lib.LIB_island_bridges``,
+Reuses ``lib.LIB_shape_scores``, ``lib.LIB_island_merging``,
+``lib.LIB_island_bridges``,
 ``lib.LIB_island_bridging``, ``lib.LIB_island_erasing``,
 ``lib.LIB_island_removal`` and ``lib.LIB_lake_removal``; kept independent of the
 main ``app`` window like the other UI_* harnesses.
@@ -92,6 +99,8 @@ from lib.LIB_map_scale import (grouped as _grouped, km_per_mm as _km_per_mm_at,
                                scale_bars, to_km2 as _to_km2_at,
                                to_km as _to_km_at, to_mm as _to_mm_at)
 from lib.LIB_project_config import get as cfg
+from lib.LIB_shape_scores import (ScoreParams, land_mm2, outline_mm,
+                                  score_shapes)
 from lib.LIB_screen_calibration import (MM_PER_INCH, load_saved_ppi,
                                         monitor_at, px_per_mm)
 
@@ -318,6 +327,14 @@ class IslandEditor(QMainWindow):
 
         # -- state ----------------------------------------------------------
         self.doc = None                    # the province, one MultiPolygon (EPSG:3347)
+        #: The province as it was imported. The Scores panel measures against
+        #: this and nothing else -- saving does not move the baseline, because
+        #: the question the panel answers is "what have I given up?", and that
+        #: is asked of the source file however many times it has been written.
+        self.original_doc = None
+        self._scores = None                # last rasterised comparison
+        self._scores_doc = None            # document it was measured on
+        self._scores_scale = None          # print scale it was measured at
         self.parts: list = []              # the document's polygon parts (islands)
         self.selected: list[int] = []      # indices into ``parts``
         self.source_path: Path | None = None
@@ -540,9 +557,44 @@ class IslandEditor(QMainWindow):
         root.addWidget(self.caption)
         root.addWidget(self.canvas, stretch=1)
 
+        # -- bottom row: the running commentary, then the scoreboard ---------
+        # The status line says what just happened; the panel beside it says
+        # where the province has got to overall. They answer different
+        # questions, so they sit side by side rather than one replacing the
+        # other, and the scores go right because that is where a total belongs.
+        self.lbl_scores = QLabel()
+        self.lbl_scores.setToolTip(
+            "Against the province as imported.\n\n"
+            "Coast is the whole boundary — the outer coastline, any land "
+            "border it shares with a neighbour, and every lake shore. For a "
+            "province with a straight border that is not all coastline (23% "
+            "of British Columbia's is the Alberta and Yukon line), but the "
+            "part that cannot change cancels out of a before-and-after.\n\n"
+            "Agreement rasterises both versions at a quarter of the nozzle "
+            "width and compares them cell by cell, over the land they cover "
+            "between them. 99% is an edit the printer could not show you; "
+            "92% has visibly moved the coast.")
+        font = self.lbl_scores.font()
+        font.setStyleHint(font.StyleHint.Monospace)
+        font.setFamily("Consolas")
+        self.lbl_scores.setFont(font)       # so the columns line up
+        self.btn_recalc = self._button("Recalculate", self.recalculate_scores,
+                                       enabled=False)
+        self.btn_recalc.setToolTip(
+            "Rasterise both versions and compare them. Coast and land above "
+            "are arithmetic and always current; this one reads every cell of "
+            "the province at a quarter of the nozzle width — a fifth of a "
+            "second on Nunavut, and more at a finer print scale — so it is "
+            "asked for rather than run after every stroke.")
+        self.grp_scores = self._group("Scores", self.lbl_scores,
+                                      self.btn_recalc)
+
+        bottom = QHBoxLayout()
         self.status = QLabel("No file loaded.")
         self._emphasise(self.status)
-        root.addWidget(self.status)
+        bottom.addWidget(self.status, stretch=1)
+        bottom.addWidget(self.grp_scores)
+        root.addLayout(bottom)
 
         # Only the bridge planner is slow enough to need this; it is hidden
         # whenever nothing is running, so the window looks as it always did.
@@ -583,6 +635,7 @@ class IslandEditor(QMainWindow):
         for entry in (self.buffer_spin, self.area_spin, self.scale_spin,
                       self.perkm_box):
             entry.installEventFilter(self)
+        self._update_scores()     # …and the scoreboard saying there is nothing yet
         self._sync_buttons()      # start with the groups greyed and the count set
         self._update_title()
 
@@ -764,6 +817,10 @@ class IslandEditor(QMainWindow):
     def _on_print_scale(self, _denom: int) -> None:
         """Carry a new print scale to everything that reads it."""
         self.perkm_box.setText(self._perkm_text())
+        # Every figure in the Scores panel is a printed one, so a new reduction
+        # restates the cheap rows and retires the rasterised one.
+        self._update_scores()
+        self._sync_buttons()
         # Every editing parameter is now worth a different ground amount, which
         # moves the *Min area* mask — so the map needs replotting, not just the
         # scale bars repositioning. ``_redraw`` asks for the draw either way.
@@ -1180,6 +1237,10 @@ class IslandEditor(QMainWindow):
         # selects everything, and inverting everything clears it.
         self.btn_invert.setEnabled(has)
         self.btn_save.setEnabled(has)
+        self.grp_scores.setEnabled(has)
+        # Live while there is something to measure and the last reading no
+        # longer describes it, so the button itself says "this is stale".
+        self.btn_recalc.setEnabled(has and not self._scores_fresh())
         self.lbl_count.setText(f"{picked} selected" if picked else "none selected")
 
     # -- operations ---------------------------------------------------------
@@ -1399,6 +1460,90 @@ class IslandEditor(QMainWindow):
         self._apply("Remove lakes", _as_multi(stripped),
                     "Removed lakes (interior rings).")
 
+    # -- scores -------------------------------------------------------------
+    def _score_params(self) -> ScoreParams:
+        """How the comparison is measured, at the print scale on the toolbar."""
+        return ScoreParams(scale=self.scale_spin.value())
+
+    def _scores_fresh(self) -> bool:
+        """Whether the held comparison still describes what is on screen.
+
+        The document is held by reference rather than by id, as the gap cache
+        is: a freed snapshot could otherwise alias a new one into a stale hit.
+        The scale joins the key because every figure in the panel is a printed
+        one -- the same province at a different reduction is a different answer.
+        """
+        if self.doc is None:
+            return False
+        if self.doc is self.original_doc:
+            return True         # nothing to compare; the panel says so
+        return (self._scores is not None
+                and self._scores_doc is self.doc
+                and self._scores_scale == self.scale_spin.value())
+
+    def recalculate_scores(self) -> None:
+        """Rasterise both versions and compare them."""
+        if self.doc is None or self.original_doc is None:
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            self._scores = score_shapes(self.original_doc, self.doc,
+                                        self._score_params())
+        except Exception as exc:
+            QMessageBox.critical(self, "Scores failed", str(exc))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        self._scores_doc = self.doc
+        self._scores_scale = self.scale_spin.value()
+        self._update_scores()
+        self._sync_buttons()
+
+    def _update_scores(self) -> None:
+        """Redraw the panel: the cheap rows always, the rasterised one if held."""
+        if self.doc is None or self.original_doc is None:
+            self.lbl_scores.setText("Nothing imported.")
+            return
+        params = self._score_params()
+        coast_before = outline_mm(self.original_doc, params)
+        coast_after = outline_mm(self.doc, params)
+        land_before = land_mm2(self.original_doc, params)
+        land_after = land_mm2(self.doc, params)
+        # One decimal throughout: a quarter-millimetre islet is a real edit
+        # and rounding to whole millimetres would report it as no change at all.
+        lines = [
+            f"Coast {coast_before:10,.1f} → {coast_after:10,.1f} mm  "
+            f"{self._share(coast_after, coast_before)}",
+            f"Land  {land_before:10,.1f} → {land_after:10,.1f} mm² "
+            f"{self._share(land_after, land_before)}",
+            self._agreement_line(),
+        ]
+        self.lbl_scores.setText("\n".join(lines))
+
+    @staticmethod
+    def _share(after: float, before: float) -> str:
+        """``after`` against ``before`` as a signed percentage."""
+        if before <= 0:
+            return "     —"
+        return f"{(after / before - 1.0) * 100:+6.1f}%"
+
+    def _agreement_line(self) -> str:
+        """The rasterised row, or why there is not one yet."""
+        if self.doc is self.original_doc:
+            # True on import and true again after undoing back to it, so it
+            # says what it means rather than "nothing edited yet".
+            return "Agree      identical to the original"
+        if not self._scores_fresh():
+            return "Agree      — press Recalculate"
+        scores = self._scores
+        if not scores.measured:
+            # Never shown as agreement: not measured is not unchanged.
+            return "Agree      could not be measured"
+        pixel = (f"{scores.pixel_mm:g} mm/px"
+                 + (" coarsened" if scores.coarsened else ""))
+        return (f"Agree {scores.agreement * 100:8.2f}%  @ {pixel}   "
+                f"+{scores.added_mm2:,.1f} / −{scores.lost_mm2:,.1f} mm²")
+
     def _apply(self, text: str, new_doc, ok_msg: str) -> None:
         """Validate an operation's result and push it as one undoable command."""
         if new_doc is None or new_doc.is_empty:
@@ -1436,6 +1581,9 @@ class IslandEditor(QMainWindow):
         self.parts = _polygons(doc)
         self.selected = [i for i in selected if 0 <= i < len(self.parts)]
         self._redraw(preserve_view=preserve_view)
+        # Before _sync_buttons, which reads the panel's freshness to decide
+        # whether Recalculate has anything to offer.
+        self._update_scores()
         self._sync_buttons()
         self._update_status()
 
@@ -1476,6 +1624,12 @@ class IslandEditor(QMainWindow):
 
         self.source_path = Path(path)
         self.undo_stack.clear()
+        # The baseline every score is measured against, and the only place it
+        # is ever set: undo walks the document back through this value, and
+        # saving does not move it, so "what have I given up?" stays a question
+        # about the file that was opened.
+        self.original_doc = doc
+        self._scores = self._scores_doc = self._scores_scale = None
         # Frame the whole province on load (subsequent redraws preserve the view).
         self._set_state(doc, [], preserve_view=False)
         self.undo_stack.setClean()
