@@ -12,10 +12,12 @@ Workflow
 2. **Edit** — on a single live canvas (left-drag pans, the arrow keys pan in
    steps — Shift for a long stride, Ctrl for a nudge — and the wheel zooms at
    all times; a left click with no drag toggles an island's selection):
-   - **Merge Selected** — bridge two or more clicked islands with necks of land;
+   - **Merge** (the *Expansion Merge* group) — bridge two or more clicked
+     islands with necks of land;
      **From Gap** first sets the buffer to the least that bridges them.
-   - **Bridge** — span the clicked islands with straight bridges of a fixed
-     printed width instead: the cheapest set that joins them all, one per join.
+   - **Bridge** (*Bridge Merge*) — span the clicked islands with straight
+     bridges of a fixed printed width instead: the cheapest set that joins them
+     all, one per join.
      Where *Merge* thickens whatever coastline its closing distance touches and
      lets the gap decide how wide the neck comes out, a bridge is a rectangle
      you specify — so this is the one to reach for when the printed width is
@@ -25,7 +27,8 @@ Workflow
      Esc cancels a stroke, or leaves the mode).
    - **Erase** — the same brush in reverse: rub land out to trim a coastline or
      cut a landmass in two, where removal by island or by area cannot reach.
-   - **Remove Selected** — drop the clicked islands.
+   - **Remove** — drop the clicked islands; it sits with the selection
+     controls, being the end of the same gesture.
    - **Remove Small** — drop every island below the *Min area* threshold.
    - **Amputate** — drop every piece of land narrower than *Min width*, whole
      islets and thin necks alike: what is left is what a disc that wide can
@@ -470,11 +473,11 @@ class IslandEditor(QMainWindow):
             top.addWidget(widget)
         top.addStretch(1)
 
-        # -- row 2: editing, grouped by what each control acts on ------------
-        # The recurring question in this tool is whether an action hits the
-        # islands you clicked or the whole province, so that is what the group
-        # titles answer — and it lets the buttons drop the qualifier from their
-        # own labels ("Merge", not "Merge Selected").
+        # -- rows 2 and 3: the editing controls -------------------------------
+        # Built here, laid out below. Every group title names something about
+        # the edit — what it is pointed at, or how it works — which lets the
+        # buttons drop the qualifier from their own labels ("Merge", not "Merge
+        # Selected"; "Remove", not "Remove Selected").
         self.btn_select_all = self._button("All", self.select_all, enabled=False)
         self.btn_select_all.setToolTip("Select every island.")
         self.btn_clear = self._button("None", self.clear_selection, enabled=False)
@@ -585,37 +588,56 @@ class IslandEditor(QMainWindow):
             "Width of the freehand stroke as it will print (mm), for both "
             "brushes, measured across the stroke — not a radius.")
 
+        # Removing what you clicked belongs with the clicking: it is the end of
+        # the same gesture, and it is the one edit that needs no parameter at
+        # all, so it would sit in a box of spin boxes owning none of them.
         self.grp_selection = self._group(
             "Selection", self.btn_select_all, self.btn_clear, self.btn_invert,
-            self.lbl_count)
-        self.grp_selected = self._group(
-            "Selected islands", "Buffer (mm)", self.buffer_spin, self.btn_gap,
-            self.btn_merge, self.btn_remove_sel)
-        self.grp_bridges = self._group(
-            "Bridges", "Width (mm)", self.bridge_width_spin,
-            "Max span (mm)", self.bridge_span_spin, self.btn_bridge)
+            self.btn_remove_sel, self.lbl_count)
         self.grp_province = self._group(
             "Whole province", "Min area (mm²)", self.area_spin,
             self.btn_remove_small, "Min width (mm)", self.width_spin,
             self.btn_amputate, self.btn_lakes)
+
+        # The three ways to join or reshape land, named for *how* each one
+        # does it rather than for what it is pointed at. Expansion and bridging
+        # both close a gap and are told different things about it -- a closing
+        # distance, and a width to build to -- so the titles put them side by
+        # side as the alternatives they are, with the brush as the third: what
+        # to reach for when neither rule can be made to produce the shape.
+        self.grp_expansion = self._group(
+            "Expansion Merge", "Buffer (mm)", self.buffer_spin, self.btn_gap,
+            self.btn_merge)
+        self.grp_bridges = self._group(
+            "Bridge Merge", "Width (mm)", self.bridge_width_spin,
+            "Max span (mm)", self.bridge_span_spin, self.btn_bridge)
         self.grp_freehand = self._group(
             "Freehand", self.btn_draw, self.btn_erase, "Brush (mm)",
             self.brush_spin)
 
-        edit = QHBoxLayout()
-        for group in (self.grp_selection, self.grp_selected, self.grp_bridges,
-                      self.grp_freehand):
-            edit.addWidget(group)
-        edit.addStretch(1)
+        # -- row 2: what the edit is pointed at ------------------------------
+        # The recurring question in this tool is whether an action hits the
+        # islands you clicked or the whole province, and this row is that
+        # question: the two scopes, one beside the other.
+        scope = QHBoxLayout()
+        for group in (self.grp_selection, self.grp_province):
+            scope.addWidget(group)
+        scope.addStretch(1)
+
+        # -- row 3: how the land is reshaped ---------------------------------
+        shaping = QHBoxLayout()
+        for group in (self.grp_expansion, self.grp_bridges, self.grp_freehand):
+            shaping.addWidget(group)
+        shaping.addStretch(1)
 
         # -- the scoreboard, top right ---------------------------------------
         # The status line at the foot of the window says what just happened;
         # this says where the province has got to overall, which is a standing
         # figure rather than a running commentary -- so it sits up with the
         # document-level controls instead of down with the last thing said.
-        # It is laid out vertically because its cell is two rows tall: three
-        # lines of figures with the button under them, rather than beside them
-        # eating a hundred pixels of a row that has none to spare.
+        # It is laid out vertically because its cell is as tall as the controls
+        # beside it: three lines of figures with the button under them, rather
+        # than beside them eating a hundred pixels of a row that has none.
         self.lbl_scores = QLabel()
         self.lbl_scores.setToolTip(
             "Against the province as imported.\n\n"
@@ -648,29 +670,21 @@ class IslandEditor(QMainWindow):
         scores_column.addWidget(self.btn_recalc,
                                 alignment=Qt.AlignmentFlag.AlignRight)
 
-        # -- rows 1 and 2, with the scoreboard alongside both -----------------
-        # A grid rather than three box layouts: the scoreboard has to span the
-        # two rows of controls, and only a grid can say that. Column 0 takes
-        # all the slack so the controls keep the width they had and the panel
-        # keeps the width it needs.
+        # -- the three rows, with the scoreboard alongside all of them --------
+        # A grid rather than a stack of box layouts: the scoreboard has to span
+        # the rows of controls, and only a grid can say that. Column 0 takes all
+        # the slack so the controls keep the width they had and the panel keeps
+        # the width it needs.
         head = QGridLayout()
         head.setContentsMargins(0, 0, 0, 0)
         head.setHorizontalSpacing(8)
         head.setVerticalSpacing(4)
         head.addLayout(top, 0, 0)
-        head.addLayout(edit, 1, 0)
-        head.addWidget(self.grp_scores, 0, 1, 2, 1)
+        head.addLayout(scope, 1, 0)
+        head.addLayout(shaping, 2, 0)
+        head.addWidget(self.grp_scores, 0, 1, 3, 1)
         head.setColumnStretch(0, 1)
         root.addLayout(head)
-
-        # -- row 3: the whole province ----------------------------------------
-        # On its own line because the row above was full: four groups of
-        # controls and a scoreboard do not fit one row at any window width
-        # anybody would choose.
-        province_row = QHBoxLayout()
-        province_row.addWidget(self.grp_province)
-        province_row.addStretch(1)
-        root.addLayout(province_row)
 
         root.addWidget(self.caption)
         root.addWidget(self.canvas, stretch=1)
@@ -1387,7 +1401,7 @@ class IslandEditor(QMainWindow):
         # A group is only offered when there is a document to act on; within it
         # the members keep their own rules, so "needs a selection" still shows
         # per button rather than greying out the parameters beside them.
-        for group in (self.grp_selection, self.grp_selected, self.grp_bridges,
+        for group in (self.grp_selection, self.grp_expansion, self.grp_bridges,
                       self.grp_province, self.grp_freehand):
             group.setEnabled(has)
         self.btn_draw.setEnabled(has)
@@ -1563,7 +1577,7 @@ class IslandEditor(QMainWindow):
         """
         self.progress.setVisible(busy)
         self.progress.setRange(0, 0) if busy else self.progress.setRange(0, 1)
-        for widget in (self.grp_selection, self.grp_selected, self.grp_bridges,
+        for widget in (self.grp_selection, self.grp_expansion, self.grp_bridges,
                        self.grp_province, self.grp_freehand, self.btn_import,
                        self.btn_save, self.btn_undo, self.btn_redo):
             widget.setEnabled(not busy)

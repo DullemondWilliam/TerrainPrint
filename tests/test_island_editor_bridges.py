@@ -283,7 +283,7 @@ class TestPlanningIsNotOnTheUiThread:
     def test_the_editing_controls_lock_while_it_plans(self, chain):
         chain._set_planning(True)
         assert chain.progress.isVisible()
-        for group in (chain.grp_selection, chain.grp_selected,
+        for group in (chain.grp_selection, chain.grp_expansion,
                       chain.grp_bridges, chain.grp_province,
                       chain.grp_freehand):
             assert not group.isEnabled()

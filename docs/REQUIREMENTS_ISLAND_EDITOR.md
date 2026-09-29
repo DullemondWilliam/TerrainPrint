@@ -107,20 +107,35 @@ tools. (The `app` window already offers a combined, undoable cleanup editor via
   free-standing bindings, because they answer to more than one sequence and a
   button holds only one; binding a second would make both ambiguous, and Qt
   answers an ambiguous shortcut by firing neither.
-- **FR-2.7** Controls sit in **three rows** with the **Scores** panel in the
-  top-right spanning the first two: *document and view* (Import, Save, Undo,
-  Redo, navigation tools, print scale), then *editing*, divided into titled
-  groups naming **what each group acts on** — **Selection**, **Selected
-  islands**, **Bridges**, **Freehand** — and then **Whole province** on a row
-  of its own, because four groups of controls and a scoreboard do not fit one
-  row at any window width anybody would choose. Moving it down took the
-  window's minimum width from 3198 px to 2344 px. The recurring question in this
-  tool is whether an action hits the islands you clicked or the whole province,
-  so the titles answer it; members then drop the qualifier from their own labels
-  ("Merge", not "Merge Selected"), and the live selection count sits with the
-  selection controls rather than only in the status line. Each group box is the
-  enable handle for its contents — with no document loaded the group greys out
-  whole, while selection-sensitivity stays on the individual members.
+- **FR-2.7** Controls sit in **three rows**, with the **Scores** panel down the
+  right spanning all three:
+
+  1. *document and view* — Import, Save, Undo, Redo, the navigation tools, the
+     print scale and **Real Size**;
+  2. *what the edit is pointed at* — **Selection** (All, None, Invert, Remove,
+     and the live count) beside **Whole province** (Remove Small, Amputate,
+     Remove Lakes with their thresholds);
+  3. *how the land is reshaped* — **Expansion Merge**, **Bridge Merge**,
+     **Freehand**.
+
+  The recurring question in this tool is whether an action hits the islands you
+  clicked or the whole province, and row 2 *is* that question: the two scopes
+  side by side. Row 3 then answers a second one — expansion and bridging both
+  close a gap and are told different things about it (a closing distance, and a
+  width to build to), so the titles name the *method* and put them up as the
+  alternatives they are, with the brush as the third for when neither rule can
+  be made to produce the shape. **Remove** sits with the selection rather than
+  with the merge it used to share a box with: it is the end of the clicking
+  gesture, and the one edit that needs no parameter, so it owned nothing in a
+  box of spin boxes. Group titles let members drop the qualifier from their own
+  labels (“Merge”, not “Merge Selected”; “Remove”, not “Remove Selected”), and
+  the live selection count sits with the selection controls rather than only in
+  the status line. Each group box is the enable handle for its contents — with
+  no document loaded the group greys out whole, while selection-sensitivity
+  stays on the individual members. Three shorter rows also cost less width than
+  two crowded ones: the window's minimum went from 3198 px when the editing
+  groups shared a row, to 2344 px once *Whole province* moved down, to 1848 px
+  at this arrangement.
   The navigation toolbar is trimmed to **Home / Back / Forward / Pan / Zoom**:
   `Subplots` and `Customize` can undo the deliberate edge-to-edge axes, and its
   `Save` writes a PNG of the figure one button away from **Save GeoJSON …**.
