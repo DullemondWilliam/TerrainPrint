@@ -56,8 +56,8 @@ Workflow
    shortcut sees them, so typing a value cannot set off an edit.
 
 Everything is sized **as it will print**. An editable **Print scale**
-(1:8 000 000 to start) sits in the top row with a read-only **km/mm** readout
-beside it, and the three editing parameters — *Buffer*, *Min area*, *Brush* —
+(1:8 000 000 to start) sits under the map, bottom right, with a read-only
+**km/mm** readout beside it, and the three editing parameters — *Buffer*, *Min area*, *Brush* —
 are printed millimetres, converted to ground units through that scale at the
 moment they are used. The constraint they express belongs to the paper (the
 finest neck a cutter will hold, the smallest island worth printing), so changing
@@ -103,8 +103,8 @@ from PySide6.QtGui import QKeySequence, QShortcut, QUndoCommand, QUndoStack
 from PySide6.QtWidgets import (QApplication, QDoubleSpinBox, QFileDialog,
                                QFrame, QGridLayout, QGroupBox, QHBoxLayout,
                                QLabel, QLineEdit, QMainWindow, QMessageBox,
-                               QProgressBar, QPushButton, QSpinBox,
-                               QVBoxLayout, QWidget)
+                               QProgressBar, QPushButton, QSizePolicy,
+                               QSpinBox, QVBoxLayout, QWidget)
 
 from lib.LIB_island_bridges import (BridgeParams, apply_bridges,
                                     plan_bridges)
@@ -394,10 +394,10 @@ class IslandEditor(QMainWindow):
         root.setContentsMargins(8, 6, 8, 4)   # give the canvas the spare pixels
         root.setSpacing(4)
 
-        # The print scale belongs in the top row with the other view controls,
-        # but it is built here, ahead of the canvas: the map's scale bars read
-        # it on every draw, and the first draw is scheduled from ``_style_axis``
-        # below.
+        # The print scale is laid out under the map with the other view
+        # controls, but it is built here, ahead of the canvas: the map's scale
+        # bars read it on every draw, and the first draw is scheduled from
+        # ``_style_axis`` below.
         self.scale_spin = QSpinBox()
         self.scale_spin.setRange(PRINT_SCALE_MIN, PRINT_SCALE_MAX)
         self.scale_spin.setSingleStep(PRINT_SCALE_STEP)
@@ -433,7 +433,7 @@ class IslandEditor(QMainWindow):
 
         # -- single live canvas ---------------------------------------------
         # Built before the toolbars because the view tools belong to the canvas
-        # and ride in the top row with the other document-level controls.
+        # and are laid out under it, in the same row as the status line.
         # The caption lives in a label rather than an axes title so the axes can
         # take the whole figure; the map then fills the window edge to edge.
         self.caption = QLabel()
@@ -456,9 +456,10 @@ class IslandEditor(QMainWindow):
         self.canvas.mpl_connect("button_release_event", self._on_release)
         self.canvas.mpl_connect("draw_event", self._on_draw)
 
-        # -- row 1: the document and the view --------------------------------
-        # Nothing here changes geometry: it opens, saves, steps the history,
-        # moves the camera, or says how the map is to be read.
+        # -- row 1: the document ---------------------------------------------
+        # The file and the history, and nothing else: what is open, and where in
+        # the editing of it you are. The controls that move or measure the *map*
+        # are not document controls at all and live under it (see ``foot``).
         top = QHBoxLayout()
         self.btn_import = self._button("Import GeoJSON …", self.import_geojson)
         self.btn_save = self._button("Save GeoJSON …", self.save_geojson, enabled=False)
@@ -467,9 +468,7 @@ class IslandEditor(QMainWindow):
         self.btn_redo = self._button("Redo", self.undo_stack.redo, enabled=False)
         self.btn_redo.setToolTip("Step forward again through the edit history.")
         for widget in (self.btn_import, self.btn_save, self._separator(),
-                       self.btn_undo, self.btn_redo, self._separator(), self.nav,
-                       self._separator(), QLabel("Print scale"), self.scale_spin,
-                       self.perkm_box, self.btn_real):
+                       self.btn_undo, self.btn_redo):
             top.addWidget(widget)
         top.addStretch(1)
 
@@ -494,7 +493,8 @@ class IslandEditor(QMainWindow):
 
         self.buffer_spin = self._spin(*BUFFER_MM,
             "Merge closing distance, as it will print (mm). Islands closer than "
-            "twice this bridge. The km/mm box up beside the print scale says "
+            "twice this bridge. The km/mm box under the map, beside the print "
+            "scale, says "
             "what one millimetre is worth on the ground.")
         self.btn_gap = self._button("From Gap", self.buffer_from_gap, enabled=False)
         self.btn_gap.setToolTip(
@@ -513,7 +513,8 @@ class IslandEditor(QMainWindow):
         self.bridge_width_spin = self._spin(*BRIDGE_WIDTH_MM,
             "Width every bridge comes out at, as it will print (mm) — a "
             "specification, not a consequence of the gap the way the merge "
-            "buffer is. The km/mm box up beside the print scale says what one "
+            "buffer is. The km/mm box under the map, beside the print scale, says "
+            "what one "
             "millimetre is worth on the ground.")
         self.bridge_span_spin = self._spin(*BRIDGE_SPAN_MM,
             "The longest crossing a bridge may span, printed (mm). It also "
@@ -545,7 +546,8 @@ class IslandEditor(QMainWindow):
         # island-at-a-time removal can touch.
         self.width_spin = self._spin(*MIN_WIDTH_MM,
             "Land narrower than this, as it will print (mm), is what "
-            "‘Amputate’ removes. The km/mm box up beside the print scale says "
+            "‘Amputate’ removes. The km/mm box under the map, beside the print "
+            "scale, says "
             "what one millimetre is worth on the ground.")
         self.btn_amputate = self._button("Amputate", self.amputate,
                                          enabled=False)
@@ -689,9 +691,31 @@ class IslandEditor(QMainWindow):
         root.addWidget(self.caption)
         root.addWidget(self.canvas, stretch=1)
 
+        # -- under the map: what it says, and how it is looked at -------------
+        # The navigation tools and the print scale belong to the *map*, not to
+        # the province, so they sit against it rather than up among the edits --
+        # and on the same line as the status rather than a line of their own,
+        # because height taken here comes straight off the map.
+        #
+        # The status keeps the left, where reading starts and where the eye
+        # goes after an edit; the view controls take the right. It is told it
+        # may shrink below its text: a long line ("Bridged 7 island(s) ...")
+        # would otherwise set the window's minimum width from the bottom row,
+        # and a clipped tail on a very narrow window is a better trade than a
+        # window that cannot be made narrow.
         self.status = QLabel("No file loaded.")
         self._emphasise(self.status)
-        root.addWidget(self.status)
+        self.status.setMinimumWidth(0)
+        self.status.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                  QSizePolicy.Policy.Preferred)
+        foot = QHBoxLayout()
+        foot.setContentsMargins(0, 0, 0, 0)
+        foot.setSpacing(4)
+        foot.addWidget(self.status, stretch=1)
+        for widget in (self.nav, self._separator(), QLabel("Print scale"),
+                       self.scale_spin, self.perkm_box, self.btn_real):
+            foot.addWidget(widget)
+        root.addLayout(foot)
 
         # Only the bridge planner is slow enough to need this; it is hidden
         # whenever nothing is running, so the window looks as it always did.
@@ -886,7 +910,7 @@ class IslandEditor(QMainWindow):
 
     @staticmethod
     def _separator() -> QFrame:
-        """A vertical rule, so the top row's groups are divided, not just spaced."""
+        """A vertical rule, so a row's groups are divided, not just spaced."""
         line = QFrame()
         line.setFrameShape(QFrame.Shape.VLine)
         line.setFrameShadow(QFrame.Shadow.Sunken)

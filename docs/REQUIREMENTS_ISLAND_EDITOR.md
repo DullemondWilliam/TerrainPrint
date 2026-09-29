@@ -110,13 +110,21 @@ tools. (The `app` window already offers a combined, undoable cleanup editor via
 - **FR-2.7** Controls sit in **three rows**, with the **Scores** panel down the
   right spanning all three:
 
-  1. *document and view* — Import, Save, Undo, Redo, the navigation tools, the
-     print scale and **Real Size**;
+  1. *the document* — Import, Save, Undo, Redo, and nothing else: what is open
+     and where in the editing of it you are;
   2. *what the edit is pointed at* — **Selection** (All, None, Invert, Remove,
      and the live count) beside **Whole province** (Remove Small, Amputate,
      Remove Lakes with their thresholds);
   3. *how the land is reshaped* — **Expansion Merge**, **Bridge Merge**,
      **Freehand**.
+
+  The controls that move or measure the *map* — the navigation tools, the print
+  scale, the km/mm box and **Real Size** — are not document controls and do not
+  ride in row 1. They sit **under the map, bottom right**, on the same line as
+  the status: against the thing they act on, and costing no height, because a
+  line of their own would come straight off the map. The status keeps the left
+  of that line and is allowed to shrink below its own text, so a long report
+  cannot set the window's minimum width from the bottom row.
 
   The recurring question in this tool is whether an action hits the islands you
   clicked or the whole province, and row 2 *is* that question: the two scopes
@@ -151,10 +159,10 @@ tools. (The `app` window already offers a combined, undoable cleanup editor via
   the toolbar. The bars are hidden with no document loaded, where a ground scale
   over matplotlib's own unit square would be a fiction.
 - **FR-2.9** The **Print scale** is user-editable as `1:N` (default
-  **1:8 000 000**, the project's working reduction), in the *document and view*
-  row: it is a statement about how the map is read, not an edit, so it belongs
-  with the camera controls rather than in any of the editing groups, and it
-  changes no geometry.
+  **1:8 000 000**, the project's working reduction), under the map with the
+  navigation tools: it is a statement about how the map is read, not an edit, so
+  it belongs with the camera controls rather than in any of the editing groups,
+  and it changes no geometry.
 - **FR-2.10** A **read-only km/mm box** sits beside it, showing the ground
   kilometres one printed millimetre covers (`N / 1 000 000` — at 1:8 000 000,
   `8 km/mm`). It is the same statement as the ratio, in the units that relate the

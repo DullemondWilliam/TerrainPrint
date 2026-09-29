@@ -2,7 +2,7 @@
 test_island_editor_layout.py
 
 Where the controls of UI_island_editor.py sit: three rows with the Scores panel
-down the right of all three (FR-2.7).
+down the right of all three, and the map's own controls under the map (FR-2.7).
 
 These are pytest-style (not unittest) because they need pytest-qt's ``qtbot`` /
 ``qapp`` fixtures, as in test_island_editor_keys.py.
@@ -61,6 +61,25 @@ def cell(editor, widget):
     raise AssertionError(f"{widget} is in no cell of the grid")
 
 
+def in_grid(editor, widget) -> bool:
+    """Whether the control grid holds ``widget`` at all."""
+    try:
+        cell(editor, widget)
+    except AssertionError:
+        return False
+    return True
+
+
+def under_the_map(editor):
+    """``(position in the window, the row)`` holding the map's own controls."""
+    root = editor.centralWidget().layout()
+    for i in range(root.count()):
+        row = root.itemAt(i).layout()
+        if row is not None and row.indexOf(editor.nav) >= 0:
+            return i, row
+    raise AssertionError("the navigation tools are in no row of the window")
+
+
 def row_layout(editor, widget):
     """The row that holds ``widget``, for reading its order left to right."""
     grid = head(editor)
@@ -75,9 +94,8 @@ class TestTheThreeRows:
     """Each row answers one question, so each control belongs to one."""
 
     @pytest.mark.parametrize("name, row", [
-        # 1. the document and the view
+        # 1. the document, and nothing else
         ("btn_import", 0), ("btn_save", 0), ("btn_undo", 0), ("btn_redo", 0),
-        ("scale_spin", 0), ("btn_real", 0),
         # 2. what the edit is pointed at
         ("grp_selection", 1), ("grp_province", 1),
         # 3. how the land is reshaped
@@ -154,3 +172,50 @@ class TestTheWindowStillFitsAScreen:
         stretches = [root.stretch(i) for i in range(root.count())]
         assert stretches.count(0) == len(stretches) - 1
         assert root.stretch(root.indexOf(editor.canvas)) == 1
+
+
+class TestUnderTheMap:
+    """The view controls belong to the map, so they sit against it.
+
+    They are not document controls and not edits: nothing here changes a
+    geometry, it changes where the map is looked at from and how its sizes are
+    to be read. Row 1 is for the document; this line is for the map.
+    """
+
+    @pytest.mark.parametrize("name", ["nav", "scale_spin", "perkm_box",
+                                      "btn_real"])
+    def test_each_view_control_is_down_there(self, editor, name):
+        _, row = under_the_map(editor)
+        assert row.indexOf(getattr(editor, name)) >= 0
+
+    @pytest.mark.parametrize("name", ["nav", "scale_spin", "perkm_box",
+                                      "btn_real"])
+    def test_and_not_up_in_the_control_grid(self, editor, name):
+        assert not in_grid(editor, getattr(editor, name))
+
+    def test_the_row_comes_after_the_map(self, editor):
+        root = editor.centralWidget().layout()
+        assert under_the_map(editor)[0] > root.indexOf(editor.canvas)
+
+    def test_the_status_keeps_the_left_and_the_controls_the_right(self, editor):
+        """Reading starts at the left, and that is where the eye goes after an
+        edit; the controls take the far end."""
+        _, row = under_the_map(editor)
+        assert row.indexOf(editor.status) == 0
+        assert row.indexOf(editor.btn_real) == row.count() - 1
+
+    def test_the_status_may_shrink_below_its_own_text(self, editor):
+        """Otherwise a long report would set the window's minimum width from
+        the bottom row."""
+        from PySide6.QtWidgets import QSizePolicy
+        assert (editor.status.sizePolicy().horizontalPolicy()
+                == QSizePolicy.Policy.Ignored)
+        assert editor.status.minimumWidth() == 0
+
+    def test_it_costs_the_map_no_height(self, editor):
+        """A line of its own would come straight off the canvas."""
+        root = editor.centralWidget().layout()
+        rows = [root.itemAt(i).layout() for i in range(root.count())]
+        assert sum(1 for r in rows if r is not None
+                   and r.indexOf(editor.status) >= 0) == 1
+        assert under_the_map(editor)[1].indexOf(editor.status) >= 0
