@@ -207,19 +207,28 @@ tools. (The `app` window already offers a combined, undoable cleanup editor via
   province. When nothing can be placed the report names the control that would
   change it: out of **Max span**, blocked by another island, or no landing able
   to hold a bridge that wide.
-- **FR-3.1b** A bridge lays down **its width times its span and nothing else**:
-  it starts at one coastline and stops at the other. The ends are driven
-  `embed_mm` past their landings so the union with the shore is a lap joint
-  rather than a kiss, and that overhang is trimmed back to the land actually
-  under it. Without the trim it comes out of the far coast of anything thinner
-  than the joint — 1 mm is 8 km of ground, so most islets and every spit — and
-  stands a tab of bridge, at full width, in open water: a bridge to nowhere, on
-  the far side of an island the crossing had already reached. On British
-  Columbia's 40 largest landmasses that overhang was **16.1 mm² of the 64.8 mm²**
-  the bridges added, a quarter of it, and the plan's own `land_added_mm2` did
-  not admit to any of it. The trim changes no decision: the anchorage that
-  chooses a landing is still measured on the untrimmed slab, because it asks how
-  much land the end has to hold on to, which is exactly what the trim keeps.
+- **FR-3.1b** A bridge is the crossing plus a **semicircle centred on each
+  landing**, of half its width — tangent to the sides, so a bridge is nowhere
+  wider than the width asked for, and the whole of the cap lies past the
+  landing, on the land side, where it does the work of a lap joint. A round cap
+  carries the same bite whatever angle the shore runs at and leaves no corner at
+  the waterline; half a width is a deliberately modest reach, because what it
+  has to survive is a boolean union, not a load. The width is therefore the
+  whole of a bridge's shape: there is no embedment knob.
+- **FR-3.1c** A bridge lays down **its width times its span and nothing else**:
+  it starts at one coastline and stops at the other. The cap assumes there is
+  land under it, and an island thinner than half a bridge has not got any, so
+  the caps of the bridges the tree chose are trimmed back to the land actually
+  under them. Untrimmed, an end comes out of the far coast and stands a tab of
+  bridge in open water: a bridge to nowhere, on the far side of an island the
+  crossing had already reached, and land the plan's own `land_added_mm2` does
+  not admit to. On British Columbia's 40 largest landmasses the overhang of the
+  older, square 1 mm ends was **16.1 mm² of the 64.8 mm²** the bridges added, a
+  quarter of it. The trim changes no decision: the anchorage that chooses a
+  landing is still measured on the untrimmed slab, because it asks how much land
+  the end has to hold on to, which is exactly what the trim keeps. An island too
+  thin to bury half the cap is refused by the anchorage floor rather than welded
+  to and cut back.
 - **FR-3.2 Remove Selected** — drop the hand-picked selected parts.
 - **FR-3.3 Remove Small** — drop every part below **Min area (km²)** using
   `is_below_area` / `remove_small_islands`.

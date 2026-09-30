@@ -20,18 +20,20 @@ overrule it — a landing on a spit, a grazing landing, and the pair that needs
 bracing rather than a better single bridge.
 
 **What a bridge is made of** is a third claim, and the quietest: a bridge adds
-the water it crosses and not a square millimetre more.  The embedded ends are a
-lap joint, so they must stop at the land they lap onto — an end driven through
-an island thinner than the joint comes out of the far coast, which is land
-nobody asked for and which no count in the plan admits to.
+the water it crosses and not a square millimetre more.  Each end is a semicircle
+of half the width, centred on the landing, and it is a lap joint — so it must
+stop at the land it laps onto.  An end driven through an island thinner than
+that comes out of the far coast, which is land nobody asked for and which no
+count in the plan admits to.
 
 Geometry is in metres (EPSG:3347) and parameters are print-mm, so the fixtures
 are written in millimetres and multiplied by ``MM``.
 """
 
+import math
 import unittest
 
-from shapely.geometry import Polygon, box
+from shapely.geometry import Point, Polygon, box
 from shapely.ops import unary_union
 
 from lib.LIB_island_bridges import (BridgeParams, Bridge, apply_bridges,
@@ -143,12 +145,18 @@ class TestWhereTheBridgeGoes(BridgeTestCase):
         for width_mm in (0.4, 1.0, 2.5):
             plan = plan_bridges([self.square(0.0, 0.0), self.square(6.0, 0.0)],
                                 BridgeParams(width_mm=width_mm))
-            bridge = plan.bridges[0]
-            # Slab area is width x (span + an embedment at each end).
-            expected = width_mm * (2.0 + 2.0 * plan.params.embed_mm)
+            bridge, params = plan.bridges[0], plan.params
+            # The crossing, plus the semicircle each end finishes in.
+            cap_mm2 = params.cap_area_m2 / params.mpm ** 2
+            expected = width_mm * 2.0 + 2.0 * cap_mm2
             self.assertAlmostEqual(
-                bridge.polygon.area / plan.params.mpm ** 2, expected, places=4)
+                bridge.polygon.area / params.mpm ** 2, expected, places=4)
             self.assertAlmostEqual(bridge.width_mm, width_mm, places=6)
+            # And nowhere wider than that: the caps are tangent to the sides.
+            # This crossing runs east-west, so the width is the y extent.
+            minx, miny, maxx, maxy = bridge.polygon.bounds
+            self.assertAlmostEqual((maxy - miny) / params.mpm, width_mm,
+                                   places=6)
 
     def test_land_added_counts_only_the_water_covered(self):
         # The embedded ends sit on land that was already there.
@@ -202,18 +210,18 @@ class TestWhereTheBridgeGoes(BridgeTestCase):
         self.assertEqual(plan.bridges, [])
 
 
-class TestTheEmbeddedEnds(BridgeTestCase):
-    """The lap joint stops at the coastline of the island it laps onto.
+class TestTheEndCaps(BridgeTestCase):
+    """Each end is a semicircle on the landing, and it stops at the coast.
 
-    ``embed_mm`` drives each end of the slab past its landing so the union with
-    the coast is a joint and not a kiss.  It assumes there is land under the
-    overhang, and at 1:8,000,000 the default 1 mm of it is 8 km of ground --
-    thicker than a great many real islands and than every spit.  Driven through
-    one of those, the end comes out of the far coast and stands a tab of bridge,
-    at full width, in open water: a bridge to nowhere, on the far side of an
-    island the crossing had already reached.
+    The cap is half the bridge's width, centred on the landing and tangent to
+    the sides, so it reaches half a width past the coastline into the land --
+    which is what makes the union a joint rather than a kiss.  It assumes there
+    is land under it, and an island thinner than half a bridge has not got any:
+    the end then comes out of the far coast and stands a tab of bridge in open
+    water, on the far side of an island the crossing had already reached.
 
-    The numbers below are in print-mm at the fixture's 1:8,000,000.
+    Half of the default 1 mm bridge is 4 km of ground at 1:8,000,000, so the
+    fixtures below are built either side of 0.5 mm.  The numbers are print-mm.
     """
 
     SPAN_MM = 2.0            # water between the body and the island it bridges
@@ -244,10 +252,9 @@ class TestTheEmbeddedEnds(BridgeTestCase):
         return slabs.difference(land).area / self.MM ** 2
 
     def test_a_bridge_adds_only_the_water_it_crosses(self):
-        # 1.0 mm is the embedment itself, so the two either side of it are the
-        # cases that matter: an island too thin to take the joint, and one that
-        # swallows it whole.
-        for thickness in (0.55, 0.8, 1.0, 2.0, 6.0):
+        # Half a width is 0.5 mm here, so the first two are islands too thin to
+        # take the joint and the rest swallow it whole.
+        for thickness in (0.25, 0.35, 0.5, 1.0, 6.0):
             with self.subTest(island_mm=thickness):
                 islands = [self.body(), self.island(thickness)]
                 plan = self.one_bridge(islands, width_mm=1.0)
@@ -258,7 +265,7 @@ class TestTheEmbeddedEnds(BridgeTestCase):
     def test_the_end_does_not_come_out_of_the_far_coast(self):
         # The defect, stated in the one way it shows on the map: land east of
         # an island whose east coast is the last land there was.
-        islands = [self.body(), self.island(0.6)]
+        islands = [self.body(), self.island(0.3)]
         plan = self.one_bridge(islands, width_mm=1.0)
         east_coast = islands[1].bounds[2]
         self.assertLessEqual(plan.bridges[0].polygon.bounds[2],
@@ -268,18 +275,19 @@ class TestTheEmbeddedEnds(BridgeTestCase):
 
     def test_the_joint_is_left_alone_where_there_is_land_to_make_it(self):
         # Trimming is not a change of policy: an island thick enough to hold
-        # the embedment keeps every bit of it, so the weld is as deep as it was.
+        # the cap keeps every bit of it, so the weld is as deep as it was.
         params = BridgeParams(width_mm=1.0, max_per_pair=1)
         islands = [self.body(), self.island(6.0)]
         plan = plan_bridges(islands, params)
-        expected = params.width_mm * (self.SPAN_MM + 2 * params.embed_mm)
+        cap_mm2 = params.cap_area_m2 / params.mpm ** 2
+        expected = params.width_mm * self.SPAN_MM + 2 * cap_mm2
         self.assertAlmostEqual(
             plan.bridges[0].polygon.area / params.mpm ** 2, expected, places=3)
 
     def test_a_thin_island_is_still_joined(self):
         # The trim must take the tab and leave the joint: what is cut away was
         # over water, so the weld cannot depend on it.
-        for thickness in (0.55, 0.8):
+        for thickness in (0.25, 0.35):
             with self.subTest(island_mm=thickness):
                 islands = [self.body(), self.island(thickness)]
                 plan = self.one_bridge(islands, width_mm=1.0)
@@ -287,48 +295,72 @@ class TestTheEmbeddedEnds(BridgeTestCase):
                 merged = apply_bridges(islands, plan.bridges)
                 self.assertEqual(len(_polygons(merged)), 1)
 
+    def test_an_island_too_thin_to_hold_the_joint_is_refused(self):
+        # Where this stops being a trim and becomes a refusal. The anchorage
+        # floor asks for half the cap, and a straight-sided island 0.2 mm thick
+        # can bury 49.5% of a 0.5 mm one -- so the landing is turned away
+        # rather than welded on by a sliver and cut back to it.
+        plan = plan_bridges([self.body(), self.island(0.2)],
+                            BridgeParams(width_mm=1.0, max_per_pair=1))
+        self.assertEqual(plan.bridges, [])
+        self.assertEqual(plan.pairs_without_landing, 1)
+        self.assertEqual(plan.pairs_blocked, 0)     # nothing was in the way
+
     def test_the_plan_does_not_overstate_what_it_adds(self):
         # ``land_added_mm2`` is width x span by construction; on a thin island
         # the untrimmed slab laid down more than that and said otherwise.
-        islands = [self.body(), self.island(0.6)]
+        islands = [self.body(), self.island(0.3)]
         plan = self.one_bridge(islands, width_mm=1.0)
         self.assertAlmostEqual(plan.land_added_mm2,
                                self.added_mm2(plan, islands), places=3)
 
     def test_a_landing_on_a_long_thin_arm_does_not_sprout_a_tab(self):
-        # Not every thin landing is a whole islet. This one is a 0.6 mm
+        # Not every thin landing is a whole islet. This one is a 0.4 mm
         # peninsula, 20 mm of it, joined to its island only at the far north
         # end -- far enough that the scorer cannot buy a better anchorage by
         # landing near the join, the way it can on a short spit. So every
-        # landing in reach has 0.6 mm of land and then open water behind it.
-        arm = self.rect(12, 0, 12.6, 20)
+        # landing in reach has 0.4 mm of land and then open water behind it,
+        # against a cap that reaches 0.5 mm.
+        arm = self.rect(12, 0, 12.4, 20)
         island = unary_union([arm, self.rect(12, 20, 24, 30)])
         islands = [self.rect(0, 0, 10, 10), island]
-        plan = self.one_bridge(islands, width_mm=0.5)
+        plan = self.one_bridge(islands, width_mm=1.0)
         landing = plan.bridges[0]
         self.assertAlmostEqual(landing.span_mm, self.SPAN_MM, places=3)
         self.assertLess(landing.anchor, 1.0)        # it did land on the thin arm
         self.assertAlmostEqual(self.added_mm2(plan, islands),
-                               0.5 * self.SPAN_MM, places=3)
+                               1.0 * self.SPAN_MM, places=3)
         # ... and the water east of the arm is still water.
-        self.assertLessEqual(landing.polygon.bounds[2], 12.6 * self.MM + 1e-6)
+        self.assertLessEqual(landing.polygon.bounds[2], 12.4 * self.MM + 1e-6)
 
-    def test_nothing_is_trimmed_when_nothing_is_embedded(self):
-        # With no embedment the slab is the crossing already, and the trim has
-        # to be a no-op rather than a rebuild of it.
+    def test_the_end_is_a_semicircle_centred_on_the_landing(self):
+        # The shape itself, asked of the outline: every point of the slab's
+        # boundary beyond the landing is half a width from it, and none is
+        # further -- which is what "a semicircle around the anchor point"
+        # means, and what keeps the bridge inside the width it was given.
         islands = [self.body(), self.island(6.0)]
-        plan = self.one_bridge(islands, width_mm=1.0, embed_mm=0.0)
-        self.assertAlmostEqual(
-            plan.bridges[0].polygon.area / plan.params.mpm ** 2,
-            1.0 * self.SPAN_MM, places=3)
+        plan = self.one_bridge(islands, width_mm=1.0)
+        bridge = plan.bridges[0]
+        radius = plan.params.cap_m
+        landing = Point(bridge.line.coords[0])
+        beyond = [Point(xy) for xy in bridge.polygon.exterior.coords
+                  if xy[0] < landing.x - 1e-6]          # west of the landing
+        self.assertGreater(len(beyond), 8, "the cap should be a curve")
+        for point in beyond:
+            self.assertAlmostEqual(point.distance(landing) / radius, 1.0,
+                                   places=2)
 
     def test_the_trim_does_not_move_the_bridge(self):
-        # Same landing, same span, same cost as before it was cut back: the
-        # shape changes, the decision does not.
-        islands = [self.body(), self.island(0.6)]
-        bridge = self.one_bridge(islands, width_mm=1.0).bridges[0]
+        # Same landing, same span, same anchorage as before it was cut back:
+        # the shape changes, the decision does not.
+        islands = [self.body(), self.island(0.3)]
+        plan = self.one_bridge(islands, width_mm=1.0)
+        bridge = plan.bridges[0]
         self.assertAlmostEqual(bridge.span_mm, self.SPAN_MM, places=3)
-        self.assertAlmostEqual(bridge.anchor, 0.6, places=2)
+        # 0.3 mm of a 0.5 mm cap: the segment of the half-disc within the
+        # island, over the whole half-disc.
+        self.assertGreater(bridge.anchor, plan.params.min_anchor)
+        self.assertLess(bridge.anchor, 1.0)
         self.assertTrue(bridge.polygon.contains(bridge.line.centroid))
 
 
@@ -339,7 +371,7 @@ class TestABridgeThroughAnIsland(BridgeTestCase):
     crossing laid *across* a third island is refused when the landing is scored
     (see :class:`TestThirdIslands` and :class:`TestObstacles`); an end driven
     *through* the island it lands on is trimmed once the bridge is chosen (see
-    :class:`TestTheEmbeddedEnds`).  These state the shared claim end to end, on
+    :class:`TestTheEndCaps`).  These state the shared claim end to end, on
     the arrangement that provokes both at once: three islands in a line, the
     middle one thin.
     """
@@ -659,12 +691,20 @@ class TestParams(BridgeTestCase):
         self.assertAlmostEqual(BridgeParams(scale=4_000_000).mpm, 4000.0)
 
     def test_lengths_convert_through_the_scale(self):
-        params = BridgeParams(scale=8_000_000, width_mm=1.0, embed_mm=0.5,
+        params = BridgeParams(scale=8_000_000, width_mm=1.0,
                               max_span_mm=5.0, sample_mm=0.25)
         self.assertAlmostEqual(params.width_m, 8000.0)
-        self.assertAlmostEqual(params.embed_m, 4000.0)
         self.assertAlmostEqual(params.max_span_m, 40000.0)
         self.assertAlmostEqual(params.sample_m, 2000.0)
+
+    def test_the_cap_is_half_the_width_and_knows_its_own_area(self):
+        params = BridgeParams(scale=8_000_000, width_mm=1.0)
+        self.assertAlmostEqual(params.cap_m, 4000.0)
+        # Shapely's own half-disc, not pi r^2 / 2: a landing that buries its
+        # cap whole has to be able to score exactly 1.0.
+        self.assertLess(params.cap_area_m2, math.pi * 4000.0 ** 2 / 2.0)
+        self.assertAlmostEqual(params.cap_area_m2 / (math.pi * 4000.0 ** 2 / 2.0),
+                               1.0, places=2)
 
     def test_the_same_bridge_at_half_the_scale_is_half_the_ground_width(self):
         islands = [self.square(0.0, 0.0), self.square(6.0, 0.0)]

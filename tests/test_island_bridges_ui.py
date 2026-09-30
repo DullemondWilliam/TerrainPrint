@@ -115,7 +115,6 @@ def _plan(window):
 CONTROLS = [
     ("scale_spin", "scale", 4_000_000.0),
     ("width_spin", "width_mm", 2.5),
-    ("embed_spin", "embed_mm", 0.4),
     ("span_spin", "max_span_mm", 9.0),
     ("aspect_spin", "max_aspect", 7.0),
     ("sample_spin", "sample_mm", 0.05),
@@ -148,7 +147,7 @@ class TestControlsReachTheLib:
         window = _loaded()
         shown, default = window.params(), BridgeParams()
         for field, _ in ((f, None) for f in (
-                "scale", "width_mm", "embed_mm", "max_span_mm", "sample_mm",
+                "scale", "width_mm", "max_span_mm", "sample_mm",
                 "angle_penalty_mm", "anchor_penalty_mm", "min_anchor",
                 "max_aspect", "max_per_pair", "hinge_ratio", "drop_slender")):
             assert getattr(shown, field) == pytest.approx(

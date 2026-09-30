@@ -33,7 +33,7 @@ specific ways, which is why candidates are *scored* rather than taken:
 
 * **Tangential landing.**  The nearest point can be the tip of a spit, so a
   1 mm bridge welds on by a sliver.  Measured by ``anchor``: the area the slab
-  actually overlaps the land, against the width x embedment it would get on a
+  actually overlaps the land, against the whole end cap it would bury in a
   straight shore.
 * **Grazing incidence.**  A bridge meeting the coast at 15 degrees welds along a
   long knife edge and reads as a smear.  Measured by ``incidence_deg``, 90 being
@@ -63,16 +63,24 @@ So each candidate costs::
 Both penalties are in print-mm, so they trade directly against span: at the
 defaults, a fully grazing landing has to save 2 mm of span to be worth taking.
 
-**And it stops at the coast.**  Each end is driven ``embed_mm`` past its landing
-so the union with the shore is a lap joint and not a kiss.  That assumes there is
-land under the overhang to lap onto, and often there is not: 1 mm is 8 km of
-ground at 1:8,000,000, which is thicker than most islets and than every spit.
-Driven through one of those the end comes out of the far coast and stands a tab
-of bridge, at full width, in open water -- a bridge to nowhere, on the far side
-of an island the crossing had already reached, and land that ``area_mm2`` does
-not admit to.  So the ends of the bridges the tree chose are trimmed back to the
-land actually under them (``_trim_ends``); what a bridge adds is then exactly
-its width times its span, wherever it lands.
+**Both ends are round.**  A bridge is the crossing plus a **semicircle centred
+on each landing**, of half the bridge's width -- so the end cap is tangent to
+the sides and nothing is ever wider than the width asked for.  The cap is what
+makes the union with the shore a lap joint rather than a kiss, and a round one
+lands better than a square one: it carries the same bite whatever angle the
+coast runs at, and it leaves no corner at the waterline for the print to catch
+on.  Half a width is a deliberately modest reach -- 0.5 mm is 4 km of ground at
+1:8,000,000 -- because the thing it has to survive is a boolean union, not a
+load.
+
+**And it stops at the coast.**  The cap assumes there is land under it, and
+often there is not: plenty of islets are thinner than half a bridge.  Driven
+through one, the end comes out of the far coast and stands a tab of bridge in
+open water -- a bridge to nowhere, on the far side of an island the crossing had
+already reached, and land that ``area_mm2`` does not admit to.  So the ends of
+the bridges the tree chose are trimmed back to the land actually under them
+(``_trim_ends``); what a bridge adds is then exactly its width times its span,
+wherever it lands.
 
 **How many bridges?**  That is global, and not a question about any pair.
 Islands are the nodes of a graph, candidate bridges its edges weighted by
@@ -155,11 +163,11 @@ _TOUCHING_COST = 1e-9
 class BridgeParams:
     """How bridges are placed.  All lengths are **print-mm**."""
     scale: float = DEFAULT_SCALE                #: map scale denominator
-    #: The bridge itself.  ``width_mm`` is the specification -- every bridge is
-    #: this wide -- and ``embed_mm`` is how far each end is pushed past the
-    #: coastline into the land, so the union is a lap joint and not a kiss.
+    #: The bridge itself, and the only thing that sets its shape: every bridge
+    #: is ``width_mm`` wide, and ends in a semicircle of half that radius
+    #: centred on each landing.  There is no separate embedment knob, because
+    #: with the cap tangent to the sides there is nothing left to choose.
     width_mm: float = _cfg("bridges.width_mm")
-    embed_mm: float = _cfg("bridges.embed_mm")
     #: Refuse to span further than this.  Also the cap that turns the spanning
     #: tree into a forest, so it decides which islands stay separate.
     max_span_mm: float = _cfg("bridges.max_span_mm")
@@ -171,7 +179,7 @@ class BridgeParams:
     angle_penalty_mm: float = _cfg("bridges.angle_penalty_mm")
     anchor_penalty_mm: float = _cfg("bridges.anchor_penalty_mm")
     #: Reject a landing whose overlap with the land is below this fraction of
-    #: the width x embedment a straight shore would give (0..1).
+    #: the end cap a straight shore would bury whole (0..1).
     min_anchor: float = _cfg("bridges.min_anchor")
     #: Slenderness limit, as span/width.  Past it a bridge is a matchstick.
     max_aspect: float = _cfg("bridges.max_aspect")
@@ -194,8 +202,22 @@ class BridgeParams:
         return self.width_mm * self.mpm
 
     @property
-    def embed_m(self) -> float:
-        return self.embed_mm * self.mpm
+    def cap_m(self) -> float:
+        """Radius of the semicircle each end finishes in: half the width."""
+        return self.width_m / 2.0
+
+    @property
+    def cap_area_m2(self) -> float:
+        """Area of one end cap -- the bite a straight shore buries whole.
+
+        Measured off the same buffer the slab is built with, not from pi r^2/2:
+        shapely draws a circle as a 32-sided polygon inscribed in it, which is
+        0.16% short of the true area. Against the analytic figure a landing
+        that buries its cap completely scores 0.9984 and never quite 1.0, and
+        an anchorage that cannot reach its own definition of full is a ruler
+        with the wrong zero on it.
+        """
+        return Point(0.0, 0.0).buffer(self.cap_m).area / 2.0
 
     @property
     def max_span_m(self) -> float:
@@ -212,11 +234,11 @@ class Bridge:
     a: int = -1                     #: index into the caller's island list
     b: int = -1
     polygon: object = None          #: the slab, in the work CRS
-    line: object = None             #: centreline, coast to coast (no embedment)
+    line: object = None             #: centreline, coast to coast (no end caps)
     span_mm: float = 0.0            #: water crossed
     width_mm: float = 0.0
     #: Why this landing won.  90 deg is a square landing; ``anchor`` is 1.0 for
-    #: a full width x embedment bite out of both shores.
+    #: an end cap buried whole in both shores.
     incidence_deg: float = 90.0
     anchor: float = 1.0
     cost_mm: float = 0.0
@@ -233,8 +255,8 @@ class Bridge:
     def area_mm2(self) -> float:
         """Printed land this bridge adds.
 
-        Width x span, not the slab's own area: the embedded ends lie on top of
-        land that was already there, so counting them would overstate what the
+        Width x span, not the slab's own area: the end caps lie on top of land
+        that was already there, so counting them would overstate what the
         bridge costs in material and in coastline.
         """
         return self.width_mm * self.span_mm
@@ -329,36 +351,41 @@ def _incidence_deg(ring, point, direction, eps_m: float) -> float:
     return math.degrees(math.acos(min(1.0, max(0.0, dot))))
 
 
-def _slab(p, q, width_m: float, embed_m: float):
-    """The bridge rectangle from ``p`` to ``q``, pushed ``embed_m`` into each end.
+def _slab(p, q, width_m: float):
+    """The bridge from ``p`` to ``q``: the crossing, ending in a semicircle.
 
-    Flat caps, so the slab is exactly the rectangle between the two embedded
-    ends -- round or square caps would add a width's worth of land nobody asked
-    for, which is the thing this module exists to avoid.
+    Round caps, so each end is a half-disc of half the width **centred on the
+    landing** -- tangent to the sides, so the bridge is nowhere wider than the
+    width it was asked for, and with the whole of the cap past the landing, on
+    the land side, where it does the work of a lap joint.
 
-    The overhang is a lap joint and assumes there is land under it to lap onto;
-    :func:`_trim_ends` takes back the part of it that hangs over water.
+    A square cap would reach further for the same width, but it meets the
+    coastline in two corners, and the shallower the incidence the longer and
+    thinner the wedge it leaves at the waterline. The half-disc carries the
+    same bite whichever way the shore runs.
+
+    The cap assumes there is land under it; :func:`_trim_ends` takes back the
+    part of it that hangs over water.
     """
     dx, dy = q.x - p.x, q.y - p.y
     span_m = math.hypot(dx, dy)
     if span_m <= 0 or width_m <= 0:
         return None, None, span_m
     ux, uy = dx / span_m, dy / span_m
-    ends = LineString([(p.x - ux * embed_m, p.y - uy * embed_m),
-                       (q.x + ux * embed_m, q.y + uy * embed_m)])
-    slab = ends.buffer(width_m / 2.0, cap_style="flat", join_style="mitre")
+    slab = LineString([(p.x, p.y), (q.x, q.y)]).buffer(
+        width_m / 2.0, cap_style="round")
     return slab, (ux, uy), span_m
 
 
 def _trim_ends(bridge: Bridge, ga, gb, params: BridgeParams) -> None:
-    """Cut a bridge's embedded ends back to the land they were driven into.
+    """Cut a bridge's end caps back to the land they were driven into.
 
-    The overhang exists so the union with the coast is a lap joint rather than
-    a kiss.  It assumes the island is at least ``embed_mm`` thick where the
-    bridge lands, and plenty are not: 1 mm is 8 km of ground at 1:8,000,000, so
-    every spit and most islets are thinner than the joint driven into them.
-    Untrimmed, the end comes out of the far coast and stands a tab of land --
-    full bridge width -- in open water: a bridge to nowhere, and land nobody
+    The cap exists so the union with the coast is a lap joint rather than a
+    kiss.  It assumes the island is at least half a bridge thick where the
+    bridge lands, and plenty are not: half of a 1 mm bridge is 4 km of ground
+    at 1:8,000,000, so a good many islets and every spit are thinner than the
+    joint driven into them.  Untrimmed, the end comes out of the far coast and
+    stands a tab of land in open water: a bridge to nowhere, and land nobody
     asked for by giving a span.  It also makes ``area_mm2`` a lie, because the
     slab then adds more than width x span.
 
@@ -374,7 +401,7 @@ def _trim_ends(bridge: Bridge, ga, gb, params: BridgeParams) -> None:
     way -- it asks how much land the end has to hold on to, which is exactly
     what is kept here.
     """
-    if params.embed_m <= 0 or bridge.polygon is None or bridge.line is None:
+    if params.cap_m <= 0 or bridge.polygon is None or bridge.line is None:
         return
     crossing = bridge.line.buffer(params.width_m / 2.0, cap_style="flat",
                                   join_style="mitre")
@@ -435,12 +462,12 @@ def _candidates(ia: int, ib: int, ga, gb, others, params: BridgeParams,
     landings = sorted((pair for pair in landings if pair[0] <= bound_m),
                       key=lambda pair: pair[0])[:MAX_CANDIDATES_PER_PAIR]
 
-    ideal_m2 = params.width_m * params.embed_m
+    ideal_m2 = params.cap_area_m2
     eps_m = max(params.width_m * 0.5, 1e-6)
     out = []
     for _, p in landings:
         q = nearest_points(p, part_b)[1]
-        slab, direction, span_m = _slab(p, q, params.width_m, params.embed_m)
+        slab, direction, span_m = _slab(p, q, params.width_m)
         if slab is None or slab.is_empty or span_m > bound_m:
             continue
 
@@ -455,7 +482,7 @@ def _candidates(ia: int, ib: int, ga, gb, others, params: BridgeParams,
         if anchor < params.min_anchor:
             refuse("anchor")
             continue
-        # Asked of the slab with its embedment on, not of the trimmed shape: a
+        # Asked of the slab with its end caps on, not of the trimmed shape: a
         # crossing whose end would be driven through a third island is refused
         # outright rather than cut back to fit past it. Hopping through that
         # island is cheaper anyway, and the tree takes it.
@@ -599,7 +626,7 @@ def plan_bridges(islands, params: BridgeParams = None,
         # Islands the slab could reach across on its way. Worked out once per
         # pair, and empty for most of them, so the per-candidate test below is
         # usually free.
-        reach_m = params.width_m / 2.0 + params.embed_m
+        reach_m = params.cap_m
         pair_box = box(*_pair_bounds(geoms[k], geoms[j], reach_m))
         others = [geoms[int(m)] for m in tree.query(pair_box)
                   if int(m) not in (k, j)]
@@ -615,7 +642,16 @@ def plan_bridges(islands, params: BridgeParams = None,
             candidates = []
         if not candidates:
             plan.pairs_without_landing += 1
-            if tally and max(tally, key=tally.get) == "blocked":
+            # One blocked landing is enough to call the pair blocked, and it
+            # does not have to be the commonest refusal. The anchorage is
+            # tested first, so a landing counted here as "blocked" is one that
+            # already had a good enough bite on both shores and was turned away
+            # only by a third island -- which means clearing that island
+            # *would* give this pair a bridge, and saying so is advice the
+            # other refusals cannot offer. A majority vote said otherwise
+            # whenever a coastline had more bad landings than blocked ones,
+            # which is most of them.
+            if tally.get("blocked"):
                 plan.pairs_blocked += 1
             continue
         best[(k, j)] = candidates

@@ -17,9 +17,11 @@ Workflow
                           corner of a province without waiting on the whole of
                           it (102 s on Nunavut, under a second on a handful),
                           and watching what the obstacle rule actually refuses.
-3. **The bridge**       — width, embedment, the longest span allowed and the
-                          slenderness limit.  All printed millimetres: at
-                          1:8,000,000 a 1 mm bridge is 8 km of causeway.
+3. **The bridge**       — width, the longest span allowed and the slenderness
+                          limit.  All printed millimetres: at 1:8,000,000 a
+                          1 mm bridge is 8 km of causeway.  Both ends finish in
+                          a semicircle centred on the landing, of half that
+                          width, so the width is the whole of the shape.
 4. **The search**       — coastline sampling pitch, what a grazing or badly
                           anchored landing costs in mm of span, the anchorage
                           floor, and the bracing rule.
@@ -225,12 +227,8 @@ class IslandBridgesTester(QMainWindow):
             0.0, 50.0, defaults.width_mm, 3,
             "Bridge width — the specification, not a consequence.\nEvery bridge "
             "comes out exactly this wide. 1 mm is 2.5 nozzle\nwidths, about the "
-            "thinnest run worth printing.")
-        self.embed_spin = self._spin(
-            0.0, 50.0, defaults.embed_mm, 3,
-            "How far each end is pushed past the coastline into the land.\nThis "
-            "is what makes the union a lap joint instead of a kiss;\none bridge "
-            "width gives a square of overlap at each end.")
+            "thinnest run worth printing.\nIt also sets the ends: each finishes "
+            "in a semicircle of half\nthis radius, centred on the landing.")
         self.span_spin = self._spin(
             0.0, 200.0, defaults.max_span_mm, 2,
             "Refuse to span further than this.\nAlso the cap that turns the "
@@ -248,7 +246,6 @@ class IslandBridgesTester(QMainWindow):
             "dropping one disconnects whatever it was holding on.")
         for label, widget in (("Scale:", self.scale_spin),
                               ("Width:", self.width_spin),
-                              ("Embed:", self.embed_spin),
                               ("Max span:", self.span_spin),
                               ("Max aspect:", self.aspect_spin)):
             bridge_bar.addWidget(QLabel(label))
@@ -276,7 +273,7 @@ class IslandBridgesTester(QMainWindow):
         self.anchor_spin = self._spin(
             0.0, 1.0, defaults.min_anchor, 2,
             "Anchorage floor: reject a landing biting less than this fraction\n"
-            "of the width x embedment a straight shore would give.\nThis is "
+            "of the end cap a straight shore would bury whole.\nThis is "
             "what stops a 1 mm bridge welding to the tip of a spit.")
         self.anchor_spin.setSingleStep(0.05)
         self.per_pair_spin = QSpinBox()
@@ -319,13 +316,13 @@ class IslandBridgesTester(QMainWindow):
         search_bar.addStretch(1)
         root.addLayout(search_bar)
 
-        for spin in (self.width_spin, self.embed_spin, self.span_spin,
+        for spin in (self.width_spin, self.span_spin,
                      self.sample_spin, self.angle_spin, self.anchor_pen_spin):
             spin.setSingleStep(0.05)
             spin.setSuffix(" mm")
         # Every parameter above invalidates the plan: the picture on the right
         # must never be the answer to a question that is no longer on screen.
-        for widget in (self.scale_spin, self.width_spin, self.embed_spin,
+        for widget in (self.scale_spin, self.width_spin,
                        self.span_spin, self.aspect_spin, self.sample_spin,
                        self.angle_spin, self.anchor_pen_spin, self.anchor_spin,
                        self.hinge_spin):
@@ -377,7 +374,6 @@ class IslandBridgesTester(QMainWindow):
         return BridgeParams(
             scale=self.scale_spin.value(),
             width_mm=self.width_spin.value(),
-            embed_mm=self.embed_spin.value(),
             max_span_mm=self.span_spin.value(),
             sample_mm=self.sample_spin.value(),
             angle_penalty_mm=self.angle_spin.value(),
@@ -940,7 +936,7 @@ class IslandBridgesTester(QMainWindow):
         for widget in (self.btn_import, self.btn_run, self.btn_save,
                        self.btn_zoom, self.btn_select_all, self.btn_clear_sel,
                        self.scale_spin, self.width_spin,
-                       self.embed_spin, self.span_spin, self.aspect_spin,
+                       self.span_spin, self.aspect_spin,
                        self.sample_spin, self.angle_spin, self.anchor_pen_spin,
                        self.anchor_spin, self.per_pair_spin, self.hinge_spin,
                        self.drop_slender_check, self.lagoon_check,

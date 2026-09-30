@@ -154,9 +154,6 @@ DEFAULTS = {
         # 1 mm is 8 km at 1:8,000,000 and 2.5 nozzle widths -- a causeway you
         # can print and handle.
         "width_mm": 1.0,
-        # How far each end is pushed past the coastline into the land, so the
-        # union is a lap joint. One width gives a square of overlap at each end.
-        "embed_mm": 1.0,
         # Refuse to span further than this, which also decides which islands
         # are left separate. 5 mm is 40 km of water, and an aspect of 5 at the
         # default width -- stiff enough to survive handling.
@@ -169,9 +166,10 @@ DEFAULTS = {
         # landing with no bite on the shore.
         "angle_penalty_mm": 2.0,
         "anchor_penalty_mm": 2.0,
-        # Reject a landing biting less than this fraction of the width x
-        # embedment a straight shore would give -- a bridge welded on by a
-        # sliver snaps off.
+        # Reject a landing biting less than this fraction of the end cap a
+        # straight shore would bury whole -- a bridge welded on by a sliver
+        # snaps off. The cap is the semicircle each end finishes in, of half
+        # the bridge's width, so this is settled by the width alone.
         "min_anchor": 0.5,
         # Slenderness limit as span/width. Past 15 a 1 mm bridge is a
         # matchstick; the fix is a wider bridge, never a second one.
