@@ -3,6 +3,7 @@
     "anchor_penalty_mm": 2.0,
     "angle_penalty_mm": 2.0,
     "hinge_ratio": 4.0,
+    "mass_per_bridge_mm2": 400.0,
     "max_aspect": 15.0,
     "max_per_pair": 2,
     "max_span_mm": 5.0,

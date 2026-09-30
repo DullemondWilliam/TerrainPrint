@@ -176,7 +176,8 @@ AREA_MM2 = (0.0, 10_000.0, cfg("island_editor.min_area_mm2"), 4, 0.01)
 #: whatever the print scale makes them worth. Only the two that decide the
 #: outcome are on the toolbar -- the width the bridge comes out at, and how far
 #: it may reach. The rest of ``BridgeParams`` (sampling pitch, the scoring
-#: penalties, the anchorage floor, the slenderness limit, bracing) keep their
+#: penalties, the anchorage floor, the slenderness limit, the branch mass one
+#: bridge is reckoned to hold) keep their
 #: ``bridges.*`` defaults, and ``harnesses/UI_island_bridges.py`` is where they
 #: are turned. The width also settles the shape of the ends: each is a
 #: semicircle of half that radius, centred on the landing.

@@ -200,7 +200,16 @@ tools. (The `app` window already offers a combined, undoable cleanup editor via
   **Merge** is told a closing distance and hands back whatever necks that
   produces, a bridge is told the width it must come out at, so the two answer
   different questions about the same selection. The spanning tree spends one
-  bridge per join, not one per pair; a pair that would hinge gets a second.
+  bridge per join, not one per pair, and then each join is weighed: cut its
+  edge and the lighter half of the tree is the **branch** it carries, so a join
+  holding half an archipelago is owed more bridges than one holding an islet
+  (`ceil(mass / mass_per_bridge_mm2)`, capped by `max_per_pair`). Mass is
+  printed **area**, because a model is one thickness of one material. Where the
+  extra ones go is still a rigidity question — only where the landings can be
+  got `hinge_ratio` crossings apart, since two bridges side by side are one
+  wider bridge with a slot in it — and a join that cannot place what its mass
+  asked for is counted in `joins_short_of_support`, whose fix is a wider
+  bridge.
   The **unselected** parts are passed as obstacles — they are still on the map,
   so a bridge may not cross one, but they are not what was asked to be joined,
   and without them the plan would be answering a question about a different

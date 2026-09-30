@@ -24,7 +24,8 @@ Workflow
                           width, so the width is the whole of the shape.
 4. **The search**       — coastline sampling pitch, what a grazing or badly
                           anchored landing costs in mm of span, the anchorage
-                          floor, and the bracing rule.
+                          floor, and how much branch one bridge is reckoned to
+                          hold.
 5. **Plan Bridges**     — score the landings, take the minimum spanning tree and
                           union the slabs on (off the UI thread, with a progress
                           bar: 9 s on Newfoundland, 20 s on British Columbia).
@@ -276,16 +277,28 @@ class IslandBridgesTester(QMainWindow):
             "of the end cap a straight shore would bury whole.\nThis is "
             "what stops a 1 mm bridge welding to the tip of a spit.")
         self.anchor_spin.setSingleStep(0.05)
+        self.mass_spin = self._spin(
+            0.0, 100_000.0, defaults.mass_per_bridge_mm2, 0,
+            "Printed area one bridge is reckoned to hold, in mm².\nCut a join "
+            "and the lighter half of the map is the branch it carries;\na "
+            "heavier branch gets another bridge, up to Max/pair.\nZero puts "
+            "every join back on a single bridge.\nVancouver Island is about "
+            "490 mm² at 1:8,000,000.")
+        self.mass_spin.setSingleStep(50.0)
+        self.mass_spin.setSuffix(" mm²")
         self.per_pair_spin = QSpinBox()
         self.per_pair_spin.setRange(1, 4)
         self.per_pair_spin.setValue(int(defaults.max_per_pair))
         self.per_pair_spin.setToolTip(
-            "Most bridges one pair may get.\n1 disables bracing entirely.")
+            "Most bridges one join may get, however heavy its branch.\n1 puts "
+            "every join on a single bridge.")
         self.hinge_spin = self._spin(
             0.0, 100.0, defaults.hinge_ratio, 1,
-            "Brace a pair only when two bridges could be placed this many\n"
-            "crossings apart — that is when a single one acts as a hinge\nthe "
-            "pair can pivot about.")
+            "Where an extra bridge may go, once the mass has asked for one:\n"
+            "only where two bridges could be placed this many crossings "
+            "apart.\nCloser than that they are one wider bridge with a slot "
+            "in it,\nso the join keeps its single bridge and is reported as "
+            "short.")
         self.hinge_spin.setSuffix("x")
         self.lagoon_check = QCheckBox("Keep lagoons")
         self.lagoon_check.setChecked(True)
@@ -307,6 +320,7 @@ class IslandBridgesTester(QMainWindow):
                               ("Angle pen.:", self.angle_spin),
                               ("Anchor pen.:", self.anchor_pen_spin),
                               ("Min anchor:", self.anchor_spin),
+                              ("Mass/bridge:", self.mass_spin),
                               ("Max/pair:", self.per_pair_spin),
                               ("Hinge:", self.hinge_spin)):
             search_bar.addWidget(QLabel(label))
@@ -325,7 +339,7 @@ class IslandBridgesTester(QMainWindow):
         for widget in (self.scale_spin, self.width_spin,
                        self.span_spin, self.aspect_spin, self.sample_spin,
                        self.angle_spin, self.anchor_pen_spin, self.anchor_spin,
-                       self.hinge_spin):
+                       self.mass_spin, self.hinge_spin):
             widget.valueChanged.connect(self._invalidate)
         self.per_pair_spin.valueChanged.connect(self._invalidate)
         self.drop_slender_check.stateChanged.connect(self._invalidate)
@@ -379,6 +393,7 @@ class IslandBridgesTester(QMainWindow):
             angle_penalty_mm=self.angle_spin.value(),
             anchor_penalty_mm=self.anchor_pen_spin.value(),
             min_anchor=self.anchor_spin.value(),
+            mass_per_bridge_mm2=self.mass_spin.value(),
             max_aspect=self.aspect_spin.value(),
             drop_slender=self.drop_slender_check.isChecked(),
             max_per_pair=self.per_pair_spin.value(),
@@ -767,7 +782,7 @@ class IslandBridgesTester(QMainWindow):
         plan = self.plan
         if plan is None:
             return "No plan yet."
-        braces = len(plan.braces)
+        extra = len(plan.braces)
         slender = len(plan.slender)
         bits = []
         total = len(self.islands) if self.islands is not None else plan.islands
@@ -775,8 +790,13 @@ class IslandBridgesTester(QMainWindow):
             bits.append(f"{plan.islands} of {total} island(s) bridged, "
                         f"{total - plan.islands} held as obstacles")
         bits.append(f"{len(plan.bridges)} bridge(s)")
-        if braces:
-            bits.append(f"{braces} brace(s)")
+        if extra:
+            bits.append(f"{extra} added for mass")
+        if plan.joins_short_of_support:
+            bits.append(f"{plan.joins_short_of_support} join(s) want another "
+                        "and have nowhere to put it — widen those instead")
+        if plan.bridges:
+            bits.append(f"heaviest branch {plan.heaviest_mm2:,.0f} mm²")
         if slender:
             worst = max(b.aspect for b in plan.slender)
             bits.append(f"{slender} slender (worst {worst:.0f}x — widen them)")
@@ -938,7 +958,8 @@ class IslandBridgesTester(QMainWindow):
                        self.scale_spin, self.width_spin,
                        self.span_spin, self.aspect_spin,
                        self.sample_spin, self.angle_spin, self.anchor_pen_spin,
-                       self.anchor_spin, self.per_pair_spin, self.hinge_spin,
+                       self.anchor_spin, self.mass_spin, self.per_pair_spin,
+                       self.hinge_spin,
                        self.drop_slender_check, self.lagoon_check,
                        self.anchors_check):
             widget.setEnabled(not busy)

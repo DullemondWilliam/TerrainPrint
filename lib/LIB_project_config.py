@@ -171,6 +171,14 @@ DEFAULTS = {
         # snaps off. The cap is the semicircle each end finishes in, of half
         # the bridge's width, so this is settled by the width alone.
         "min_anchor": 0.5,
+        # Printed area one bridge is reckoned to hold, in mm^2. Cut an edge of
+        # the spanning tree and the lighter half is the branch that bridge
+        # carries; a heavier branch gets another bridge, up to max_per_pair. A
+        # model is one thickness of one material, so area is what its mass is
+        # proportional to. 400 mm^2 at 1:8,000,000 is 25,600 km^2 of ground --
+        # Vancouver Island is about 31,000 -- so an islet is held by one and a
+        # big island earns a second.
+        "mass_per_bridge_mm2": 400.0,
         # Slenderness limit as span/width. Past 15 a 1 mm bridge is a
         # matchstick; the fix is a wider bridge, never a second one.
         "max_aspect": 15.0,

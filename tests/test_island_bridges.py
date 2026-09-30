@@ -8,11 +8,14 @@ Run with:  ./.venv/Scripts/python.exe -m pytest tests/test_island_bridges.py -v
 
 Two things are worth guarding here, and they are different in kind.
 
-**How many bridges** is a graph claim: the minimum spanning tree must spend
-exactly one bridge per landmass it absorbs, so a chain of four islands costs
-three bridges and not the six a pairwise rule would place.  That is the claim
-that makes the module more than a loop over pairs, and the one that breaks
-silently — six bridges still *look* right on a map.
+**How many bridges** is a graph claim, twice over.  The minimum spanning tree
+must spend exactly one bridge per landmass it absorbs, so a chain of four
+islands costs three bridges and not the six a pairwise rule would place.  Then
+each of those joins is weighed: cut its edge, and the lighter half of the tree
+is the branch it carries, so a join holding half an archipelago is owed more
+than a join holding an islet.  Both are claims about the *graph*, and both
+break silently — six bridges still look right on a map, and so does one bridge
+under a landmass that will snap it.
 
 **Where one bridge goes** is a scoring claim: the shortest crossing is only the
 starting point, and the tests below pin the three cases where the scorer must
@@ -625,44 +628,163 @@ class TestObstacles(BridgeTestCase):
         self.assertEqual(plan.bridges, [])
 
 
-class TestBracingAHinge(BridgeTestCase):
-    """A second bridge for a pair, and only for the reason that justifies one."""
+class TestWhereTheExtraBridgesGo(BridgeTestCase):
+    """Given that a join is owed two, the second one needs a baseline.
+
+    How many a join gets is the mass rule's answer (``TestTheMassRule``);
+    everything here is about the other half, which is still a rigidity
+    argument: two bridges an inch apart resist a pivot, two side by side are
+    one wider bridge with a slot in it.  So the fixtures below ask for two
+    outright, by telling the mass rule that a bar's worth of land is enough for
+    two, and then look at where they went.
+    """
 
     def bars(self):
         """Two 40 mm bars facing each other across 2 mm — a hinge."""
         return (box(0, 0, 40 * self.MM, 4 * self.MM),
                 box(0, 6 * self.MM, 40 * self.MM, 10 * self.MM))
 
-    def test_a_long_facing_pair_is_braced(self):
-        plan = plan_bridges(list(self.bars()))
+    def braced(self, **kw):
+        """The bars, with the mass rule asking for two. Each bar is 160 mm²."""
+        kw.setdefault("mass_per_bridge_mm2", 100.0)
+        return plan_bridges(list(self.bars()), BridgeParams(**kw))
+
+    def test_a_long_facing_pair_gets_its_second_bridge(self):
+        plan = self.braced()
         self.assertEqual(len(plan.bridges), 2)
         self.assertEqual([b.rank for b in sorted(plan.bridges,
                                                  key=lambda b: b.rank)], [0, 1])
+        self.assertEqual(plan.joins_short_of_support, 0)
 
-    def test_the_brace_is_placed_for_the_longest_baseline(self):
-        plan = plan_bridges(list(self.bars()))
+    def test_the_second_is_placed_for_the_longest_baseline(self):
+        plan = self.braced()
         xs = sorted(b.line.coords[0][0] / self.MM for b in plan.bridges)
         # One near each end of the 40 mm facing span, not two in the middle.
         self.assertLess(xs[0], 5.0)
         self.assertGreater(xs[1], 35.0)
 
-    def test_a_pair_meeting_at_a_point_is_not_braced(self):
-        # Facing span 4 mm against a 2 mm crossing is below hinge_ratio.
-        plan = plan_bridges([self.square(0.0, 0.0), self.square(6.0, 0.0)])
+    def test_a_third_does_not_pile_in_beside_the_second(self):
+        # Asked for three, the spacing is measured to the nearest bridge
+        # already placed, so they spread along the baseline instead of
+        # clustering at the two ends that scored best first.
+        plan = self.braced(mass_per_bridge_mm2=60.0, max_per_pair=3)
+        xs = sorted(b.line.coords[0][0] / self.MM for b in plan.bridges)
+        self.assertEqual(len(xs), 3)
+        self.assertGreater(min(b - a for a, b in zip(xs, xs[1:])), 5.0)
+
+    def test_a_pair_meeting_at_a_point_keeps_its_single_bridge(self):
+        # Facing span 4 mm against a 2 mm crossing is below hinge_ratio, so
+        # there is nowhere to put a second however heavy the branch. The fix is
+        # a wider bridge, and the plan says so by counting the join.
+        plan = plan_bridges([self.square(0.0, 0.0), self.square(6.0, 0.0)],
+                            BridgeParams(mass_per_bridge_mm2=1.0))
         self.assertEqual(len(plan.bridges), 1)
         self.assertEqual(plan.bridges[0].rank, 0)
+        self.assertEqual(plan.joins_short_of_support, 1)
 
-    def test_bracing_can_be_switched_off(self):
-        plan = plan_bridges(list(self.bars()), BridgeParams(max_per_pair=1))
+    def test_a_second_bridge_can_be_switched_off(self):
+        plan = self.braced(max_per_pair=1)
         self.assertEqual(len(plan.bridges), 1)
 
     def test_a_higher_hinge_ratio_demands_a_longer_facing_span(self):
-        plan = plan_bridges(list(self.bars()), BridgeParams(hinge_ratio=50.0))
+        plan = self.braced(hinge_ratio=50.0)
         self.assertEqual(len(plan.bridges), 1)
+        self.assertEqual(plan.joins_short_of_support, 1)
 
-    def test_a_brace_does_not_change_connectivity(self):
-        plan = plan_bridges(list(self.bars()))
-        self.assertEqual(plan.components_after, 1)
+    def test_a_second_bridge_does_not_change_connectivity(self):
+        self.assertEqual(self.braced().components_after, 1)
+
+
+class TestTheMassRule(BridgeTestCase):
+    """How many bridges a join gets is decided by what it holds up.
+
+    Cut one edge of the spanning tree and the map falls in two; the lighter
+    half is the branch that edge carries, and its printed area is the mass on
+    that join.  The point of asking the *graph* is that the answer is not in
+    the pair: the same two islets are a trinket on one map and the hinge of an
+    archipelago on another, and a rule that looks only at the two shores in
+    front of it cannot tell those apart.
+
+    Areas here are print-mm², so a 10 mm square is 100 mm² of branch.
+    """
+
+    def bar(self, x_mm, y_mm, w_mm, h_mm):
+        return box(x_mm * self.MM, y_mm * self.MM,
+                   (x_mm + w_mm) * self.MM, (y_mm + h_mm) * self.MM)
+
+    def facing(self, mass_per_bridge_mm2, west_mm=40.0, east_mm=40.0):
+        """Two bars 2 mm apart, long enough to take a second bridge."""
+        islands = [self.bar(0, 0, west_mm, 4), self.bar(0, 6, east_mm, 4)]
+        return plan_bridges(islands, BridgeParams(
+            mass_per_bridge_mm2=mass_per_bridge_mm2))
+
+    def test_a_light_branch_gets_one_bridge(self):
+        # 160 mm² of bar against 400 mm² a bridge: one is enough.
+        self.assertEqual(len(self.facing(400.0).bridges), 1)
+
+    def test_a_heavy_branch_gets_another(self):
+        self.assertEqual(len(self.facing(150.0).bridges), 2)
+
+    def test_and_the_threshold_is_where_it_turns(self):
+        # 160 mm² of branch: one bridge at 160, two at just under.
+        self.assertEqual(len(self.facing(160.0).bridges), 1)
+        self.assertEqual(len(self.facing(159.0).bridges), 2)
+
+    def test_every_bridge_of_a_join_carries_the_same_figure(self):
+        plan = self.facing(150.0)
+        self.assertEqual(len({round(b.holds_mm2, 6) for b in plan.bridges}), 1)
+        self.assertAlmostEqual(plan.bridges[0].holds_mm2, 160.0, places=3)
+
+    def test_the_branch_is_the_lighter_side_not_the_pair(self):
+        # A 4 mm islet hung off a 40 mm mainland. The join holds the islet;
+        # a rule that weighed the pair, or the mainland, would see 1,616 mm².
+        islands = [self.bar(0, 0, 40, 40), self.bar(42, 18, 4, 4)]
+        plan = plan_bridges(islands, BridgeParams())
+        self.assertAlmostEqual(plan.bridges[0].holds_mm2, 16.0, places=3)
+
+    def test_a_join_in_the_middle_of_a_chain_holds_more_than_one_at_the_end(self):
+        # Four islands in a row: the end join holds one island, the middle
+        # join holds two. Same shapes, same gaps, different loads.
+        islands = [self.bar(i * 6.0, 0, 4, 4) for i in range(4)]
+        plan = plan_bridges(islands, BridgeParams())
+        holds = sorted(round(b.holds_mm2, 3) for b in plan.bridges)
+        self.assertEqual(holds, [16.0, 16.0, 32.0])
+
+    def test_islands_that_already_touch_are_one_load(self):
+        # The branch is held on by whatever holds it on, so a pair that touches
+        # counts as a single lump on the bridge beyond it -- 32 mm², not 16.
+        islands = [self.bar(0, 0, 40, 40),
+                   self.bar(42, 18, 4, 4), self.bar(46, 18, 4, 4)]
+        plan = plan_bridges(islands, BridgeParams())
+        self.assertEqual(len(plan.bridges), 1)      # the touching pair is one
+        self.assertAlmostEqual(plan.bridges[0].holds_mm2, 32.0, places=3)
+
+    def test_the_cap_still_caps_it(self):
+        plan = self.facing(1.0)                     # 160 bridges' worth of mass
+        self.assertEqual(len(plan.bridges), 2)      # max_per_pair is 2
+
+    def test_a_deeper_cap_lets_the_mass_ask_for_more(self):
+        islands = [self.bar(0, 0, 40, 4), self.bar(0, 6, 40, 4)]
+        plan = plan_bridges(islands, BridgeParams(mass_per_bridge_mm2=60.0,
+                                                  max_per_pair=3))
+        self.assertEqual(len(plan.bridges), 3)
+
+    def test_switching_the_rule_off_puts_every_join_back_on_one(self):
+        self.assertEqual(len(self.facing(0.0).bridges), 1)
+
+    def test_the_heaviest_branch_is_reported(self):
+        islands = [self.bar(i * 6.0, 0, 4, 4) for i in range(4)]
+        plan = plan_bridges(islands, BridgeParams())
+        self.assertAlmostEqual(plan.heaviest_mm2, 32.0, places=3)
+
+    def test_mass_is_printed_area_so_it_moves_with_the_scale(self):
+        # The same ground at half the reduction is four times the printed area,
+        # so the same branch asks for a second bridge.
+        islands = [self.bar(0, 0, 40, 4), self.bar(0, 6, 40, 4)]
+        near = BridgeParams(scale=4_000_000, mass_per_bridge_mm2=400.0)
+        far = BridgeParams(scale=8_000_000, mass_per_bridge_mm2=400.0)
+        self.assertEqual(len(plan_bridges(islands, far).bridges), 1)
+        self.assertEqual(len(plan_bridges(islands, near).bridges), 2)
 
 
 class TestSlenderness(BridgeTestCase):
@@ -719,11 +841,13 @@ class TestApplying(BridgeTestCase):
             self.assertEqual(len(part.interiors), 0)
 
     def test_two_arms_are_each_held(self):
-        # Left to itself the pair braces: welding only one arm of a C leaves
-        # the other free to pivot, so both get a bridge and the water between
-        # them is a strait that was there all along.
+        # Welding only one arm of a C leaves the other free to pivot, so a join
+        # owed two bridges puts one on each arm, and the water between them is
+        # a strait that was there all along. The bar is 40 mm², so this asks
+        # for the second outright rather than leaning on the default.
         arms, far = self.c_shape()
-        geom, plan = bridge_islands([arms, far])
+        geom, plan = bridge_islands([arms, far],
+                                    BridgeParams(mass_per_bridge_mm2=20.0))
         self.assertEqual(len(plan.bridges), 2)
         ys = sorted(b.line.coords[0][1] / self.MM for b in plan.bridges)
         self.assertLess(ys[0], 2.0)        # the lower arm
@@ -731,16 +855,20 @@ class TestApplying(BridgeTestCase):
         self.assertEqual(sum(len(p.interiors) for p in _polygons(geom)), 1)
 
     def test_the_lagoon_between_two_bridges_is_kept(self):
+        # Two 160 mm² bars, told that 100 mm² is a bridge's worth, so the join
+        # is owed two and the water they enclose is a real lagoon.
         a = box(0, 0, 40 * self.MM, 4 * self.MM)
         b = box(0, 6 * self.MM, 40 * self.MM, 10 * self.MM)
-        geom, plan = bridge_islands([a, b])
+        geom, plan = bridge_islands([a, b],
+                                    BridgeParams(mass_per_bridge_mm2=100.0))
         self.assertEqual(len(plan.bridges), 2)
         self.assertEqual(sum(len(p.interiors) for p in _polygons(geom)), 1)
 
     def test_the_lagoon_can_be_filled_on_request(self):
+        # The same pair, the same two bridges, the lagoon filled instead.
         a = box(0, 0, 40 * self.MM, 4 * self.MM)
         b = box(0, 6 * self.MM, 40 * self.MM, 10 * self.MM)
-        plan = plan_bridges([a, b])
+        plan = plan_bridges([a, b], BridgeParams(mass_per_bridge_mm2=100.0))
         geom = apply_bridges([a, b], plan, keep_lagoons=False)
         self.assertEqual(sum(len(p.interiors) for p in _polygons(geom)), 0)
 

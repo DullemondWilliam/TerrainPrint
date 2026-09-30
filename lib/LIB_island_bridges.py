@@ -103,16 +103,33 @@ longer than ``max_span_mm`` are dropped before the tree is built, which turns it
 into a spanning *forest*: clusters out of reach stay separate and are listed in
 ``BridgePlan.unreachable`` rather than being joined by something unprintable.
 
-When one pair needs two
------------------------
-Two large islands joined at a single point pivot about it.  The test for that is
-asked of the landings rather than of the coastline: if two acceptable bridges
-could be placed ``hinge_ratio`` times the crossing apart, a single one is a
-hinge, and a second is added at ``separation_mm - cost_mm`` -- both millimetres,
-so a long baseline trades against a worse landing with no weight to invent.
-Measuring the reach the bridges would actually have beats measuring the shore,
-which can run close to the other island while facing away from it.  This is a
-rigidity argument, and it is the only reason to double up.
+When one join needs two bridges
+------------------------------
+**What a bridge has to hold decides how many there are.**  Take the tree, cut
+one edge, and the map falls into two: the lighter half is the *branch* that
+edge carries, and its printed area is the mass hanging off that join.  A bridge
+to a single islet holds an islet.  The one bridge that happens to join two
+halves of an archipelago holds half an archipelago -- through the same 1 mm of
+causeway, and nothing in a per-pair rule can see the difference, because the
+difference is not in the pair.  So the count comes from the branch:
+``ceil(mass / mass_per_bridge_mm2)``, at least one and at most
+``max_per_pair``.
+
+Mass is printed **area**, in mm^2 at the working scale.  A model is one
+thickness of one material, so area is what mass is proportional to, and it is
+already the unit everything else here is stated in.
+
+*Where* the extra ones go is a separate question, and still a rigidity
+argument.  Two bridges an inch apart resist a pivot; two side by side are one
+wider bridge with a slot in it.  So an extra is placed only where the landings
+can actually be got apart -- ``hinge_ratio`` times the crossing, measured on
+the landings themselves rather than on the coastline, which can run close to
+the other island while facing entirely away from it -- and among those it
+maximises ``separation_mm - cost_mm``, both millimetres, so a long baseline
+trades against a worse landing with no weight to invent.  A join whose shores
+meet at a point therefore keeps its single bridge however heavy the branch, and
+the plan counts it in ``joins_short_of_support``: the fix there is a wider
+bridge, never a second one in the same place.
 
 **Slenderness is a different problem with a different fix.**  A 1 mm wide, 20 mm
 long bridge is a matchstick, and two parallel matchsticks are still matchsticks:
@@ -192,13 +209,17 @@ class BridgeParams:
     #: Reject a landing whose overlap with the land is below this fraction of
     #: the end cap a straight shore would bury whole (0..1).
     min_anchor: float = _cfg("bridges.min_anchor")
+    #: Printed area one bridge is reckoned to hold, in mm^2 -- the branch mass
+    #: per bridge.  A join carrying more than this gets another, up to
+    #: ``max_per_pair``.  Zero puts every join back on a single bridge.
+    mass_per_bridge_mm2: float = _cfg("bridges.mass_per_bridge_mm2")
     #: Slenderness limit, as span/width.  Past it a bridge is a matchstick.
     max_aspect: float = _cfg("bridges.max_aspect")
     #: Report slender bridges (default) or refuse them.  Refusing disconnects
     #: whatever they were holding on, which is why it is not the default.
     drop_slender: bool = False
-    #: Bracing a hinge: at most this many bridges per pair, added only when two
-    #: bridges could be placed ``hinge_ratio`` crossings apart.
+    #: The cap on what the mass rule may ask for, and how far apart the extra
+    #: bridges of a join have to be placed to be worth placing at all.
     max_per_pair: int = _cfg("bridges.max_per_pair")
     hinge_ratio: float = _cfg("bridges.hinge_ratio")
     work_crs: str = EPSG_METRIC                 #: metric CRS the work is done in
@@ -253,7 +274,11 @@ class Bridge:
     incidence_deg: float = 90.0
     anchor: float = 1.0
     cost_mm: float = 0.0
-    #: 0 for the pair's primary bridge, 1 for a brace added against hinging.
+    #: Printed area of the branch this join carries -- the lighter side of the
+    #: tree once this edge is cut.  It is what decided how many bridges the
+    #: join got, and it is the same figure on each of them.
+    holds_mm2: float = 0.0
+    #: 0 for the join's first bridge, 1 and up for the ones the mass asked for.
     rank: int = 0
     slender: bool = False           #: span/width past ``max_aspect``
 
@@ -290,6 +315,10 @@ class BridgePlan:
     #: so a caller can say "something is in the way" rather than the useless
     #: "no landing was good enough".
     pairs_blocked: int = 0
+    #: Joins the mass rule asked for more bridges than could be placed: the
+    #: shores meet too nearly at a point to get a second one usefully apart.
+    #: The fix for those is a wider bridge, so they are worth reporting.
+    joins_short_of_support: int = 0
     components_before: int = 0      #: landmasses as they arrived
     components_after: int = 0       #: landmasses once the bridges are applied
     #: Islands left out of the largest landmass -- too far for ``max_span_mm``.
@@ -306,6 +335,11 @@ class BridgePlan:
     @property
     def slender(self) -> list:
         return [b for b in self.bridges if b.slender]
+
+    @property
+    def heaviest_mm2(self) -> float:
+        """The biggest branch any one join carries."""
+        return max((b.holds_mm2 for b in self.bridges), default=0.0)
 
     @property
     def braces(self) -> list:
@@ -552,43 +586,121 @@ def _candidates(ia: int, ib: int, ga, gb, others, params: BridgeParams,
     return out
 
 
-def _brace(primary: Bridge, candidates: list,
-           params: BridgeParams) -> Bridge | None:
-    """A second bridge for a pair that would otherwise hinge, or None.
+def _bridges_for(mass_mm2: float, params: BridgeParams) -> int:
+    """How many bridges a join carrying ``mass_mm2`` of branch is owed.
 
-    The hinge test is asked of the landings themselves: how far apart can two
-    acceptable bridges actually be put?  That distance is the moment arm the
-    brace would have, so measuring it directly beats measuring the coastline
-    and hoping -- a shore can run close to the other island while facing
-    entirely away from it, and a lake can lie nearer the strait than the coast
-    does.  Only landings that already passed the anchor and angle floors are
-    counted, so the reach is what is placeable, not what is merely nearby.
-
-    Among those, the brace maximises ``separation_mm - cost_mm``: both are
-    millimetres, so the baseline that resists the pivot trades against the
-    quality of the landing with no weight to invent.
+    One per ``mass_per_bridge_mm2``, rounded up, never fewer than one and never
+    more than ``max_per_pair``.  A zero setting hands every join a single
+    bridge, which is what this module did before it could weigh a branch.
     """
-    if params.max_per_pair < 2 or primary.span_mm <= 0 or not candidates:
-        return None
+    if params.mass_per_bridge_mm2 <= 0 or mass_mm2 <= 0:
+        return 1
+    wanted = int(math.ceil(mass_mm2 / params.mass_per_bridge_mm2))
+    return max(1, min(int(params.max_per_pair), wanted))
 
-    landfall = Point(primary.line.coords[0])
-    options = [(Point(c.line.coords[0]).distance(landfall) / params.mpm, c)
-               for c in candidates]
-    if max(sep for sep, _ in options) < params.hinge_ratio * primary.span_mm:
-        return None    # they meet effectively at a point; nothing to pivot
+
+def _braces(primary: Bridge, candidates: list, wanted: int,
+            params: BridgeParams) -> list:
+    """Up to ``wanted`` more bridges for one join, as far apart as they can be.
+
+    The count is not decided here -- the branch's mass decides that (see
+    :func:`_bridges_for`).  This answers the other half: *where*, and whether
+    there is anywhere worth putting them.
+
+    Two bridges resist a pivot only if they have a baseline, so the question is
+    asked of the landings themselves: how far apart can two acceptable bridges
+    actually be put?  Measuring that directly beats measuring the coastline and
+    hoping -- a shore can run close to the other island while facing entirely
+    away from it, and a lake can lie nearer the strait than the coast does.
+    Only landings that already passed the anchor and angle floors are on offer,
+    so the reach is what is placeable, not what is merely nearby.
+
+    Among those, each new bridge maximises ``separation_mm - cost_mm``, where
+    the separation is to the *nearest* bridge already placed: both are
+    millimetres, so a long baseline trades against a worse landing with no
+    weight to invent, and asking for three does not pile two of them into the
+    same corner.  Fewer than ``wanted`` come back when the shores have nowhere
+    left to put one, which is a fact about the pair and is reported rather than
+    forced.
+    """
+    if wanted <= 0 or primary.span_mm <= 0 or not candidates:
+        return []
+    options = [(Point(c.line.coords[0]), c) for c in candidates]
+    landfalls = [Point(primary.line.coords[0])]
+    reach_mm = max(point.distance(landfalls[0]) / params.mpm
+                   for point, _ in options)
+    if reach_mm < params.hinge_ratio * primary.span_mm:
+        return []      # they meet effectively at a point; nothing to pivot
 
     apart_mm = 2.0 * params.width_mm    # closer than this and it is one bridge
-    best, best_score = None, None
-    for separation_mm, cand in options:
-        if separation_mm < apart_mm:
+    placed, taken = [], set()
+    while len(placed) < wanted:
+        best, best_score = None, None
+        for point, cand in options:
+            if id(cand) in taken:
+                continue
+            separation_mm = min(point.distance(l) / params.mpm
+                                for l in landfalls)
+            if separation_mm < apart_mm:
+                continue
+            score = separation_mm - cand.cost_mm
+            if best_score is None or score > best_score:
+                best, best_score = cand, score
+        if best is None:
+            break
+        best.rank = len(placed) + 1
+        placed.append(best)
+        taken.add(id(best))
+        landfalls.append(Point(best.line.coords[0]))
+    return placed
+
+
+def _branch_masses(edges: list, mass) -> dict:
+    """For every edge of a forest, the mass of the lighter side of it.
+
+    Cut one edge of a tree and the tree falls into two; the lighter half is the
+    branch that edge was carrying.  That is the load on the bridge, and it is
+    not a property of the pair at either end -- the same two islets are a
+    trinket on one map and the hinge of an archipelago on another.
+
+    ``edges`` must be a forest (the spanning tree, including the zero-cost
+    edges standing for islands that already touch, since a branch is held on by
+    whatever holds it on).  ``mass`` is indexed by node.  Any edge closing a
+    cycle would not be a branch and is simply absent from the answer.
+    """
+    adjacency: dict = {}
+    for k, j in edges:
+        adjacency.setdefault(k, []).append(j)
+        adjacency.setdefault(j, []).append(k)
+
+    seen, carried = set(), {}
+    for root in adjacency:
+        if root in seen:
             continue
-        score = separation_mm - cand.cost_mm
-        if best_score is None or score > best_score:
-            best, best_score = cand, score
-    if best is None:
-        return None
-    best.rank = 1
-    return best
+        # Depth first, iteratively: a province of islands is no depth at all,
+        # but nothing here needs the stack and a recursion limit is a silly
+        # thing to meet on real data.
+        order, parent = [], {root: None}
+        stack, seen = [root], seen | {root}
+        while stack:
+            node = stack.pop()
+            order.append(node)
+            for neighbour in adjacency[node]:
+                if neighbour not in seen:
+                    seen.add(neighbour)
+                    parent[neighbour] = node
+                    stack.append(neighbour)
+        below = {node: mass[node] for node in order}
+        for node in reversed(order):        # children are summed before parents
+            if parent[node] is not None:
+                below[parent[node]] += below[node]
+        total = below[root]
+        for node in order:
+            above = parent[node]
+            if above is not None:
+                key = (min(node, above), max(node, above))
+                carried[key] = min(below[node], total - below[node])
+    return carried
 
 
 # -- the plan ---------------------------------------------------------------
@@ -712,18 +824,28 @@ def plan_bridges(islands, params: BridgeParams = None,
     graph = _graph(touch_rows + rows, touch_cols + cols, touch_vals + costs)
     chosen = minimum_spanning_tree(graph)
 
-    for k, j in zip(*chosen.nonzero()):
-        key = (min(int(k), int(j)), max(int(k), int(j)))
+    # What each edge of the tree is holding up, before deciding what to hold it
+    # up with. The zero-cost edges belong in this: a branch hangs on whatever
+    # holds it, and two islands that already touch are one piece of the load.
+    tree = [(min(int(k), int(j)), max(int(k), int(j)))
+            for k, j in zip(*chosen.nonzero())]
+    carried = _branch_masses(tree, [g.area / params.mpm ** 2 for g in geoms])
+
+    for key in tree:
         candidates = best.get(key)
         if not candidates:
             continue            # a touching pair: already one landmass
+        holds_mm2 = carried.get(key, 0.0)
+        wanted = _bridges_for(holds_mm2, params)
         primary = candidates[0]
-        primary.a, primary.b = source[key[0]], source[key[1]]
-        plan.bridges.append(primary)
-        brace = _brace(primary, candidates[1:], params)
-        if brace is not None:
-            brace.a, brace.b = source[key[0]], source[key[1]]
-            plan.bridges.append(brace)
+        placed = [primary] + _braces(primary, candidates[1:], wanted - 1,
+                                     params)
+        for bridge in placed:
+            bridge.a, bridge.b = source[key[0]], source[key[1]]
+            bridge.holds_mm2 = holds_mm2
+            plan.bridges.append(bridge)
+        if len(placed) < wanted:
+            plan.joins_short_of_support += 1
 
     lookup = {original: k for k, original in enumerate(source)}
     for bridge in plan.bridges:

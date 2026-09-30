@@ -121,6 +121,7 @@ CONTROLS = [
     ("angle_spin", "angle_penalty_mm", 3.5),
     ("anchor_pen_spin", "anchor_penalty_mm", 0.5),
     ("anchor_spin", "min_anchor", 0.25),
+    ("mass_spin", "mass_per_bridge_mm2", 250.0),
     ("per_pair_spin", "max_per_pair", 3),
     ("hinge_spin", "hinge_ratio", 9.0),
 ]
@@ -149,6 +150,7 @@ class TestControlsReachTheLib:
         for field, _ in ((f, None) for f in (
                 "scale", "width_mm", "max_span_mm", "sample_mm",
                 "angle_penalty_mm", "anchor_penalty_mm", "min_anchor",
+                "mass_per_bridge_mm2",
                 "max_aspect", "max_per_pair", "hinge_ratio", "drop_slender")):
             assert getattr(shown, field) == pytest.approx(
                 getattr(default, field)), field
@@ -226,8 +228,15 @@ class TestLagoons:
         return [box(ox, oy, ox + 40 * MM, oy + 4 * MM),
                 box(ox, oy + 6 * MM, ox + 40 * MM, oy + 10 * MM)]
 
-    def test_toggling_keeps_the_same_plan_object(self):
+    def doubled(self):
+        """The bars, with the mass rule asking for the second bridge that
+        encloses the lagoon: each bar is 160 mm² of branch."""
         window = _loaded(self.bars())
+        window.mass_spin.setValue(100.0)
+        return window
+
+    def test_toggling_keeps_the_same_plan_object(self):
+        window = self.doubled()
         plan = _plan(window)
         window.lagoon_check.setChecked(False)
         assert window.plan is plan          # re-applied, not re-planned
@@ -235,7 +244,7 @@ class TestLagoons:
 
     def test_toggling_changes_the_geometry(self):
         from lib.LIB_island_merging import _polygons
-        window = _loaded(self.bars())
+        window = self.doubled()
         _plan(window)
         assert len(window.plan.bridges) == 2
         kept = sum(len(p.interiors) for p in _polygons(window.result))
@@ -513,12 +522,13 @@ class TestTheAnchorPoints:
         assert self.marks(window) == self.landings(plan)
         assert len(self.marks(window)) == 2 * len(plan.bridges)
 
-    def test_a_brace_is_marked_like_any_other_bridge(self):
-        # Two long facing coasts: the pair is braced, and the second bridge has
-        # landings of its own worth seeing.
+    def test_a_second_bridge_is_marked_like_any_other(self):
+        # Two 144 mm² islands, told that 100 mm² is a bridge's worth: the join
+        # is owed two, and the second has landings of its own worth seeing.
         window = _loaded([_square(0.0, 0.0, 12.0), _square(14.0, 0.0, 12.0)])
+        window.mass_spin.setValue(100.0)
         plan = _plan(window)
-        assert plan.braces, "the fixture is meant to provoke a brace"
+        assert plan.braces, "the fixture is meant to ask for a second bridge"
         assert self.marks(window) == self.landings(plan)
 
     def test_turning_them_off_takes_them_away(self):
