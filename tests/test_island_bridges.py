@@ -19,12 +19,16 @@ starting point, and the tests below pin the three cases where the scorer must
 overrule it — a landing on a spit, a grazing landing, and the pair that needs
 bracing rather than a better single bridge.
 
-**What a bridge is made of** is a third claim, and the quietest: a bridge adds
-the water it crosses and not a square millimetre more.  Each end is a semicircle
-of half the width, centred on the landing, and it is a lap joint — so it must
-stop at the land it laps onto.  An end driven through an island thinner than
-that comes out of the far coast, which is land nobody asked for and which no
-count in the plan admits to.
+**What a bridge is made of** is a third claim, and the quietest: a bridge is a
+rectangle with a semicircle on each end, centred on its two landings, and the
+only thing that may be taken off it is a piece the land has *severed* from its
+own crossing.  Both halves of that matter.  An end driven through an island
+thinner than the cap comes out of the far coast, which is land nobody asked for
+— and an end that laps over the bay beside its landing has not left the water
+it was already crossing, so cutting it back there only breaks the shape.  The
+tests below hold the shape and the severance apart, because an earlier rule
+that kept "the cap where it lies on land" satisfied the second claim by
+destroying the first.
 
 Geometry is in metres (EPSG:3347) and parameters are print-mm, so the fixtures
 are written in millimetres and multiplied by ``MM``.
@@ -220,6 +224,11 @@ class TestTheEndCaps(BridgeTestCase):
     the end then comes out of the far coast and stands a tab of bridge in open
     water, on the far side of an island the crossing had already reached.
 
+    What comes off is decided by *severance* -- water the cap would fill but
+    can only reach through land -- and never by trimming the cap to the shape
+    of the coast.  ``TestARaggedCoast`` is the half of this that a straight
+    fixture cannot state.
+
     Half of the default 1 mm bridge is 4 km of ground at 1:8,000,000, so the
     fixtures below are built either side of 0.5 mm.  The numbers are print-mm.
     """
@@ -362,6 +371,89 @@ class TestTheEndCaps(BridgeTestCase):
         self.assertGreater(bridge.anchor, plan.params.min_anchor)
         self.assertLess(bridge.anchor, 1.0)
         self.assertTrue(bridge.polygon.contains(bridge.line.centroid))
+
+
+class TestARaggedCoast(BridgeTestCase):
+    """A real coastline turns inside the cap, and the cap survives it.
+
+    This is the case a straight-edged fixture cannot show, and the one that
+    went wrong.  Trimming each cap back to the land it lay on is identical to
+    leaving it alone on a straight shore, and on a coast that turns every few
+    hundred metres it hands back a comb: on British Columbia's largest forty
+    islands that rule left **27 of 63 bridges in more than one piece and 21
+    with holes in them**, and gnawed something off every single one.  Deciding
+    by severance instead leaves 52 of the 63 untouched, none in pieces, none
+    holed.
+
+    A bridge is a rectangle with a semicircle on each end.  A notch beside its
+    landing holds the same water it is already crossing, so filling it is the
+    joint's fillet and not an invention; a pocket the land closes off is
+    somewhere else, and stays water.
+    """
+
+    #: A notched coast, shallow enough that a landing on it still anchors:
+    #: 0.15 mm is 1.2 km of ground, and the cap that spans three of them is
+    #: 0.5 mm.
+    NOTCH_MM = 0.15
+
+    def comb(self):
+        """An island whose west coast is notched all the way up."""
+        body = box(12 * self.MM, 0, 22 * self.MM, 10 * self.MM)
+        notches = [
+            box(12 * self.MM, (i * 2 * self.NOTCH_MM) * self.MM,
+                (12 + self.NOTCH_MM) * self.MM,
+                (i * 2 * self.NOTCH_MM + self.NOTCH_MM) * self.MM)
+            for i in range(int(10 / (2 * self.NOTCH_MM)))]
+        return body.difference(unary_union(notches))
+
+    def islands(self):
+        return [box(0, 0, 10 * self.MM, 10 * self.MM), self.comb()]
+
+    def plan(self, islands=None):
+        return plan_bridges(islands or self.islands(),
+                            BridgeParams(width_mm=1.0, max_per_pair=1))
+
+    def test_the_bridge_is_still_the_capsule_it_was_built_as(self):
+        plan = self.plan()
+        bridge = plan.bridges[0]
+        capsule = bridge.line.buffer(plan.params.width_m / 2.0,
+                                     cap_style="round")
+        self.assertAlmostEqual(bridge.polygon.area / capsule.area, 1.0,
+                               places=6)
+
+    def test_it_is_one_piece_with_no_holes(self):
+        # The comb is what tore it into several and punched holes in it.
+        parts = _polygons(self.plan().bridges[0].polygon)
+        self.assertEqual(len(parts), 1)
+        self.assertEqual(len(parts[0].interiors), 0)
+
+    def test_the_notches_under_the_cap_are_filled(self):
+        # They open on the water the bridge is crossing, so they are part of
+        # the joint rather than somewhere else.
+        islands = self.islands()
+        bridge = self.plan(islands).bridges[0]
+        filled = bridge.polygon.difference(unary_union(islands))
+        self.assertGreater(filled.area / self.MM ** 2, bridge.area_mm2 + 0.01,
+                           "the cap should have filled some notches")
+
+    def test_and_a_pocket_the_land_closes_off_is_not(self):
+        # The other half of the rule: a lake inside the island, under the cap,
+        # is water the crossing cannot reach without going through land. The
+        # bridge leaves it alone and keeps the hole.
+        #
+        # The west island is a 1 mm bar, so the landing is forced to the one
+        # place its own cap is buried whole -- the midline -- and the lake can
+        # be put where the far cap will find it.
+        west = box(0, 4.5 * self.MM, 10 * self.MM, 5.5 * self.MM)
+        lake = box(12.15 * self.MM, 4.85 * self.MM,
+                   12.35 * self.MM, 5.15 * self.MM)
+        east = box(12 * self.MM, 0, 22 * self.MM, 10 * self.MM).difference(lake)
+        bridge = self.plan([west, east]).bridges[0]
+        holes = [ring for part in _polygons(bridge.polygon)
+                 for ring in part.interiors]
+        self.assertEqual(len(holes), 1, "the lake should still be a hole")
+        self.assertAlmostEqual(Polygon(holes[0]).area / lake.area, 1.0,
+                               places=3)
 
 
 class TestABridgeThroughAnIsland(BridgeTestCase):

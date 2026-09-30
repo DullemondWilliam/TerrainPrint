@@ -77,10 +77,21 @@ load.
 often there is not: plenty of islets are thinner than half a bridge.  Driven
 through one, the end comes out of the far coast and stands a tab of bridge in
 open water -- a bridge to nowhere, on the far side of an island the crossing had
-already reached, and land that ``area_mm2`` does not admit to.  So the ends of
-the bridges the tree chose are trimmed back to the land actually under them
-(``_trim_ends``); what a bridge adds is then exactly its width times its span,
-wherever it lands.
+already reached.  So a bridge gives up whatever the land **cuts off from its own
+crossing** (``_drop_stranded``): water the cap would have filled but can only
+reach by passing through an island is not the bridge's to fill.
+
+Note what that rule does *not* do.  It never reshapes the cap against the
+coastline.  An earlier version kept only the cap that lay on land, which is the
+same thing on a straight shore and quite different on a real one: a 4 km cap on
+a coast that wiggles every few hundred metres came out as a comb of fragments,
+and on British Columbia's largest forty islands it left 27 of 63 bridges in more
+than one piece and 21 with holes in them.  A bridge is a rectangle with a
+semicircle on each end, and the only thing that may be taken off it is a piece
+the land has severed.  Where a cap laps over a bay beside its landing, that
+water is *not* severed -- it is the same water the bridge is already crossing --
+and filling it is the joint's fillet, which is where a printed bridge wants
+material most.
 
 **How many bridges?**  That is global, and not a question about any pair.
 Islands are the nodes of a graph, candidate bridges its edges weighted by
@@ -255,9 +266,13 @@ class Bridge:
     def area_mm2(self) -> float:
         """Printed land this bridge adds.
 
-        Width x span, not the slab's own area: the end caps lie on top of land
-        that was already there, so counting them would overstate what the
-        bridge costs in material and in coastline.
+        Width x span, not the slab's own area: the end caps lie on the land
+        the bridge is joining, so counting them would overstate what it costs
+        in material and in coastline.  Where a cap laps over water beside its
+        landing -- a bay, a channel between two arms -- the bridge does fill
+        that, and this figure does not count it; it is the joint's fillet, it
+        is bounded by the cap, and it is never land the crossing could not
+        already reach.
         """
         return self.width_mm * self.span_mm
 
@@ -364,8 +379,8 @@ def _slab(p, q, width_m: float):
     thinner the wedge it leaves at the waterline. The half-disc carries the
     same bite whichever way the shore runs.
 
-    The cap assumes there is land under it; :func:`_trim_ends` takes back the
-    part of it that hangs over water.
+    The cap assumes there is land under it; :func:`_drop_stranded` takes back
+    the part of it the land cuts off from the crossing.
     """
     dx, dy = q.x - p.x, q.y - p.y
     span_m = math.hypot(dx, dy)
@@ -377,39 +392,62 @@ def _slab(p, q, width_m: float):
     return slab, (ux, uy), span_m
 
 
-def _trim_ends(bridge: Bridge, ga, gb, params: BridgeParams) -> None:
-    """Cut a bridge's end caps back to the land they were driven into.
+def _drop_stranded(bridge: Bridge, ga, gb, params: BridgeParams) -> None:
+    """Give up whatever land cuts off from the bridge's own crossing.
 
-    The cap exists so the union with the coast is a lap joint rather than a
-    kiss.  It assumes the island is at least half a bridge thick where the
-    bridge lands, and plenty are not: half of a 1 mm bridge is 4 km of ground
-    at 1:8,000,000, so a good many islets and every spit are thinner than the
-    joint driven into them.  Untrimmed, the end comes out of the far coast and
-    stands a tab of land in open water: a bridge to nowhere, and land nobody
-    asked for by giving a span.  It also makes ``area_mm2`` a lie, because the
-    slab then adds more than width x span.
+    An end cap reaches half a bridge past its landing, and the island it landed
+    on may be thinner than that -- half of a 1 mm bridge is 4 km of ground at
+    1:8,000,000, which a good many islets are not.  The cap then comes out of
+    the far coast and stands a tab of land in open water: a bridge to nowhere,
+    on the far side of an island the crossing had already reached.
 
-    What is kept is the crossing -- coast to coast, every bit of it over the
-    water the bridge is there to cross -- plus whatever of the slab actually
-    lies on the two islands.  So the joint is untouched wherever there was land
-    to make it in, and gone where there was not.
+    The test is *severance*, not dryness.  Take the water the slab would fill
+    and ask which of it the slab can still reach without crossing land: the
+    piece against the crossing is the bridge and its joint, and any piece the
+    island stands between is somewhere else entirely, so it is dropped and the
+    bridge keeps the rest -- capsule and all.
+
+    That distinction is the whole of it.  Keeping only the cap that lies *on
+    land* sounds equivalent and is, on a straight shore; on a real coast it is
+    a disaster.  A 4 km cap laid on a coastline that turns every few hundred
+    metres comes back as a comb: on British Columbia's largest forty islands
+    that left 27 of 63 bridges in more than one piece and 21 with holes, and
+    every one of the 63 gnawed somewhere.  Under this rule 51 of the 63 are
+    the untouched capsule they are supposed to be, and the 12 that are not
+    gave up 0.3 mm^2 of land beyond a coast between them.
 
     Done here, on the handful of bridges the tree chose, rather than in
     :func:`_candidates` on every landing scored: the shape only matters once a
     bridge is going to be built, and the candidates are thousands.  The
-    anchorage that *chose* the landing is measured on the untrimmed slab either
-    way -- it asks how much land the end has to hold on to, which is exactly
-    what is kept here.
+    anchorage that *chose* the landing is measured on the whole slab either
+    way -- it asks how much land the end has to hold on to, which nothing here
+    changes.
     """
     if params.cap_m <= 0 or bridge.polygon is None or bridge.line is None:
         return
     crossing = bridge.line.buffer(params.width_m / 2.0, cap_style="flat",
                                   join_style="mitre")
-    laps = (_polygons(bridge.polygon.intersection(ga))
-            + _polygons(bridge.polygon.intersection(gb)))
-    trimmed = unary_union([crossing] + laps)
-    if not trimmed.is_empty:
-        bridge.polygon = trimmed
+    land = unary_union([ga, gb])
+    water = bridge.polygon.difference(land)
+    stranded = [g for g in _polygons(water) if not g.intersects(crossing)]
+    if not stranded:
+        return                       # the capsule stands as it was built
+
+    # Assembled from the pieces that stay, rather than cut with a difference.
+    # Subtracting leaves the ring running out to the arc it was tangent to and
+    # straight back with nothing in between: a hairline of no area at all,
+    # which survives buffer(0) and make_valid, counts for nothing in the union
+    # that matters, and still reports the bridge's bounding box past the coast
+    # it just stopped at. There is nothing to leave one when the answer is put
+    # together out of what is kept.
+    kept = (_polygons(bridge.polygon.intersection(land))
+            + [g for g in _polygons(water) if g.intersects(crossing)])
+    # …and with a piece gone the rest can be adrift too, so keep the body the
+    # crossing is actually part of.
+    body = [g for g in _polygons(unary_union(kept))
+            if g.intersects(crossing)]
+    if body:
+        bridge.polygon = unary_union(body)
 
 
 # -- candidate scoring ------------------------------------------------------
@@ -689,8 +727,8 @@ def plan_bridges(islands, params: BridgeParams = None,
 
     lookup = {original: k for k, original in enumerate(source)}
     for bridge in plan.bridges:
-        _trim_ends(bridge, geoms[lookup[bridge.a]], geoms[lookup[bridge.b]],
-                   params)
+        _drop_stranded(bridge, geoms[lookup[bridge.a]], geoms[lookup[bridge.b]],
+                       params)
     linked = [(lookup[b.a], lookup[b.b]) for b in plan.bridges]
     bridged = _graph(touch_rows + [k for k, _ in linked],
                      touch_cols + [j for _, j in linked],

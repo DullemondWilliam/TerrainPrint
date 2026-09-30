@@ -215,20 +215,29 @@ tools. (The `app` window already offers a combined, undoable cleanup editor via
   the waterline; half a width is a deliberately modest reach, because what it
   has to survive is a boolean union, not a load. The width is therefore the
   whole of a bridge's shape: there is no embedment knob.
-- **FR-3.1c** A bridge lays down **its width times its span and nothing else**:
-  it starts at one coastline and stops at the other. The cap assumes there is
-  land under it, and an island thinner than half a bridge has not got any, so
-  the caps of the bridges the tree chose are trimmed back to the land actually
-  under them. Untrimmed, an end comes out of the far coast and stands a tab of
-  bridge in open water: a bridge to nowhere, on the far side of an island the
-  crossing had already reached, and land the plan's own `land_added_mm2` does
-  not admit to. On British Columbia's 40 largest landmasses the overhang of the
-  older, square 1 mm ends was **16.1 mm² of the 64.8 mm²** the bridges added, a
-  quarter of it. The trim changes no decision: the anchorage that chooses a
-  landing is still measured on the untrimmed slab, because it asks how much land
-  the end has to hold on to, which is exactly what the trim keeps. An island too
-  thin to bury half the cap is refused by the anchorage floor rather than welded
-  to and cut back.
+- **FR-3.1c** The only thing that may be taken off a bridge is a piece the land
+  has **severed from its own crossing**. The cap assumes there is land under it,
+  and an island thinner than half a bridge has not got any: the end then comes
+  out of the far coast and stands a tab of bridge in open water — a bridge to
+  nowhere, on the far side of an island the crossing had already reached. So the
+  water each bridge would fill is split into the pieces it can still reach
+  without passing through land; the piece against the crossing is the bridge and
+  its joint, anything the island stands between is dropped, and the rest of the
+  capsule stands as built.
+- **FR-3.1d** A cap is **never reshaped against the coastline**. Keeping only the
+  cap that lies on land sounds like the same rule and is, on a straight shore;
+  on a real one it is a disaster. A 0.5 mm cap is 4 km of ground, and a coast
+  that turns every few hundred metres hands back a comb — on British Columbia's
+  40 largest landmasses that rule left **27 of 63 bridges in more than one piece
+  and 21 with holes in them**, and gnawed something off every one. Under FR-3.1c
+  52 of the 63 are the untouched capsule, none is in pieces, none is holed, and
+  the 12 that give anything up give up **0.3 mm² of land beyond a coast** between
+  them. The price is that a bridge no longer adds exactly width × span: where a
+  cap laps over a bay beside its landing it fills it, which is the joint's
+  fillet — bounded by the cap, never land the crossing could not already reach,
+  and worth **+6.7 mm² on those 63 bridges**. `land_added_mm2` counts the
+  crossings only and says so. An island too thin to bury half a cap is refused by
+  the anchorage floor rather than welded to and cut back.
 - **FR-3.2 Remove Selected** — drop the hand-picked selected parts.
 - **FR-3.3 Remove Small** — drop every part below **Min area (km²)** using
   `is_below_area` / `remove_small_islands`.
