@@ -546,6 +546,10 @@ class IslandBridgesTester(QMainWindow):
         change alone, the link settles the aspect against a y that has not
         moved yet, and ``apply_aspect`` pulls x straight back -- which cancels
         a wheel zoom completely rather than subtly.
+
+        So every move of a panel goes through here, including putting a view
+        *back* after a redraw. There is no such thing as setting one limit and
+        then the other on these axes.
         """
         self._linking = True
         try:
@@ -653,6 +657,13 @@ class IslandBridgesTester(QMainWindow):
         """Islands on the left, with the planned bridges over them."""
         if preserve_view:
             xlim, ylim = self.ax_before.get_xlim(), self.ax_before.get_ylim()
+        # The link is held off for the whole rebuild and applied once at the
+        # end. Clearing an axes and plotting into it move its limits several
+        # times over, each move fires the limit callbacks, and the link takes
+        # whichever panel moved as the source -- so a panel mid-redraw, empty
+        # or autoscaled to whatever has been drawn so far, would keep being
+        # made the authority on the frame.
+        self._linking = True
         title = "Islands" if self.plan is None else (
             f"Islands + {len(self.plan.bridges)} bridge(s)")
         if self.selected and self.islands is not None:
@@ -686,14 +697,22 @@ class IslandBridgesTester(QMainWindow):
                         f"{bridge.span_mm:.2f}", (point.x, point.y),
                         fontsize=7, color="#7B241C", zorder=4,
                         ha="center", va="bottom")
+        self._linking = False
         if preserve_view:
-            self.ax_before.set_xlim(xlim)
-            self.ax_before.set_ylim(ylim)
+            # Through ``_set_view``, never by setting the two limits raw. Each
+            # ``set_xlim`` fires the link callback the moment it lands, and on
+            # x alone the link settles the aspect against a y still holding the
+            # autoscaled extent this redraw just gave it -- ``apply_aspect``
+            # then pulls x out to match, and the zoom is gone before set_ylim
+            # is reached. Which is how selecting an island zoomed the map out:
+            # nothing to do with the selection, just the first redraw anyone
+            # ran often enough to notice it.
+            self._set_view(self.ax_before, xlim, ylim)
         else:
             # An autoscaled draw: let matplotlib settle the limits (datalim
             # widens them out to the panel), then carry them across by hand.
             self.ax_before.autoscale_view()
-        self._link_views()
+            self._link_views()
         self.canvas.draw_idle()
 
     def _draw_anchors(self) -> None:
@@ -726,6 +745,13 @@ class IslandBridgesTester(QMainWindow):
             markeredgecolor="white", markeredgewidth=0.7, zorder=5)
 
     def _draw_result(self) -> None:
+        # Same rule as the plan panel, and this is the one it was learned on:
+        # this panel is rebuilt *after* the other has been put back where it
+        # was, so every limit its clear and its plot fired went out as "the
+        # result panel moved, follow it" -- and the plan panel dutifully
+        # followed an empty axes out to the full extent. Planning while zoomed
+        # in threw the zoom away, and so did toggling the lagoons.
+        self._linking = True
         parts = 0 if self.result is None else len(_polygons(self.result))
         self._style_axis(self.ax_after, f"Bridged — {parts} landmass(es)")
         if self.result is not None and not self.result.is_empty:
@@ -733,6 +759,7 @@ class IslandBridgesTester(QMainWindow):
             gpd.GeoSeries([self.result], crs=crs).plot(
                 ax=self.ax_after, facecolor=RESULT_COLOUR,
                 edgecolor=EDGE_COLOUR, linewidth=0.6)
+        self._linking = False
         # The result panel autoscaled to its own data just now; the plan panel
         # owns the frame, so put it back.
         self._link_views()

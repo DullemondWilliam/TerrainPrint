@@ -17,6 +17,10 @@ What this file guards is the harness being an honest front end for the lib:
   the parameter block moves with it.
 * **A stale plan is never left on screen** next to parameters that no longer
   produced it.
+* **The map stays where you put it.**  Every redraw clears the axes, so the
+  view has to be put back, and on an equal-aspect panel it can only be put back
+  both limits at once.  ``TestTheViewSurvivesARedraw`` zooms in and then does
+  each of the things that redraw.
 * **The report is the plan's own numbers**, not a second count that could drift
   away from what was actually placed.
 * **What is drawn is the plan's own numbers too.**  The anchor marks are read
@@ -581,6 +585,115 @@ class TestFraming:
     def test_zooming_without_a_plan_is_harmless(self):
         window = _loaded()
         window.zoom_to_bridges()        # must not raise
+
+
+class TestTheViewSurvivesARedraw:
+    """Zoom in, and the map stays where you put it.
+
+    Clearing the axes is how every redraw here starts, so each one has to put
+    the view back afterwards -- and on axes with an equal aspect and
+    ``adjustable="datalim"`` that can only be done both limits at once, through
+    ``_set_view``. Set x on its own and the limit callback fires at once,
+    settles the aspect against a y still holding the extent the redraw
+    autoscaled to, and the zoom is gone before y is reached.
+
+    Selecting an island was simply the redraw that happens often enough for
+    anyone to notice; the same fault was under every parameter change.
+    """
+
+    @staticmethod
+    def span(ax):
+        (x0, x1), (y0, y1) = ax.get_xlim(), ax.get_ylim()
+        return (x1 - x0, y1 - y0)
+
+    def zoomed(self, window):
+        """Zoom the plan panel right in, and return the view that landed.
+
+        The view that landed, not the one asked for: the aspect widens
+        whichever direction is short of the panel's own shape, so the panel
+        itself has the last word on the frame.
+        """
+        minx, miny, maxx, maxy = window.islands.total_bounds
+        window._set_view(window.ax_before,
+                         (minx, minx + (maxx - minx) / 4.0),
+                         (miny, miny + (maxy - miny) / 4.0))
+        view = self.span(window.ax_before)
+        assert view[0] < (maxx - minx), "the fixture did not actually zoom in"
+        return view
+
+    def test_selecting_an_island_holds_the_view(self):
+        window = _loaded()
+        before = self.zoomed(window)
+        window.selected = [1]
+        window._selection_changed()
+        assert self.span(window.ax_before) == pytest.approx(before)
+
+    def test_clearing_the_selection_holds_it_too(self):
+        window = _loaded()
+        window.select_all()
+        before = self.zoomed(window)
+        window.clear_selection()
+        assert self.span(window.ax_before) == pytest.approx(before)
+
+    def test_changing_a_parameter_holds_the_view(self):
+        """The same redraw, reached the other way — this was broken too."""
+        window = _loaded()
+        _plan(window)
+        before = self.zoomed(window)
+        window.width_spin.setValue(2.5)
+        assert window.plan is None                  # it did invalidate, and
+        assert self.span(window.ax_before) == pytest.approx(before)   # held
+
+    def test_planning_holds_the_view(self):
+        """You zoom to the strait you care about, then plan; staying there is
+        the whole point of preserving it."""
+        window = _loaded()
+        before = self.zoomed(window)
+        _plan(window)
+        assert window.plan.bridges
+        assert self.span(window.ax_before) == pytest.approx(before)
+
+    def test_toggling_the_anchors_holds_the_view(self):
+        window = _loaded()
+        _plan(window)
+        before = self.zoomed(window)
+        window.anchors_check.setChecked(False)
+        assert self.span(window.ax_before) == pytest.approx(before)
+
+    def test_toggling_the_lagoons_holds_the_view(self):
+        """It redraws only the result panel -- which is the panel whose redraw
+        was carrying the other one off."""
+        window = _loaded()
+        _plan(window)
+        before = self.zoomed(window)
+        window.lagoon_check.setChecked(False)
+        assert self.span(window.ax_before) == pytest.approx(before)
+
+    def test_the_two_panels_stay_together_through_it(self):
+        """A preserved view is only preserved if the result panel came along."""
+        window = _loaded()
+        _plan(window)
+        self.zoomed(window)
+        window.selected = [0]
+        window._selection_changed()
+        assert (window.ax_after.get_xlim()
+                == pytest.approx(window.ax_before.get_xlim()))
+        assert (window.ax_after.get_ylim()
+                == pytest.approx(window.ax_before.get_ylim()))
+
+    def test_a_draw_that_is_not_preserving_still_frames_everything(self):
+        """The other branch: an import frames the islands rather than holding
+        whatever view the last file left behind."""
+        window = _loaded()
+        self.zoomed(window)
+        window._draw_plan()
+        minx, miny, maxx, maxy = window.islands.total_bounds
+        (x0, x1), (y0, y1) = (window.ax_before.get_xlim(),
+                              window.ax_before.get_ylim())
+        assert x0 <= minx and x1 >= maxx
+        assert y0 <= miny and y1 >= maxy
+        assert (window.ax_after.get_xlim()
+                == pytest.approx(window.ax_before.get_xlim()))
 
 
 class TestGuards:
