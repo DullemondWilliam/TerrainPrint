@@ -23,6 +23,13 @@ Workflow
 6. **Save Necks …**       — the necks as GeoJSON: a throat bar and a blob each,
                             carrying the throat, the load, the width it wants and
                             its severity.
+7. **Save Settings**      — keep the parameters as the defaults, here and in the
+                            Province Viewer's stress layer, so a whole country is
+                            surveyed with what you tuned on one province rather
+                            than with the shipped numbers — and the two windows
+                            cannot drift into disagreeing about what a neck is.
+                            Written to the gitignored ``project_config.local.json``;
+                            **Reload** puts the boxes back to it.
 
 What the panels show
 --------------------
@@ -75,6 +82,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox,
 # the project root on sys.path before importing lib.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from lib.LIB_project_config import LOCAL_CONFIG_PATH, update_local
 from lib.LIB_stress_points import (EPSG_METRIC, StressParams, branch_mask,
                                    restress, severity_field, stress_points,
                                    width_field)
@@ -128,6 +136,36 @@ MAX_NECK_LABELS = 12
 #: thing that has to survive being read at province extent is knowing it is
 #: there. The bar beneath it is the measurement and keeps its true length.
 RISK_MARKER_PT = 7.0
+
+#: What **Save Settings** writes, as ``config key -> the control holding it``.
+#:
+#: These are the parameters that decide what a neck *is*, so they are the ones
+#: worth sharing: saved here, they are what ``UI_province_viewer`` measures a
+#: whole country with next time it is opened, and the two windows cannot drift
+#: into disagreeing about the same coast.  They go to the **local** config, which
+#: is gitignored — the tracked file stays the project's shipped defaults, and a
+#: setting typed into a window is a fact about this desk rather than a change
+#: everyone should inherit through a diff.
+#:
+#: ``report_above`` is deliberately absent: it only decides what is *drawn* from
+#: a measurement already made, the viewer has its own reason for its own floor,
+#: and sharing it would make one window's filter silently retune the other's.
+SAVED_SETTINGS = (
+    ("print.scale", "scale_spin"),
+    ("stress.pixel_mm", "pixel_spin"),
+    ("stress.ceiling_mm", "ceiling_spin"),
+    ("stress.band_mm", "band_spin"),
+    ("stress.tile_px", "tile_spin"),
+    ("stress.min_lobe_mm2", "min_lobe_spin"),
+    ("stress.lever_power", "lever_spin"),
+)
+
+#: Which ``StressParams`` field each saved key lands in, for reading them back.
+_FIELD_OF = {"print.scale": "scale", "stress.pixel_mm": "pixel_mm",
+             "stress.ceiling_mm": "ceiling_mm", "stress.band_mm": "band_mm",
+             "stress.tile_px": "tile_px",
+             "stress.min_lobe_mm2": "min_lobe_mm2",
+             "stress.lever_power": "lever_power"}
 
 #: Padding around a neck when zooming to it, as a fraction of the span shown.
 NECK_ZOOM_PAD = 0.4
@@ -302,6 +340,22 @@ class StressPointsTester(QMainWindow):
         self.above_spin.setSingleStep(0.1)
         for spin in (self.pixel_spin, self.ceiling_spin, self.band_spin):
             spin.setSuffix(" mm")
+        self.btn_save_settings = QPushButton("Save Settings")
+        self.btn_save_settings.clicked.connect(self.save_settings)
+        self.btn_save_settings.setToolTip(
+            "Keep these parameters as the defaults, for this window and for the "
+            "Province\nViewer's stress layer — so a whole country is surveyed "
+            "with the settings\nyou tuned here rather than with the shipped "
+            "ones, and the two cannot\ndisagree about what a neck is. Written "
+            "to project_config.local.json, which\nis not tracked: a number "
+            "typed into a window is a fact about this desk.\nThe severity floor "
+            "is not included — that only decides what is drawn.")
+        self.btn_reload_settings = QPushButton("Reload")
+        self.btn_reload_settings.clicked.connect(self.reload_settings)
+        self.btn_reload_settings.setToolTip(
+            "Put the controls back to the saved defaults, discarding whatever "
+            "is\nin the boxes now. Reads the same file Save Settings writes.")
+
         for label, widget in (("Scale:", self.scale_spin),
                               ("Pixel:", self.pixel_spin),
                               ("Ceiling:", self.ceiling_spin),
@@ -312,6 +366,9 @@ class StressPointsTester(QMainWindow):
                               ("Report above:", self.above_spin)):
             counts_bar.addWidget(self._caption(label, widget))
             counts_bar.addWidget(widget)
+        counts_bar.addSpacing(12)
+        counts_bar.addWidget(self.btn_save_settings)
+        counts_bar.addWidget(self.btn_reload_settings)
         counts_bar.addStretch(1)
         root.addLayout(counts_bar)
 
@@ -440,6 +497,35 @@ class StressPointsTester(QMainWindow):
         label = QLabel(text)
         label.setToolTip(widget.toolTip())
         return label
+
+    # -- settings -----------------------------------------------------------
+    def save_settings(self) -> None:
+        """Keep the parameters on screen as everyone's defaults.
+
+        Written one key at a time through ``update_local``, which merges into
+        the gitignored local config.  ``StressParams`` reads its defaults as the
+        block is *built* rather than at import, so the next window to ask --
+        here or in the Province Viewer -- measures with these without anything
+        having to be passed between them.
+        """
+        saved = []
+        for key, control in SAVED_SETTINGS:
+            value = getattr(self, control).value()
+            update_local(key, int(value) if key.endswith("tile_px")
+                         or key == "print.scale" else float(value))
+            saved.append(key.rpartition(".")[2])
+        self.status.setText(
+            f"Saved {len(saved)} settings to {Path(LOCAL_CONFIG_PATH).name} — "
+            "the Province Viewer's stress layer will measure with them too.")
+
+    def reload_settings(self) -> None:
+        """Put the controls back to the saved defaults."""
+        defaults = StressParams()
+        for key, control in SAVED_SETTINGS:
+            getattr(self, control).setValue(getattr(defaults,
+                                                    _FIELD_OF[key]))
+        self.status.setText(
+            f"Reloaded the settings from {Path(LOCAL_CONFIG_PATH).name}.")
 
     # -- parameters ---------------------------------------------------------
     def params(self) -> StressParams:

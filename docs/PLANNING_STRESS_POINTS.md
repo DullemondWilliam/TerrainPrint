@@ -765,3 +765,41 @@ The lesson for §3: "exact because a path between tiles must cross a boundary
 cell" was a true statement about the merge tree and a false one about the
 answer, and nothing in the test suite could tell the difference, because the
 incremental test compares two runs that share a tiling.
+
+
+---
+
+## 13. Settings are shared, and `tile_px` is pinned
+
+**Accuracy over speed**, as a standing instruction, settled two open questions.
+
+The first was the one §12 left: the relocation that keeps the tiling out of the
+scoring costs about 2x on an edit, and that price is paid. Nunavut's edit path
+runs around 2 s where it ran around 1 s; the necks are right more often.
+
+The second looked like an easy win and was a trap. The neck counts *settle* as
+tiles grow — British Columbia 5 / 4 / 4 / 4 across 128 / 256 / 512 / one tile,
+Nunavut 14 / 13 / 12 / 12 — and a single tile has no boundaries at all, so it is
+tempting to call it the reference and move the default up. It is not the
+reference. A **2 mm bar between two 36 mm² squares** — a neck by inspection, and
+one the module has always found — is reported at 128 and lost at 256 and above.
+Small tiles over-report on a ragged coast; large ones drop wide necks outright.
+So `tile_px` stays at 128, where every other number here was measured, and
+`test_the_tile_default_is_the_one_everything_was_measured_at` holds it there with
+the dumbbell that catches the failure. "The answer stopped changing" is not
+"the answer is right", and that is the lesson worth keeping from this section.
+
+**The settings are now shared.** `StressParams` reads its defaults through
+`field(default_factory=...)`, so they are taken from the configuration as the
+block is *built* rather than frozen at import. `LIB_project_config.load` does not
+cache, so **Save Settings** in the harness — one `update_local` call per key into
+the gitignored local config — is the whole of the handover: the next
+`StressParams()` anywhere, including the Province Viewer's stress layer, carries
+the saved numbers. Verified end to end: save `pixel_mm=0.2, ceiling_mm=4.0,
+min_lobe_mm2=60` in the harness, and a freshly opened viewer measures with them.
+
+Only the parameters that decide **what a neck is** travel. `report_above` does
+not: it filters a measurement already made, the viewer has its own reason for its
+own floor (1.0, because a survey of thirteen provinces starts from the ones that
+will break), and sharing it would let one window's display filter silently
+retune the other's.

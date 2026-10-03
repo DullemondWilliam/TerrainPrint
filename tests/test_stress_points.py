@@ -36,8 +36,12 @@ fixtures are written in millimetres and multiplied by ``MM``. A 6 mm square is
 4 mm square is 16 mm² and deliberately under it.
 """
 
+import json
 import math
+import os
+import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 import shapely
@@ -288,6 +292,62 @@ class TestTheTilingIsNotInTheAnswer(StressTestCase):
                               centre_y - neck.point.y) / StressParams().mpm
             self.assertAlmostEqual(neck.lever_mm, want, places=6,
                                    msg=f"tile {tile_px}")
+
+
+class TestTheSettingsAreShared(StressTestCase):
+    """A parameter block reads the config as it is *built*, not at import.
+
+    That is what lets a value tuned in one window be what the next one measures
+    with, without either reaching for a file: ``LIB_project_config`` re-reads on
+    every lookup, so a block built after a save carries the saved number. Frozen
+    at import instead, a saved setting would need a restart -- and in the
+    meantime the harness and the viewer would quietly measure differently.
+    """
+
+    def _with_local_config(self, values):
+        from lib import LIB_project_config as config
+        handle, path = tempfile.mkstemp(suffix=".json")
+        os.close(handle)
+        with open(path, "w", encoding="utf-8") as stream:
+            json.dump(values, stream)
+        return config, path
+
+    def test_a_saved_setting_reaches_the_next_block(self):
+        config, path = self._with_local_config(
+            {"stress": {"pixel_mm": 0.33, "tile_px": 64, "min_lobe_mm2": 7.5}})
+        try:
+            with mock.patch.object(config, "LOCAL_CONFIG_PATH", path):
+                saved = StressParams()
+            self.assertAlmostEqual(saved.pixel_mm, 0.33)
+            self.assertEqual(saved.tile_px, 64)
+            self.assertAlmostEqual(saved.min_lobe_mm2, 7.5)
+        finally:
+            os.unlink(path)
+        # And the project's own numbers are back the moment it is gone.
+        self.assertNotAlmostEqual(StressParams().pixel_mm, 0.33)
+
+    def test_what_is_passed_in_still_wins(self):
+        """Saving a default must not take an argument away from a caller."""
+        config, path = self._with_local_config({"stress": {"pixel_mm": 0.33}})
+        try:
+            with mock.patch.object(config, "LOCAL_CONFIG_PATH", path):
+                self.assertAlmostEqual(StressParams(pixel_mm=0.05).pixel_mm, 0.05)
+        finally:
+            os.unlink(path)
+
+    def test_the_tile_default_is_the_one_everything_was_measured_at(self):
+        """``tile_px`` is not yet a pure speed knob, so the default is pinned.
+
+        Both ends of the range are wrong in different directions: small tiles
+        over-report on a ragged coast, and large ones drop wide necks outright --
+        a 2 mm bar between two 36 mm² squares is found at 128 and lost at 256.
+        The counts settling as tiles grow reads like convergence on the truth and
+        is not, which is exactly why this is a test and not a comment.
+        """
+        self.assertEqual(StressParams().tile_px, 128)
+        wide = self.dumbbell(2.0)
+        self.assertEqual(len(stress_points(wide).necks), 1,
+                         "the default must find a neck that is one by inspection")
 
 
 class TestTheScore(StressTestCase):

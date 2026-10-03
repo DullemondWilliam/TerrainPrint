@@ -243,6 +243,51 @@ class TestTheMeasurementIsKept:
         assert mixed.btn_stress.isChecked(), "and it is still on show"
 
 
+class TestTheSettingsComeFromTheSharedConfig:
+    """What counts as a neck is whatever was last saved from the harness.
+
+    Not a convenience: this window and ``UI_stress_points`` measure the same
+    coasts, and reading different parameters would have them quietly disagree
+    about what a neck is. Only the *measurement* is shared — Min severity stays
+    this window's own, because it decides what is drawn and a survey of thirteen
+    provinces starts from the ones that will break.
+    """
+
+    def _local_config(self, tmp_path, values):
+        import json
+        path = tmp_path / "local.json"
+        path.write_text(json.dumps(values), encoding="utf-8")
+        return str(path)
+
+    def test_a_saved_setting_is_what_the_layer_measures_with(self, mixed,
+                                                             tmp_path,
+                                                             monkeypatch):
+        from lib import LIB_project_config as config
+        path = self._local_config(tmp_path, {"stress": {"pixel_mm": 0.25,
+                                                        "ceiling_mm": 4.5,
+                                                        "min_lobe_mm2": 60.0}})
+        monkeypatch.setattr(config, "LOCAL_CONFIG_PATH", path)
+        params = mixed._stress_params()
+        assert params.pixel_mm == pytest.approx(0.25)
+        assert params.ceiling_mm == pytest.approx(4.5)
+        assert params.min_lobe_mm2 == pytest.approx(60.0)
+
+    def test_the_print_scale_still_comes_from_the_window(self, mixed):
+        """The one parameter this window owns: it has its own control for it,
+        beside its own scale bars."""
+        mixed.scale_spin.setValue(4_000_000)
+        assert mixed._stress_params().scale == 4_000_000
+
+    def test_the_severity_floor_is_this_windows_own(self, mixed, tmp_path,
+                                                   monkeypatch):
+        from lib import LIB_project_config as config
+        path = self._local_config(tmp_path, {"stress": {"report_above": 3.0}})
+        monkeypatch.setattr(config, "LOCAL_CONFIG_PATH", path)
+        # The measurement never filters; the spin box decides what is drawn.
+        assert mixed._stress_params().report_above == 0.0
+        assert mixed.stress_spin.value() == pytest.approx(V.STRESS_SEVERITY[2])
+
+
 class TestTheStatusLine:
 
     def test_it_names_the_worst_neck_and_where_it_is(self, mixed):

@@ -188,6 +188,62 @@ class TestControlsReachTheLib:
             assert getattr(got, field) == pytest.approx(getattr(want, field)), field
 
 
+class TestSavingTheSettings:
+    """What is tuned here is what the Province Viewer surveys a country with.
+
+    The point is not convenience: the two windows measure the same coasts, and
+    if they read different parameters they quietly disagree about what a neck is.
+    ``StressParams`` reads its defaults as the block is built, so writing the
+    shared config is the whole of the handover.
+    """
+
+    def test_it_writes_the_parameters_that_decide_what_a_neck_is(self, monkeypatch):
+        window = _loaded()
+        window.pixel_spin.setValue(0.2)
+        window.ceiling_spin.setValue(4.0)
+        window.tile_spin.setValue(256)
+        window.min_lobe_spin.setValue(40.0)
+        written = {}
+        monkeypatch.setattr(U, "update_local",
+                            lambda key, value: written.__setitem__(key, value))
+        window.save_settings()
+        assert written["stress.pixel_mm"] == pytest.approx(0.2)
+        assert written["stress.ceiling_mm"] == pytest.approx(4.0)
+        assert written["stress.tile_px"] == 256
+        assert written["stress.min_lobe_mm2"] == pytest.approx(40.0)
+        assert written["print.scale"] == window.scale_spin.value()
+        assert isinstance(written["stress.tile_px"], int), "a tile is whole cells"
+
+    def test_the_severity_floor_is_not_shared(self):
+        """It decides what is *drawn* from a measurement already made, and the
+        viewer has its own reason for its own floor. Sharing it would make one
+        window's filter silently retune the other's."""
+        assert all(key != "stress.report_above" for key, _ in U.SAVED_SETTINGS)
+
+    def test_every_saved_key_names_a_control_and_a_parameter(self):
+        window = _loaded()
+        params = U.StressParams()
+        for key, control in U.SAVED_SETTINGS:
+            assert hasattr(window, control), key
+            assert hasattr(params, U._FIELD_OF[key]), key
+
+    def test_reload_puts_the_saved_values_back(self):
+        window = _loaded()
+        before = window.pixel_spin.value()
+        window.pixel_spin.setValue(before + 0.15)
+        window.tile_spin.setValue(64)
+        window.reload_settings()
+        assert window.pixel_spin.value() == pytest.approx(before)
+        assert window.tile_spin.value() == U.StressParams().tile_px
+
+    def test_saving_says_where_it_went(self, monkeypatch):
+        window = _loaded()
+        monkeypatch.setattr(U, "update_local", lambda key, value: None)
+        window.save_settings()
+        assert "local" in window.status.text()
+        assert "Province Viewer" in window.status.text()
+
+
 class TestAStaleReportIsDropped:
 
     def test_changing_a_parameter_drops_the_report(self):

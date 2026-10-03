@@ -126,13 +126,18 @@ the raster, joins discarded for having no single spanning edge, the two sides
 meeting along a *run* or through a third piece, and a lever arm left pointing at
 the side the cut threw away.  ``TestTheTilingIsNotInTheAnswer`` holds all four.
 
-**It is not yet true of a real coastline.**  Measured at the time of writing,
-British Columbia reports five necks at tiles of 16 to 128 and four at 256 and
-512; Newfoundland reports two except at 64 and 512, where it reports three;
-Nunavut ranges from twelve to fifteen.  So ``tile_px`` is still, on ragged
-geometry, a little bit of an input, and the default of 128 is the value every
-other number here was measured at.  The residue is in the tile summary rather
-than in the scoring, and it is the open end of this module.
+**It is not yet true of a real coastline**, and neither end of the range can be
+trusted.  Neck counts at 128 / 256 / 512 / one tile: Nova Scotia 2 / 2 / 2 / 2,
+British Columbia 5 / 4 / 4 / 4, Newfoundland 2 / 2 / 3 / 3, Nunavut
+14 / 13 / 12 / 12.  The counts settling as the tiles grow looks like convergence
+on the truth and **is not**: a 2 mm bar between two 36 mm² squares, a neck by
+inspection, is found at 128 and lost at 256 and above.  Small tiles over-report
+on one coast; large ones drop wide necks outright.
+
+So the default stays at **128**, which is where every other number in this module
+was measured and which finds every neck in the synthetic fixtures.  The residue
+is in the tile summary rather than in the scoring, and closing it is the open end
+of this module: until it is closed, ``tile_px`` is not a knob to turn casually.
 
 Three things that look right and are not
 ----------------------------------------
@@ -239,39 +244,59 @@ COMPACT_SLENDERNESS = 1.0 / math.sqrt(math.pi)
 
 # -- parameters -------------------------------------------------------------
 
+def _from_config(dotted):
+    """A field default read when the block is built, not when it is imported.
+
+    So that a value saved from one tool is picked up by the next without either
+    of them having to reach for the file: the config is re-read on every lookup
+    (``LIB_project_config.load`` does not cache), and a ``StressParams()`` built
+    after a save carries the saved number.  With a plain default the value would
+    be frozen at import and a saved setting would need a restart -- and the two
+    windows would quietly measure differently in the meantime.
+    """
+    return field(default_factory=lambda: _cfg(dotted))
+
+
 @dataclass
 class StressParams:
-    """What counts as a neck, and what one can hold. All lengths are print-mm."""
-    scale: float = DEFAULT_SCALE
+    """What counts as a neck, and what one can hold. All lengths are print-mm.
+
+    Every default is read from the configuration **as the block is built**, so
+    ``lib.LIB_project_config.update_local`` is all it takes for a setting to
+    reach every tool that measures.  See :func:`_from_config`.
+    """
+    scale: float = _from_config("print.scale")
     #: The width resolution. Everything narrower than two pixels is invisible to
     #: the field, so this is the floor on any throat that can be reported.
-    pixel_mm: float = _cfg("stress.pixel_mm")
+    pixel_mm: float = _from_config("stress.pixel_mm")
     #: Above this width, a join is not a stress point -- and clamping here is
     #: what makes an edit local (see the module docstring).
-    ceiling_mm: float = _cfg("stress.ceiling_mm")
+    ceiling_mm: float = _from_config("stress.ceiling_mm")
     #: Throat resolution, and an accuracy knob rather than only a speed one:
     #: two joins landing in the same band are simultaneous, so one neck's load
     #: can be split across two events. At 0.05 mm British Columbia reports
     #: three necks where the pixel-by-pixel flood finds four.
-    band_mm: float = _cfg("stress.band_mm")
-    #: The reuse unit. 128 px put Nunavut's reassembly graph at 3% of the pixel
-    #: graph; bigger tiles reassemble faster but cost more to re-summarise.
-    tile_px: int = _cfg("stress.tile_px")
+    band_mm: float = _from_config("stress.band_mm")
+    #: The reuse unit -- and, until the tile summary is exact, a little bit of
+    #: an accuracy knob too. The answer settles as tiles grow and a single tile
+    #: has no boundaries at all, so the default is the smallest tile at which
+    #: all four test provinces have already settled. See the module docstring.
+    tile_px: int = _from_config("stress.tile_px")
     #: How much land has to hang on each side before a join is a neck at all.
     #: This is "two *larger* areas" in numbers.
-    min_lobe_mm2: float = _cfg("stress.min_lobe_mm2")
+    min_lobe_mm2: float = _from_config("stress.min_lobe_mm2")
     #: Room around the land in the grid, so that growing the coast a little does
     #: not throw the cached raster away.
-    margin_mm: float = _cfg("stress.margin_mm")
-    thickness_mm: float = _cfg("print.border_thickness_mm")
+    margin_mm: float = _from_config("stress.margin_mm")
+    thickness_mm: float = _from_config("print.border_thickness_mm")
     #: The calibration, borrowed rather than invented: what one bridge of
     #: ``capacity_at_mm`` is reckoned to hold.
-    capacity_mm2: float = _cfg("bridges.mass_per_bridge_mm2")
-    capacity_at_mm: float = _cfg("bridges.width_mm")
+    capacity_mm2: float = _from_config("bridges.mass_per_bridge_mm2")
+    capacity_at_mm: float = _from_config("bridges.width_mm")
     #: 0 weighs a load by its mass alone; 1 also by how far out it sits.
-    lever_power: float = _cfg("stress.lever_power")
+    lever_power: float = _from_config("stress.lever_power")
     #: Necks below this severity are measured but not reported.
-    report_above: float = _cfg("stress.report_above")
+    report_above: float = _from_config("stress.report_above")
     #: Recompute from scratch and check the incremental answer. For tests, and
     #: for anyone who suspects a stale overlay.
     verify: bool = False

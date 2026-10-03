@@ -53,6 +53,14 @@ Workflow
    likely to break.  Measuring a layer is about fifteen seconds for eight
    provinces, so it says where it has got to as it goes.
 
+   **What counts as a neck is read from the shared config**, so whatever is
+   tuned and saved in ``harnesses/UI_stress_points.py`` -- the pixel, the
+   ceiling, the band, the tile, the smallest area worth holding up -- is what a
+   whole country is surveyed with here.  The two windows cannot drift into
+   disagreeing about the same coast.  *Min severity* is the exception and stays
+   this window's own: it decides what is drawn rather than what is measured, and
+   a survey of thirteen provinces starts from the ones that will break.
+
 Nothing here writes. There is no undo because there is nothing to undo; to
 change a province, open it in ``UI_island_editor``.
 
@@ -518,7 +526,11 @@ class ProvinceViewer(QMainWindow):
             "badly. Finds every neck with its own throat width, weighs what "
             "falls off if it goes, and scores that against what a neck of that "
             "width can carry. Measuring is about two seconds a province, so the "
-            "status line counts them off.")
+            "status line counts them off.\n\n"
+            "What counts as a neck — the pixel, the ceiling, the band, the "
+            "tile,\nthe smallest area worth holding up — comes from the shared "
+            "config,\nso it is whatever was last saved from the Stress Points "
+            "harness.")
         self.btn_worst_neck = self._button("Worst neck", self.zoom_to_worst_neck,
                                            enabled=False)
         self.btn_worst_neck.setToolTip(

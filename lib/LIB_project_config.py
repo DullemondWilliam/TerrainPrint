@@ -166,9 +166,18 @@ DEFAULTS = {
         # finds four, and 0.025 mm finds all four with their right masses.
         # Finer than this buys nothing and costs the time twice over.
         "band_mm": 0.025,
-        # The unit of reuse after an edit. At 128 px the graph that has to be
-        # reassembled is 3% of the pixel graph; bigger tiles reassemble faster
-        # but cost more to re-summarise.
+        # The unit of reuse after an edit -- and, until the tile summary is
+        # exact, a little bit of an accuracy knob as well, which is why it is
+        # left where every other number in the module was measured.
+        #
+        # Neither end of the range is trustworthy. Small tiles over-report on a
+        # ragged coast and large ones under-report: across 128 / 256 / 512 /
+        # one tile the neck counts run Nova Scotia 2 / 2 / 2 / 2, British
+        # Columbia 5 / 4 / 4 / 4, Newfoundland 2 / 2 / 3 / 3, Nunavut
+        # 14 / 13 / 12 / 12. The counts settling as tiles grow looked at first
+        # like convergence on the truth, and it is not: a 2 mm bar between two
+        # 36 mm2 squares -- a neck by inspection -- is found at 128 and lost at
+        # 256 and above. 128 finds every neck in the synthetic fixtures.
         "tile_px": 128,
         # How much land has to hang on each side before a join is a neck at
         # all: "two larger areas", in numbers.
