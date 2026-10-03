@@ -9,10 +9,16 @@ worked on; a second entry point takes that back with a grid of what changed and
 recomputes only the parts an edit can reach. §3 is that design, and the locality
 it rests on is proven by measurement, not assumed.
 
-> **Status: planned.** Nothing is built. Every number below was measured by
-> prototype against the cleaned GeoJSON in `Data/JSonProvinces-Cleaned/` at
-> 1:8,000,000, not estimated — the measurements are labelled where they appear,
-> and the few figures that are derived rather than measured say so.
+> **Status: built.** `lib/LIB_stress_points.py` and
+> `harnesses/UI_stress_points.py` implement this plan, with
+> `tests/test_stress_points.py` (44) and `tests/test_stress_points_ui.py` (43).
+> This document is kept as the reasoning behind the design; §10 records what the
+> build changed, and the built module's own docstring carries the final numbers.
+>
+> Every number below was measured by prototype against the cleaned GeoJSON in
+> `Data/JSonProvinces-Cleaned/` at 1:8,000,000, not estimated — the measurements
+> are labelled where they appear, and the few figures that are derived rather
+> than measured say so.
 
 ---
 
@@ -595,3 +601,62 @@ order of magnitude is, and the splice is what makes the tiling's input cheap.
    `tests/test_stress_points_ui.py` following `test_island_bridges_ui.py`.
 6. `docs/USING_STRESS_POINTS.md` once the behaviour is real, with the measured
    edit budget, and a status note at the top of this file.
+
+
+---
+
+## 10. What the build changed
+
+The plan survived contact, with four corrections worth recording. Each came from
+measurement, and each is pinned by a test.
+
+**The band default is 0.025 mm, not 0.05 mm.** §2 called `band_mm` an accuracy
+knob and guessed the accuracy was free. It is not: two joins landing in the same
+band are simultaneous, so one neck's load can be split across both. At 0.05 mm
+British Columbia reports three necks where the pixel-by-pixel flood finds four,
+the fourth losing its load to a sibling and falling under `min_lobe_mm2`. 0.025 mm
+finds all four with their right masses and costs about half as much again; 0.01 mm
+buys nothing and costs double.
+
+**The load is measured by cutting the neck, not by thresholding the province.**
+The plan weighed the branch as the component standing above the throat width, on
+the grounds that it is what the descent reports and is exactly reproducible.
+Both true, and it undercounts, because the branch's own coastal fringe is
+narrower than the throat and so is left out. Two 36 mm² squares on a 1.6 mm bar
+came out at 20 mm² each — under the floor, so the neck vanished on mass it
+demonstrably has. The load is now the land severed by removing the neck's own
+blob. That does not always part the two sides (five of Nunavut's fourteen necks
+part, nine do not), so `Neck.severed` says which measurement is being read and
+the harness prints the caveat.
+
+**The region doubles as the cut, which fixed its size.** §6 wanted the shaded
+blob big enough to see. It is also the cut the load is weighed by, and the tight
+job wins: at a 1.5× reach with a width tolerance the cut ate the ends it was
+supposed to be weighing. Reach 2.5× and 4× were measured and are worse, not
+better. The blob is now the waist and the *bar* carries the visibility, in screen
+units.
+
+**The costs.** The plan's ~0.25 s for a Nunavut edit was optimistic: it counted
+the tile work and the reassembly and nothing else. The built figures, at the
+0.025 mm band the answer actually needs:
+
+| Province | grid | full | an edit | tiles redone | held |
+|---|---|---|---|---|---|
+| Nova Scotia | 0.5 Mpx | 0.36 s | 87 ms | 1.2 / 35 | 2 MB |
+| Newfoundland | 2.7 Mpx | 1.49 s | 229 ms | 2.2 / 180 | 12 MB |
+| British Columbia | 3.3 Mpx | 1.74 s | 243 ms | 2.0 / 209 | 15 MB |
+| Nunavut | 10.7 Mpx | 6.72 s | 979 ms | 1.5 / 675 | 51 MB |
+
+An edit is a fifth to a seventh of a full run rather than the twentieth the plan
+hoped for, and the memory is the dense `uint16` level field rather than the
+sparse 8 MB §3 sketched — simpler, and worth the difference. Two measured
+decisions got it there: the branch search grows a window from the seed instead of
+labelling the province (the held side is nearly always small), and joins are
+dropped during the descent on an **upper** bound of their mass, so the pre-filter
+cannot lose a neck the cut would have rescued.
+
+**What held exactly.** The two locality results the plan rests on both survived:
+the spliced width field is bit-exact against a full pass, and the incremental
+necks equal a from-scratch run edit after edit — which is what
+`TestRestressAgreesWithAFullRun` asserts, and what `verify=True` checks from
+inside.
