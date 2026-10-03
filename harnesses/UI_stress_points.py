@@ -147,9 +147,12 @@ RISK_MARKER_PT = 7.0
 #: setting typed into a window is a fact about this desk rather than a change
 #: everyone should inherit through a diff.
 #:
-#: ``report_above`` is deliberately absent: it only decides what is *drawn* from
-#: a measurement already made, the viewer has its own reason for its own floor,
-#: and sharing it would make one window's filter silently retune the other's.
+#: ``report_above`` travels with them.  It only decides what is *drawn* from a
+#: measurement already made, so it was left out at first on the grounds that the
+#: viewer had its own reason for its own floor -- and that floor, at 1.0, hid a
+#: real neck at Rupert Inlet so completely that it read as a measurement
+#: failure.  A filter the two windows disagree about is a filter that makes one
+#: of them look broken.
 SAVED_SETTINGS = (
     ("print.scale", "scale_spin"),
     ("stress.pixel_mm", "pixel_spin"),
@@ -158,6 +161,7 @@ SAVED_SETTINGS = (
     ("stress.tile_px", "tile_spin"),
     ("stress.min_lobe_mm2", "min_lobe_spin"),
     ("stress.lever_power", "lever_spin"),
+    ("stress.report_above", "above_spin"),
 )
 
 #: Which ``StressParams`` field each saved key lands in, for reading them back.
@@ -165,7 +169,8 @@ _FIELD_OF = {"print.scale": "scale", "stress.pixel_mm": "pixel_mm",
              "stress.ceiling_mm": "ceiling_mm", "stress.band_mm": "band_mm",
              "stress.tile_px": "tile_px",
              "stress.min_lobe_mm2": "min_lobe_mm2",
-             "stress.lever_power": "lever_power"}
+             "stress.lever_power": "lever_power",
+             "stress.report_above": "report_above"}
 
 #: Padding around a neck when zooming to it, as a fraction of the span shown.
 NECK_ZOOM_PAD = 0.4
@@ -346,10 +351,11 @@ class StressPointsTester(QMainWindow):
             "Keep these parameters as the defaults, for this window and for the "
             "Province\nViewer's stress layer — so a whole country is surveyed "
             "with the settings\nyou tuned here rather than with the shipped "
-            "ones, and the two cannot\ndisagree about what a neck is. Written "
-            "to project_config.local.json, which\nis not tracked: a number "
-            "typed into a window is a fact about this desk.\nThe severity floor "
-            "is not included — that only decides what is drawn.")
+            "ones, and the two cannot\ndisagree about what a neck is — nor about "
+            "which part of the answer is\nworth showing, since the severity "
+            "floor travels with them. Written to\nproject_config.local.json, "
+            "which is not tracked: a number typed into a\nwindow is a fact "
+            "about this desk.")
         self.btn_reload_settings = QPushButton("Reload")
         self.btn_reload_settings.clicked.connect(self.reload_settings)
         self.btn_reload_settings.setToolTip(

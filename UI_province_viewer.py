@@ -49,17 +49,18 @@ Workflow
    Each neck is marked on the **severity** ramp, where **1.0 means the neck is
    exactly as wide as its load wants** — so the colour says sound, marginal or
    at risk rather than merely more or less.  **Min severity** filters what is
-   drawn without re-measuring anything, and **Worst neck** goes to the one most
-   likely to break.  Measuring a layer is about fifteen seconds for eight
-   provinces, so it says where it has got to as it goes.
+   drawn without re-measuring anything — zero by default, so everything found is
+   on the map and a sound neck is never mistaken for a missing one — and **Worst
+   neck** goes to the one most likely to break.  Measuring a layer is about
+   fifteen seconds for eight provinces, so it says where it has got to as it
+   goes.
 
-   **What counts as a neck is read from the shared config**, so whatever is
-   tuned and saved in ``harnesses/UI_stress_points.py`` -- the pixel, the
-   ceiling, the band, the tile, the smallest area worth holding up -- is what a
-   whole country is surveyed with here.  The two windows cannot drift into
-   disagreeing about the same coast.  *Min severity* is the exception and stays
-   this window's own: it decides what is drawn rather than what is measured, and
-   a survey of thirteen provinces starts from the ones that will break.
+   **The stress settings are read from the shared config**, so whatever is tuned
+   and saved in ``harnesses/UI_stress_points.py`` -- the pixel, the ceiling, the
+   band, the tile, the smallest area worth holding up, and the severity floor --
+   is what a whole country is surveyed with here.  The two windows cannot drift
+   into disagreeing about the same coast, nor about which part of the answer is
+   worth putting on the map.
 
 Nothing here writes. There is no undo because there is nothing to undo; to
 change a province, open it in ``UI_island_editor``.
@@ -186,10 +187,19 @@ STRESS_MARKER_PT = 9.0
 STRESS_LINEWIDTH = 1.6
 
 #: The smallest severity worth drawing, as ``(lo, hi, default, decimals,
-#: step)``. **1.0 by default**, which is the anchor: this tool is a survey of
-#: thirteen provinces, and the question it is here to answer is which of them
-#: will break, not where every sound neck is.
-STRESS_SEVERITY = (0.0, 20.0, 1.0, 2, 0.25)
+#: step)``.  The default comes from the shared config, like the rest of the
+#: stress settings, so the floor is set once and both this window and the Stress
+#: Points harness start from it.
+#:
+#: **Zero by default: draw every neck the measurement found.**  It was 1.0 --
+#: the anchor -- on the argument that a survey of thirteen provinces is asking
+#: which of them will break.  That hid sound necks so completely that a real one
+#: at Rupert Inlet, on the north end of Vancouver Island, read as a measurement
+#: failure: severity 0.26, found every single time, never drawn.  A floor that
+#: quietly removes the evidence is worse than a busier map -- and the map is not
+#: in fact busy: 29 marks across the eight cleaned provinces, 6 of them at risk,
+#: each coloured by how bad it is.
+STRESS_SEVERITY = (0.0, 20.0, cfg("stress.report_above"), 2, 0.25)
 
 #: How much of the map to show when framing a neck, in printed millimetres. A
 #: floor rather than a share of the neck: a throat is a fraction of a millimetre
@@ -512,7 +522,10 @@ class ProvinceViewer(QMainWindow):
             "Draw only necks at or above this severity. Severity is the width "
             "the neck wants over the width it has, so 1.0 is marginal and "
             "anything above it is thinner than its load. Filtering only — "
-            "turning this re-draws, it does not re-measure.")
+            "turning this re-draws, it does not re-measure.\n\nZero draws "
+            "everything that was found, which is the default: a floor that\n"
+            "hides a sound neck makes it look like the measurement missed it.\n"
+            "Saved and loaded with the rest of the stress settings.")
         # The caption rides the box rather than sitting beside it: four groups
         # of label-and-control is more toolbar than a 1920 screen has, and this
         # one says what it is in two characters.

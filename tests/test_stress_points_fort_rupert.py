@@ -26,12 +26,12 @@ other -- and losing it is what prompted the fixture.
 **It is found in the right place**, within a few millimetres of Fort Rupert,
 rather than somewhere else on a 371 mm² coast.
 
-**It is sound, and that is why it looks missing.** Its severity is about a
-quarter, well under the 1.0 anchor, so ``UI_province_viewer``'s stress layer --
-which defaults to drawing only necks at severity 1.0 and worse -- does not draw
-it. That is the layer behaving as designed on a neck that really is not at
-risk, and the test says so out loud so that nobody goes looking for a bug in
-the measurement when the answer is the display floor.
+**It is sound, and it is on the map anyway.** Its severity is about a quarter,
+well under the 1.0 anchor. ``UI_province_viewer``'s stress layer used to default
+to drawing only necks at 1.0 and worse, which hid this one completely -- found
+every single time, never drawn, and so indistinguishable from a measurement
+failure. The floor now starts at zero and is shared with the harness, and
+``TestItIsOnTheMap`` holds it there.
 
 The load is deliberately asserted as a **range**. The cut that weighs a branch
 does not part this one (``severed`` is False), so the figure reported is the
@@ -136,32 +136,38 @@ class TestTheNeckIsFound(FortRupertTestCase):
         self.assertLess(self.distance_mm(neck.region.centroid), 8.0)
 
 
-class TestWhyItLooksMissing(FortRupertTestCase):
-    """It is sound, and the viewer draws only what is at risk.
+class TestItIsOnTheMap(FortRupertTestCase):
+    """Sound, and drawn anyway.
 
-    Worth a test of its own, because "the overlay does not show it" and "the
-    measurement does not find it" look identical from the map and have entirely
-    different fixes.
+    Worth a test of its own because this neck is exactly the case that went
+    wrong: "the overlay does not show it" and "the measurement does not find
+    it" look identical from the map and have entirely different fixes. The
+    viewer used to default its severity floor to 1.0, which hid every sound
+    neck -- so a 0.26 that was found every single time read as a miss. The floor
+    now starts at zero and is shared with the harness.
     """
 
-    def test_the_neck_is_not_at_risk(self):
+    def test_the_neck_is_sound(self):
+        """It is not at risk, and that is the right answer: 18 mm² of island on
+        a 1.15 mm corridor is comfortable. Being sound is not a reason to leave
+        it off the map."""
         neck = self.report.necks[0]
         self.assertLess(neck.severity, 1.0)
         self.assertFalse(neck.at_risk)
 
-    def test_the_viewers_default_floor_hides_it(self):
+    def test_the_viewers_floor_draws_it(self):
         import UI_province_viewer as viewer
         floor = viewer.STRESS_SEVERITY[2]
-        self.assertGreaterEqual(floor, 1.0)
-        self.assertLess(self.report.necks[0].severity, floor,
-                        "if this ever fails the layer draws it and this test "
-                        "has stopped describing the thing it was written for")
+        self.assertGreaterEqual(self.report.necks[0].severity, floor,
+                                "the province viewer would not draw the neck "
+                                "this whole file was written about")
 
-    def test_asking_for_everything_shows_it(self):
-        """Which is the answer to "why can I not see it": turn Min severity
-        down. The measurement had it all along."""
-        shown = [n for n in self.report.necks if n.severity >= 0.0]
-        self.assertTrue(shown)
+    def test_the_floor_is_shared_so_it_cannot_drift_back(self):
+        """The harness saves the floor along with the measurement, so the two
+        windows cannot disagree about which part of the answer to show."""
+        from harnesses import UI_stress_points as harness
+        assert any(key == "stress.report_above"
+                   for key, _ in harness.SAVED_SETTINGS)
 
 
 if __name__ == "__main__":

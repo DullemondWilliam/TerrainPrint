@@ -214,11 +214,12 @@ class TestSavingTheSettings:
         assert written["print.scale"] == window.scale_spin.value()
         assert isinstance(written["stress.tile_px"], int), "a tile is whole cells"
 
-    def test_the_severity_floor_is_not_shared(self):
-        """It decides what is *drawn* from a measurement already made, and the
-        viewer has its own reason for its own floor. Sharing it would make one
-        window's filter silently retune the other's."""
-        assert all(key != "stress.report_above" for key, _ in U.SAVED_SETTINGS)
+    def test_the_severity_floor_travels_with_them(self):
+        """It was left out at first -- it only decides what is *drawn* -- and the
+        viewer's own floor of 1.0 then hid a real neck at Rupert Inlet so well
+        that it read as a measurement failure. A filter the two windows disagree
+        about is a filter that makes one of them look broken."""
+        assert any(key == "stress.report_above" for key, _ in U.SAVED_SETTINGS)
 
     def test_every_saved_key_names_a_control_and_a_parameter(self):
         window = _loaded()

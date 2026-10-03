@@ -201,10 +201,23 @@ class TestMinSeverity:
         mixed.stress_spin.setValue(0.0)
         assert len(mixed.shown_necks()) == 1
 
-    def test_the_default_is_the_anchor(self):
-        """1.0 is marginal, and a survey of thirteen provinces is asking which
-        will break rather than where every sound neck is."""
-        assert V.STRESS_SEVERITY[2] == pytest.approx(1.0)
+    def test_the_default_draws_everything_that_was_found(self):
+        """It was 1.0 -- the anchor -- and that hid a real neck at Rupert Inlet
+        so completely it read as a measurement failure. A floor that removes the
+        evidence is worse than a busier map, and the map is not busy: 29 marks
+        across the eight cleaned provinces."""
+        assert V.STRESS_SEVERITY[2] == pytest.approx(0.0)
+
+    def test_the_default_comes_from_the_shared_config(self, tmp_path,
+                                                      monkeypatch):
+        """Set the floor once and both windows start from it."""
+        import json
+        from lib import LIB_project_config as config
+        path = tmp_path / "local.json"
+        path.write_text(json.dumps({"stress": {"report_above": 1.5}}),
+                        encoding="utf-8")
+        monkeypatch.setattr(config, "LOCAL_CONFIG_PATH", str(path))
+        assert config.get("stress.report_above") == pytest.approx(1.5)
 
     def test_it_does_nothing_while_the_layer_is_off(self, mixed):
         mixed.stress_spin.setValue(3.0)
@@ -278,14 +291,15 @@ class TestTheSettingsComeFromTheSharedConfig:
         mixed.scale_spin.setValue(4_000_000)
         assert mixed._stress_params().scale == 4_000_000
 
-    def test_the_severity_floor_is_this_windows_own(self, mixed, tmp_path,
-                                                   monkeypatch):
+    def test_the_measurement_itself_never_filters(self, mixed, tmp_path,
+                                                  monkeypatch):
+        """The floor is shared, but it is applied as the layer *draws*: the
+        measurement is of the province, not of the filter, so turning Min
+        severity re-draws instead of spending fifteen seconds again."""
         from lib import LIB_project_config as config
         path = self._local_config(tmp_path, {"stress": {"report_above": 3.0}})
         monkeypatch.setattr(config, "LOCAL_CONFIG_PATH", path)
-        # The measurement never filters; the spin box decides what is drawn.
         assert mixed._stress_params().report_above == 0.0
-        assert mixed.stress_spin.value() == pytest.approx(V.STRESS_SEVERITY[2])
 
 
 class TestTheStatusLine:
