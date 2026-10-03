@@ -707,3 +707,61 @@ The severity ramp is spelled out in both `UI_stress_points` and
 `UI_province_viewer`, because a harness is throwaway and a viewer is kept and
 neither should import the other. `tests/test_province_viewer_stress.py` holds the
 two copies in step.
+
+
+---
+
+## 12. `tile_px` was in the answer
+
+§3 presented the tiling as exact and `tile_px` as a pure performance knob. That
+was argued, not measured, and the first measurement of it disagreed: **British
+Columbia reported six necks at a 32-cell tile and four at 512**, and a plain
+dumbbell reported none at all at 16.
+
+The merge tree itself was mostly innocent — the throats and the masses agreed
+across tile sizes, which is the composition property §3 claims. What leaked was
+everything built on top of it. Four faults, each fixed, each now pinned by
+`TestTheTilingIsNotInTheAnswer`:
+
+1. **The throat was located from the graph.** A merge found inside a tile was
+   located by searching that tile; one found across a boundary was located at the
+   crossing cell. Same neck, different cell, different tiling — and that cell is
+   where the load is cut, so it decided the load, whether the cut severed, and
+   therefore whether the neck was reported at all. It is now found on the raster:
+   the cells that appear at this very step, and which standing piece each touches.
+2. **Joins with no single spanning edge were discarded.** `_score` dropped any
+   event whose `prov` was -1, and whether the graph can name one cell spanning
+   two sides is a fact about the tiling. This is what cost the dumbbell its only
+   neck at 16 cells.
+3. **The two sides usually do not touch at a cell at all.** They meet along a
+   *run* of equally narrow cells, or through a third piece — three of British
+   Columbia's seven merges. Both cases had to be given a canonical answer.
+4. **The lever arm pointed at the wrong side.** When the cut disagreed with the
+   descent about which side was lighter, the two areas were swapped and the
+   centroid was not, so the arm — and with it the severity — was measured to the
+   side that had just been thrown away. One dumbbell, two tile sizes, severity
+   0.36 against 0.29 with every other number identical.
+
+A fifth, latent: the lobe attachment scan read `lobes` only inside the tile crop,
+so a narrow cell whose thick neighbour lay one cell into the next tile lost that
+join — a crossing edge joins narrow to narrow and could not recover it. Fixed;
+no measured effect, because a rim cell touching a lobe across the boundary almost
+always touches it inside as well.
+
+**What is true now.** Synthetic geometry — a dumbbell at two neck widths, a chain
+of two necks, a lopsided pair — and Nova Scotia are identical from 16 cells to
+512. British Columbia, Newfoundland and Nunavut are not: 5/5/5/5/4/4,
+2/2/3/2/2/3 and 14/15/15/14/13/12 across 16, 32, 64, 128, 256, 512. The residue
+is in the tile summary, not in the scoring, and it is the open end of the module.
+
+**What it cost.** The relocation is not free, because it needs the standing
+pieces labelled at each step a neck falls in. Nunavut's full run went from 6.7 s
+to 8.6 s and an edit from 0.98 s to 2.1 s; British Columbia from 1.74 s to 2.26 s
+and 0.24 s to 0.43 s. Part of that was bought back by finding the runs through a
+sparse graph over the few thousand cells that appear at a step rather than by
+labelling ten million.
+
+The lesson for §3: "exact because a path between tiles must cross a boundary
+cell" was a true statement about the merge tree and a false one about the
+answer, and nothing in the test suite could tell the difference, because the
+incremental test compares two runs that share a tiling.

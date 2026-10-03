@@ -36,6 +36,7 @@ fixtures are written in millimetres and multiplied by ``MM``. A 6 mm square is
 4 mm square is 16 mm² and deliberately under it.
 """
 
+import math
 import unittest
 
 import numpy as np
@@ -211,6 +212,82 @@ class TestTheLoad(StressTestCase):
         twice = self.only_neck(self.twice_joined(0.5, 1.0))
         self.assertAlmostEqual(twice.throat_mm, 1.0, delta=0.15)
         self.assertLess(twice.load_mm2, 2 * once.load_mm2)
+
+
+class TestTheTilingIsNotInTheAnswer(StressTestCase):
+    """``tile_px`` is the unit of reuse after an edit. It must not be an input.
+
+    It was one, and the measurement that found it is worth keeping: British
+    Columbia reported six necks at a 32-cell tile and four at 512, and a plain
+    dumbbell reported none at all at 16. Four separate faults, each of which let
+    the tiling reach the answer:
+
+    * the throat was located from the **graph**, so the same neck was recorded
+      at a different cell under a different tiling -- and that cell is where the
+      load is cut, so it decided the load and whether the cut severed at all;
+    * a join with no single edge spanning it was **discarded**, and whether such
+      an edge exists is a fact about the tiling, not about the coast;
+    * the two sides usually meet along a *run* of equally narrow cells, or
+      through a third piece, and neither case was handled;
+    * and when the cut disagreed with the descent about which side was lighter,
+      the two areas were swapped but the **centroid was not**, so the lever arm
+      -- and with it the severity -- was measured to the side that was thrown
+      away.
+
+    The last is the one this class would have caught soonest: one dumbbell, two
+    tile sizes, severity 0.36 against 0.29 with every other number identical.
+    """
+
+    #: Enough sizes to span tiles smaller than a neck and larger than the whole
+    #: province, which are the two ends that broke.
+    TILES = (16, 32, 128, 512)
+
+    def _necks(self, geom, tile_px):
+        report = stress_points(geom, StressParams(tile_px=tile_px))
+        self.assertTrue(report.measured)
+        return [(round(n.severity, 6), round(n.throat_mm, 6),
+                 round(n.load_mm2, 3), round(n.lever_mm, 3)) for n in report.necks]
+
+    def test_a_dumbbell_reads_the_same_at_every_tile_size(self):
+        for neck_mm in (0.2, 1.0):
+            geom = self.dumbbell(neck_mm)
+            want = self._necks(geom, self.TILES[0])
+            self.assertEqual(len(want), 1, f"{neck_mm} mm bar")
+            for tile_px in self.TILES[1:]:
+                self.assertEqual(self._necks(geom, tile_px), want,
+                                 f"{neck_mm} mm bar at tile {tile_px}")
+
+    def test_a_chain_of_necks_reads_the_same_at_every_tile_size(self):
+        """Two necks of different widths, so the *ordering* is on trial too."""
+        mm = self.MM
+        chain = shapely.union_all([
+            box(0, 0, 6 * mm, 6 * mm),
+            box(6 * mm, 2.9 * mm, 8 * mm, 3.1 * mm),            # 0.2 mm
+            box(8 * mm, 0, 14 * mm, 6 * mm),
+            box(14 * mm, 2.75 * mm, 16 * mm, 3.25 * mm),        # 0.5 mm
+            box(16 * mm, 0, 22 * mm, 6 * mm)])
+        want = self._necks(chain, self.TILES[0])
+        self.assertEqual(len(want), 2)
+        for tile_px in self.TILES[1:]:
+            self.assertEqual(self._necks(chain, tile_px), want,
+                             f"tile {tile_px}")
+
+    def test_the_lever_belongs_to_the_side_that_was_kept(self):
+        """The regression for the swap: the load and the arm must describe the
+        same piece of land, whichever side the search happened to start from."""
+        for tile_px in self.TILES:
+            report = stress_points(self.dumbbell(1.0),
+                                   StressParams(tile_px=tile_px))
+            neck = report.necks[0]
+            mask = branch_mask(report, neck)
+            rows, cols = np.nonzero(mask)
+            grid = report.grid
+            centre_x = grid.transform.c + (cols.mean() + 0.5) * grid.transform.a
+            centre_y = grid.transform.f + (rows.mean() + 0.5) * grid.transform.e
+            want = math.hypot(centre_x - neck.point.x,
+                              centre_y - neck.point.y) / StressParams().mpm
+            self.assertAlmostEqual(neck.lever_mm, want, places=6,
+                                   msg=f"tile {tile_px}")
 
 
 class TestTheScore(StressTestCase):

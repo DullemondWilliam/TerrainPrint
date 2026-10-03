@@ -118,6 +118,22 @@ widths at which they join, and the mass arriving at each width.  Reassembly runs
 the same descent over the union of those summaries.  An edit re-summarises only
 the tiles it can reach.
 
+``tile_px`` is meant to buy speed and nothing else, and **on simple geometry it
+now does**: a dumbbell, a chain of necks and Nova Scotia read identically from a
+16-cell tile to a 512-cell one.  Getting there took four fixes, each of which had
+let the tiling into the answer -- the throat located from the graph rather than
+the raster, joins discarded for having no single spanning edge, the two sides
+meeting along a *run* or through a third piece, and a lever arm left pointing at
+the side the cut threw away.  ``TestTheTilingIsNotInTheAnswer`` holds all four.
+
+**It is not yet true of a real coastline.**  Measured at the time of writing,
+British Columbia reports five necks at tiles of 16 to 128 and four at 256 and
+512; Newfoundland reports two except at 64 and 512, where it reports three;
+Nunavut ranges from twelve to fifteen.  So ``tile_px`` is still, on ragged
+geometry, a little bit of an input, and the default of 128 is the value every
+other number here was measured at.  The residue is in the tile summary rather
+than in the scoring, and it is the open end of this module.
+
 Three things that look right and are not
 ----------------------------------------
 Recorded because each cost a prototype:
@@ -636,28 +652,47 @@ def _summarise_tile(land, level, lobes, box, shape, nbands, pixel_mm):
     summary.edges = edges
 
     # Attachments to the thick land, named by a lobe pixel rather than a label.
-    lobe_crop = lobes[rows, cols]
-    seen_pairs = {}
-    for sl_a, sl_b in (((slice(1, None), slice(None)), (slice(0, -1), slice(None))),
-                       ((slice(0, -1), slice(None)), (slice(1, None), slice(None))),
-                       ((slice(None), slice(1, None)), (slice(None), slice(0, -1))),
-                       ((slice(None), slice(0, -1)), (slice(None), slice(1, None)))):
-        mine, theirs = lineage_of[sl_a], lobe_crop[sl_b]
-        hit = (mine >= 0) & (theirs > 0)
-        if not hit.any():
+    #
+    # Looked up in the **whole** lobes array rather than in the tile's own crop.
+    # A narrow cell on the rim can have its thick neighbour one cell into the
+    # next tile, and reading only the crop drops that join on the floor: the
+    # cell is on the rim so it gets its crossing edges, but a crossing edge
+    # joins narrow to narrow and a lobe is not narrow, so nothing else picks it
+    # up.  The lineage then reaches that lobe late or never, which moves merges
+    # to the wrong band -- and since it depends on where the tile boundaries
+    # happen to fall against the coast, it made ``tile_px`` change the answer.
+    mine = lineage_of.ravel()
+    inside = np.flatnonzero(mine >= 0)
+    rows_in, cols_in = np.divmod(inside, w)
+    rows_in += rows.start
+    cols_in += cols.start
+    found = []
+    for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+        r, c = rows_in + dr, cols_in + dc
+        ok = (r >= 0) & (r < shape[0]) & (c >= 0) & (c < shape[1])
+        if not ok.any():
             continue
-        lin = mine[hit]
-        lob = theirs[hit]
-        step = lv[sl_a][hit].astype(np.int64)
-        prov = local_flat[sl_a][hit]
-        pix = local_flat[sl_b][hit]
-        for i in range(lin.size):
-            key = (int(lin[i]), int(lob[i]))
-            best = seen_pairs.get(key)
-            if best is None or step[i] > best[1]:
-                seen_pairs[key] = (int(pix[i]), int(step[i]), int(prov[i]))
-    summary.lobe_edges = [(lin, px_, st, pr)
-                          for (lin, _lob), (px_, st, pr) in seen_pairs.items()]
+        lob = lobes[r[ok], c[ok]]
+        take = lob > 0
+        if not take.any():
+            continue
+        where = inside[ok][take]
+        found.append((mine[where], lob[take],
+                      lv.ravel()[where].astype(np.int64),
+                      (r[ok][take] * shape[1] + c[ok][take]),
+                      local_flat.ravel()[where]))
+    if found:
+        lin, lob, step, pix, prov = (np.concatenate(part) for part
+                                     in zip(*found))
+        # One edge per (lineage, lobe), at the widest cell that joins them --
+        # the first place they meet going down, which is the bottleneck.
+        order = np.lexsort((-step, lob, lin))
+        lin, lob, step, pix, prov = (a[order] for a in (lin, lob, step, pix,
+                                                        prov))
+        first = np.r_[True, (lin[1:] != lin[:-1]) | (lob[1:] != lob[:-1])]
+        summary.lobe_edges = list(zip(lin[first].tolist(), pix[first].tolist(),
+                                      step[first].tolist(),
+                                      prov[first].tolist()))
 
     # The tile's own edge: these pixels are how it reaches its neighbours.
     rim = np.zeros((h, w), bool)
@@ -1025,7 +1060,7 @@ def _grow_to_fit(grid, seed, other_seed, keep_crop):
 
 
 def _branch(seed, other_seed, region_mask, box, step, grid, standing_other=0.0,
-            land_lab=None, land_areas=None):
+            land_lab=None, land_areas=None, fallback=None):
     """The land a neck holds, and how much of it there is.
 
     **Cut the throat, do not threshold the province.**  The obvious measure --
@@ -1075,6 +1110,17 @@ def _branch(seed, other_seed, region_mask, box, step, grid, standing_other=0.0,
 
     # Not severed: what stood above the throat, which is exactly the mass the
     # descent reported -- so the far side is the figure it already has.
+    if fallback is not None:
+        # The standing pieces are already labelled for this step, so use them
+        # rather than growing a second window to find the same component.
+        which = int(fallback.ravel()[int(seed)])
+        if which > 0:
+            mask, count, centre = _component(fallback, which)
+            if count:
+                whole = (slice(0, grid.shape[0]), slice(0, grid.shape[1]))
+                return mask, whole, count * px, standing_other, centre, False
+        return None, None, 0.0, 0.0, None, False
+
     def above_crop(crop_box):
         return grid.land[crop_box] & (grid.level[crop_box] > step)
 
@@ -1085,12 +1131,137 @@ def _branch(seed, other_seed, region_mask, box, step, grid, standing_other=0.0,
     return mask, crop_box, count * px, standing_other, centre, False
 
 
+def _junction(step, grid, above):
+    """The cells that appear at this step, with the standing pieces each touches.
+
+    These are the only places two sides can have met: everything wider was
+    already there at the step above.  The neighbour lookup is gathered over just
+    those cells rather than swept over the grid, because at any one step there
+    are a few thousand of them on a province of ten million.
+    """
+    height, width = grid.shape
+    flat = np.flatnonzero(grid.land.ravel() & (grid.level.ravel() == step))
+    rows, cols = np.divmod(flat, width)
+    near = np.zeros((4, flat.size), np.int64)
+    labels = above.ravel()
+    mine, theirs = [], []
+    for k, (dr, dc) in enumerate(((-1, 0), (1, 0), (0, -1), (0, 1))):
+        r, c = rows + dr, cols + dc
+        ok = (r >= 0) & (r < height) & (c >= 0) & (c < width)
+        flat_nb = r[ok] * width + c[ok]
+        near[k, ok] = labels[flat_nb]
+        # Neighbours that are themselves appearing cells, found by searching the
+        # sorted list rather than by labelling the grid: at any one step these
+        # are tens of thousands of cells out of ten million, and a full-grid
+        # labelling per step was most of what an edit cost.
+        at = np.searchsorted(flat, flat_nb)
+        at = np.minimum(at, flat.size - 1)
+        hit = flat[at] == flat_nb
+        mine.append(np.flatnonzero(ok)[hit])
+        theirs.append(at[hit])
+    # Which run each cell belongs to, for the usual case where two sides meet
+    # along a stretch of equally narrow cells rather than at one of them.
+    if flat.size:
+        rows_i = np.concatenate(mine)
+        cols_i = np.concatenate(theirs)
+        graph = sparse.coo_matrix(
+            (np.ones(rows_i.size), (rows_i, cols_i)),
+            shape=(flat.size, flat.size)).tocsr()
+        _, runs = csgraph.connected_components(graph, directed=False)
+        # Numbered in the order the cells come off the grid, so the lowest id
+        # names the same junction whatever the tiling.
+    else:
+        runs = np.zeros(0, np.int64)
+    return flat, near, runs
+
+
+def _meeting_pixel(seed, other_seed, above, junction):
+    """Where two sides actually touch, picked the same way whatever the tiling.
+
+    **This has to come off the raster, not out of the graph.**  The descent finds
+    each merge through the tile summaries, and a merge found inside a tile is
+    located by searching that tile while one found across a boundary is located
+    at the crossing cell -- so the *same* neck is recorded at a different cell
+    under a different ``tile_px``.  That cell is where :func:`_branch` takes its
+    cut, so it decides the load, whether the cut severs at all, and therefore
+    whether the neck is reported: British Columbia gave six necks at 32 px and
+    four at 512 px, all with the same throats and masses.  Locating the throat
+    here instead makes ``tile_px`` the pure performance knob it was meant to be,
+    and ``test_the_tiling_does_not_change_the_answer`` is what holds that.
+
+    Every candidate is a cell that appears at this very step, so they are all
+    exactly as narrow as each other; what has to be chosen is *which* of them,
+    and the choice is made on the grid rather than on the graph so that it comes
+    out the same every time.
+
+    Two sides touching at a single cell is the easy case and the rarer one --
+    two of seven merges on British Columbia.  Usually they meet along a **run**
+    of cells that all arrived at this step, none of which touches both sides.
+    Then the run is the junction, and the throat is where the two sides come
+    closest along it: the run cell against one side nearest the other side's
+    footing, which is the waist of the crossing rather than an end of it.
+    """
+    flat, near, runs = junction
+    if flat.size == 0:
+        return -1
+    labels = above.ravel()
+    this, that = int(labels[int(seed)]), int(labels[int(other_seed)])
+    if this <= 0 or that <= 0 or this == that:
+        return -1
+    touches_this = (near == this).any(axis=0)
+    touches_that = (near == that).any(axis=0)
+    both = np.flatnonzero(touches_this & touches_that)
+    if both.size:
+        return int(flat[both[0]])
+
+    here, there = np.flatnonzero(touches_this), np.flatnonzero(touches_that)
+    if not here.size:
+        return -1
+    shared = (np.intersect1d(runs[here], runs[there]) if there.size
+              else np.zeros(0, np.int64))
+    shared = shared[shared > 0]
+    if not shared.size:
+        # The two sides never touch, because they were joined *through* a third
+        # standing piece -- three or more pieces meeting in one band, which the
+        # descent reports as pairs. There is then no A-to-B throat to find, and
+        # what the branch hangs by is where **it** attaches to everything else.
+        # Three of British Columbia's seven merges are this case, so it is the
+        # rule rather than the exception.
+        elsewhere = ((near > 0) & (near != this)).any(axis=0)
+        reaching = np.unique(runs[np.flatnonzero(elsewhere)])
+        reaching = reaching[reaching > 0]
+        attached = here[np.isin(runs[here], reaching)]
+        return int(flat[attached[0]]) if attached.size else -1
+    # The lowest run id, which ndimage assigns in scan order over the mask
+    # alone -- so this names the same junction under any tiling.
+    pick = int(shared[0])
+    here = here[runs[here] == pick]
+    there = there[runs[there] == pick]
+    if not here.size or not there.size:
+        return -1
+    width = above.shape[1]
+    rows_h, cols_h = np.divmod(flat[here], width)
+    rows_t, cols_t = np.divmod(flat[there], width)
+    # Nearest in two steps rather than over every pair: the far side's middle
+    # picks a cell on this side, and that cell picks one back. Deterministic,
+    # and linear where the full pairing is not.
+    near_t = np.argmin((rows_h - rows_t.mean()) ** 2
+                       + (cols_h - cols_t.mean()) ** 2)
+    near_h = np.argmin((rows_t - rows_h[near_t]) ** 2
+                       + (cols_t - cols_h[near_t]) ** 2)
+    return int(min(flat[here[near_t]], flat[there[near_h]]))
+
+
 def _score(events, grid, params: StressParams):
     """Events into necks: filter, weigh, and work up the worst into geometry."""
     keep = []
     for ev in events:
-        if ev["prov"] < 0:
-            continue
+        # A join with no meeting cell of its own is *not* dropped here. The
+        # graph only names one when a single active edge spans the two sides,
+        # which is the minority case -- usually they meet along a run, or
+        # through a third piece -- and :func:`_meeting_pixel` finds those off
+        # the raster below. Dropping them here lost a plain dumbbell's only
+        # neck whenever the tiling happened not to produce that edge.
         if min(ev["a_upper"], ev["b_upper"]) < params.min_lobe_mm2:
             continue            # not two larger areas; nothing is being held
         lighter = ev["b_mm2"] <= ev["a_mm2"]
@@ -1110,28 +1281,53 @@ def _score(events, grid, params: StressParams):
     if keep:
         land_lab, _ = ndimage.label(grid.land, structure=STRUCT)
         land_areas = np.bincount(land_lab.ravel())
-    necks = []
+    necks, standing, junctions = [], {}, {}
     for ev in keep[:WORST_KEPT]:
         step = ev["step"]
         throat_mm = params.mm_of_step(step)
         seed_pixel = ev["seed"]
         if seed_pixel is None or seed_pixel < 0:
             continue
-        region_mask, box = _region_mask(ev["prov"], step, grid, params)
+        # Where the two sides meet, off the raster. The event carries the graph's
+        # own answer, which is right to within a tile and is kept as the fallback
+        # for the case the two met along a run of cells rather than at one.
+        if step not in standing:
+            standing[step] = _labels_above(step, grid)
+            junctions[step] = _junction(step, grid, standing[step])
+        found = _meeting_pixel(seed_pixel, ev["other_seed"], standing[step],
+                               junctions[step])
+        prov = found if found >= 0 else ev["prov"]
+        if prov < 0:
+            continue            # neither the raster nor the graph can place it
+        region_mask, box = _region_mask(prov, step, grid, params)
         _, _, area_mm2, other_mm2, centre, severed = _branch(
             seed_pixel, ev["other_seed"], region_mask, box, step, grid,
             standing_other=max(ev["a_mm2"], ev["b_mm2"]),
-            land_lab=land_lab, land_areas=land_areas)
+            land_lab=land_lab, land_areas=land_areas,
+            fallback=standing[step])
         if centre is None:
             continue
-        # A cut that severs can hand back the *heavier* side when the two
-        # measures disagree about which is which; the load is the lighter one.
+        # A cut that severs can hand back the *heavier* side, because which side
+        # the search starts from is the descent's standing masses and the cut
+        # may disagree with them. The load is the lighter one -- so measure it,
+        # rather than swapping the two numbers over and keeping the centroid of
+        # the side that was not kept. That centroid is the lever arm, and the
+        # lever arm is in the severity: left unswapped it made the answer depend
+        # on which side the tiling happened to seed from, which is how a plain
+        # dumbbell came out at severity 0.36 under one tile size and 0.29 under
+        # another with every other number identical.
         if severed and 0.0 < other_mm2 < area_mm2:
-            area_mm2, other_mm2 = other_mm2, area_mm2
             seed_pixel, ev["other_seed"] = ev["other_seed"], seed_pixel
+            _, _, area_mm2, other_mm2, centre, severed = _branch(
+                seed_pixel, ev["other_seed"], region_mask, box, step, grid,
+                standing_other=max(ev["a_mm2"], ev["b_mm2"]),
+                land_lab=land_lab, land_areas=land_areas,
+                fallback=standing[step])
+            if centre is None:
+                continue
         if area_mm2 < params.min_lobe_mm2 or other_mm2 < params.min_lobe_mm2:
             continue            # the cut disagrees: not two larger areas
-        x, y = _xy(ev["prov"], grid)
+        x, y = _xy(prov, grid)
         cx = grid.transform.c + (centre[1] + 0.5) * grid.transform.a
         cy = grid.transform.f + (centre[0] + 0.5) * grid.transform.e
         lever_mm = math.hypot(cx - x, cy - y) / params.mpm
@@ -1141,7 +1337,7 @@ def _score(events, grid, params: StressParams):
             continue
         necks.append(Neck(
             point=Point(x, y),
-            throat=_throat_bar(ev["prov"], throat_mm, grid, params),
+            throat=_throat_bar(prov, throat_mm, grid, params),
             region=_region_geom(region_mask, box, grid),
             throat_mm=throat_mm, load_mm2=area_mm2,
             other_mm2=other_mm2, lever_mm=lever_mm,
