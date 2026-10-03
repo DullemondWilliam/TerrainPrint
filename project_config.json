@@ -40,6 +40,16 @@
     "spike_angle_deg": 20.0,
     "tolerance_mm": 0.2
   },
+  "stress": {
+    "band_mm": 0.025,
+    "ceiling_mm": 3.0,
+    "lever_power": 1.0,
+    "margin_mm": 5.0,
+    "min_lobe_mm2": 25.0,
+    "pixel_mm": 0.1,
+    "report_above": 0.0,
+    "tile_px": 128
+  },
   "terrain": {
     "base_mm": 2.0,
     "exaggeration": 10.0,

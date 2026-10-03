@@ -147,6 +147,43 @@ DEFAULTS = {
         # measure against and the other is a size you build to.
         "width_mm": 1.0,
     },
+    "stress": {
+        # Load-bearing necks: where a printed piece will break, rather than
+        # merely where it is narrow. All printed millimetres.
+        #
+        # The width resolution. Nothing narrower than two pixels exists to the
+        # distance transform, so this is the floor on any throat that can be
+        # reported -- 0.1 mm is 800 m of ground at 1:8,000,000.
+        "pixel_mm": 0.1,
+        # Above this width a join is not a stress point; there is no printing
+        # problem at a 50 mm throat. It is also what makes an edit cheap: the
+        # clamped width field only changes within half of this of a change.
+        "ceiling_mm": 3.0,
+        # Throat resolution, and an accuracy knob rather than only a speed
+        # one: two joins that land in the same band are simultaneous, so the
+        # load of one neck can be split across two. Measured on British
+        # Columbia, 0.05 mm reports three necks where the pixel-by-pixel flood
+        # finds four, and 0.025 mm finds all four with their right masses.
+        # Finer than this buys nothing and costs the time twice over.
+        "band_mm": 0.025,
+        # The unit of reuse after an edit. At 128 px the graph that has to be
+        # reassembled is 3% of the pixel graph; bigger tiles reassemble faster
+        # but cost more to re-summarise.
+        "tile_px": 128,
+        # How much land has to hang on each side before a join is a neck at
+        # all: "two larger areas", in numbers.
+        "min_lobe_mm2": 25.0,
+        # Room left around the land in the grid, so that growing the coast a
+        # little does not throw the cached raster away.
+        "margin_mm": 5.0,
+        # 0 weighs a load by its mass alone, which is exactly the bridge
+        # planner's model; 1 also weighs how far out the mass sits, which is
+        # the physics. Measured on four provinces the ranking barely moves.
+        "lever_power": 1.0,
+        # Necks below this severity are measured but not reported. Severity is
+        # dimensionless and anchored: 1.0 is marginal.
+        "report_above": 0.0,
+    },
     "bridges": {
         # Straight fixed-width bridges between islands, in printed millimetres.
         # Unlike the island_editor buffer, whose neck width falls out of the gap
