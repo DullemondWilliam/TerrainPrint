@@ -41,6 +41,17 @@ Workflow
    you — *which* provinces have a printing problem, before any of them is
    opened.  **Zoom to Worst** goes to the largest patch, because a one-
    millimetre fault is invisible at the zoom a whole country is read at.
+6. **Show stress** — the other half of that question.  *Show thin* finds narrow
+   land; this finds the narrow land that is **holding something up**, and says
+   how much.  They are not the same survey: Nova Scotia has 338 thin patches at
+   a millimetre and exactly one of them is load-bearing, and Nunavut has a
+   1.0 mm neck carrying 457 mm² that passes a 1 mm width test without comment.
+   Each neck is marked on the **severity** ramp, where **1.0 means the neck is
+   exactly as wide as its load wants** — so the colour says sound, marginal or
+   at risk rather than merely more or less.  **Min severity** filters what is
+   drawn without re-measuring anything, and **Worst neck** goes to the one most
+   likely to break.  Measuring a layer is about fifteen seconds for eight
+   provinces, so it says where it has got to as it goes.
 
 Nothing here writes. There is no undo because there is nothing to undo; to
 change a province, open it in ``UI_island_editor``.
@@ -48,6 +59,7 @@ change a province, open it in ``UI_island_editor``.
 Run with:  python UI_province_viewer.py
 
 Reuses ``lib.LIB_map_scale``, ``lib.LIB_thin_features``,
+``lib.LIB_stress_points``,
 ``lib.LIB_project_config`` and ``lib.LIB_screen_calibration``; kept independent
 of the main ``app`` window like the other UI_* harnesses.
 """
@@ -60,6 +72,7 @@ import geopandas as gpd
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.backends.backend_qtagg import \
     NavigationToolbar2QT as NavigationToolbar
+from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.figure import Figure
 from shapely.geometry import Point
 from shapely.ops import unary_union
@@ -76,6 +89,7 @@ from lib.LIB_island_merging import _polygons
 from lib.LIB_map_scale import (grouped, km_per_mm, printed_size_mm, scale_bars,
                                to_km)
 from lib.LIB_project_config import get as cfg
+from lib.LIB_stress_points import StressParams, stress_points
 from lib.LIB_thin_features import ThinParams, thin_features
 from lib.LIB_screen_calibration import (MM_PER_INCH, load_saved_ppi,
                                         monitor_at, px_per_mm)
@@ -129,6 +143,51 @@ THIN_WIDTH_MM = (0.0, 50.0, cfg("thin.width_mm"), 3, 0.05)
 #: keep its surroundings on screen -- a neck means nothing without the two
 #: landmasses either side of it.
 THIN_ZOOM_SHARE = 0.15
+
+#: The severity ramp for the stress layer. Severity is a **state** -- sound,
+#: marginal, at risk -- rather than a plain magnitude, so it takes the reserved
+#: good-to-critical scale. The two middle stops sit either side of the midpoint
+#: so that, with the ramp running to twice the anchor, **severity 1.0 lands on
+#: the hue change**: anything warm is a neck thinner than its load wants.
+#:
+#: The same stops as ``harnesses/UI_stress_points.py``, which is the other place
+#: this ramp is spelled out; ``tests/test_province_viewer_stress.py`` holds the
+#: two copies in step.
+SEVERITY_STOPS = ((0.00, "#0ca30c"),      # good
+                  (0.42, "#fab219"),      # warning
+                  (0.58, "#ec835a"),      # serious
+                  (1.00, "#d03b3b"))      # critical
+SEVERITY_CMAP = LinearSegmentedColormap.from_list(
+    "severity", [(at, hex_) for at, hex_ in SEVERITY_STOPS])
+
+#: Where the ramp tops out, as a multiple of the anchor. Clipped on purpose:
+#: Nunavut's worst neck is severity 4.3, and letting one province set the top of
+#: the scale would flatten every other one to the same green.
+STRESS_VMAX = 2.0
+
+#: Ink under every stress mark, so a severity colour stays legible wherever it
+#: lands -- including on top of the thin layer's red, which is a different claim
+#: about the same place and may well be switched on beside it.
+STRESS_CASING = "#17202A"
+
+#: The ring on a neck that is at risk, in points, and the stroke on a throat
+#: bar. Screen units, as with the thin layer's stroke and for the same reason: a
+#: neck is a *place*, and at the zoom a whole country is read at the honest
+#: extent of the worst of them is a fraction of a pixel.
+STRESS_MARKER_PT = 9.0
+STRESS_LINEWIDTH = 1.6
+
+#: The smallest severity worth drawing, as ``(lo, hi, default, decimals,
+#: step)``. **1.0 by default**, which is the anchor: this tool is a survey of
+#: thirteen provinces, and the question it is here to answer is which of them
+#: will break, not where every sound neck is.
+STRESS_SEVERITY = (0.0, 20.0, 1.0, 2, 0.25)
+
+#: How much of the map to show when framing a neck, in printed millimetres. A
+#: floor rather than a share of the neck: a throat is a fraction of a millimetre
+#: and framing it tightly would show nothing but the throat, where what makes it
+#: a neck is the land either side.
+STRESS_ZOOM_MM = 16.0
 
 DEFAULT_PRINT_SCALE = cfg("print.scale")
 PRINT_SCALE_MIN, PRINT_SCALE_MAX = 1_000, 500_000_000
@@ -216,6 +275,8 @@ class Province:
         self.name = path.stem
         self._thin_key = None            # radius the cached report used
         self._thin = None                # last ThinReport, if any
+        self._stress_key = None          # the measurement the cached necks used
+        self._stress = None              # last StressReport, if any
         #: What identifies this province *across* layers: the file's name with
         #: the layer's stage suffix taken off. Colour and selection hang off it.
         self.key = key or path.stem
@@ -243,6 +304,31 @@ class Province:
             self._thin = thin_features(self.geometry, params)
             self._thin_key = key
         return self._thin
+
+    def stress_report(self, params: StressParams):
+        """The load-bearing necks, measured once and kept.
+
+        **The raster is thrown away.**  ``stress_points`` hands back the grid it
+        worked on so that an edit can reuse it, which is exactly what the island
+        editor wants and exactly what a viewer does not: nothing here writes, and
+        the layer is drawn from each neck's own geometry.  Keeping the grids
+        would cost 116 MB for the eight cleaned provinces -- 51 MB of it Nunavut
+        -- against nothing at all for the necks themselves.
+
+        The key leaves out ``report_above`` on purpose.  That one only decides
+        which necks are *reported*, so the viewer measures with it at zero and
+        filters as it draws; turning Min severity is then instant rather than a
+        fresh fifteen seconds.
+        """
+        key = (round(params.scale, 6), round(params.pixel_mm, 6),
+               round(params.ceiling_mm, 6), round(params.band_mm, 6),
+               round(params.min_lobe_mm2, 6), round(params.lever_power, 6))
+        if self._stress_key != key:
+            report = stress_points(self.geometry, params)
+            report.grid = None
+            self._stress = report
+            self._stress_key = key
+        return self._stress
 
 
 class Layer:
@@ -275,6 +361,10 @@ class ProvinceViewer(QMainWindow):
         self._dragged = False
         self._scale_artists: list = []
         self._scale_key = None
+        #: Set while the stress layer is being measured. The measurement lets
+        #: the event loop through so the window keeps painting, which also lets
+        #: the button be pressed again; this is what stops the second press.
+        self._measuring = False
 
         central = QWidget()
         root = QVBoxLayout(central)
@@ -406,10 +496,43 @@ class ProvinceViewer(QMainWindow):
             "Printability", "Min width (mm)", self.thin_spin, self.btn_thin,
             self.btn_worst)
 
+        # Stress. The same family of question as Printability and deliberately
+        # its own group, because the answers disagree and the disagreement is
+        # the point: thin land is a fault wherever it is, and a neck is only a
+        # fault for what it is holding up.
+        self.stress_spin = self._spin(*STRESS_SEVERITY,
+            "Draw only necks at or above this severity. Severity is the width "
+            "the neck wants over the width it has, so 1.0 is marginal and "
+            "anything above it is thinner than its load. Filtering only — "
+            "turning this re-draws, it does not re-measure.")
+        # The caption rides the box rather than sitting beside it: four groups
+        # of label-and-control is more toolbar than a 1920 screen has, and this
+        # one says what it is in two characters.
+        self.stress_spin.setPrefix("≥ ")
+        self.stress_spin.valueChanged.connect(self._on_stress_severity)
+        self.btn_stress = self._button("Show stress", self._toggle_stress,
+                                       enabled=False)
+        self.btn_stress.setCheckable(True)
+        self.btn_stress.setToolTip(
+            "Mark the narrow land that is holding something up, coloured by how "
+            "badly. Finds every neck with its own throat width, weighs what "
+            "falls off if it goes, and scores that against what a neck of that "
+            "width can carry. Measuring is about two seconds a province, so the "
+            "status line counts them off.")
+        self.btn_worst_neck = self._button("Worst neck", self.zoom_to_worst_neck,
+                                           enabled=False)
+        self.btn_worst_neck.setToolTip(
+            "Go to the neck most likely to break in this layer. A 0.2 mm throat "
+            "is a fraction of a pixel on a map of the whole country, so it has "
+            "to be gone to rather than looked for.")
+        self.grp_stress = self._group(
+            "Stress", self.stress_spin, self.btn_stress, self.btn_worst_neck)
+
         row = QHBoxLayout()
         row.addWidget(self.grp_layers)
         row.addWidget(self.grp_selection)
         row.addWidget(self.grp_thin)
+        row.addWidget(self.grp_stress)
         row.addStretch(1)
         root.addLayout(row)
 
@@ -538,7 +661,14 @@ class ProvinceViewer(QMainWindow):
             return
         self.active = index
         self._sync_layer_box()
-        self._redraw(preserve_view=True)
+        if self.btn_stress.isChecked():
+            # The new layer has not been measured, and measuring it is two
+            # seconds a province. Through the toggle rather than letting the
+            # draw do it province by province, so the swap counts them off
+            # instead of appearing to hang in the middle of a redraw.
+            self._toggle_stress(True)
+        else:
+            self._redraw(preserve_view=True)
         self._sync_buttons()
         self._update_title()
         self._update_status()
@@ -739,6 +869,7 @@ class ProvinceViewer(QMainWindow):
                 linewidth=1.0 if chosen else 0.6,
                 zorder=3 if chosen else 2)
         self._draw_thin()
+        self._draw_stress()
         if preserve_view:
             self.ax.set_xlim(xlim)
             self.ax.set_ylim(ylim)
@@ -758,6 +889,59 @@ class ProvinceViewer(QMainWindow):
             gpd.GeoSeries([report.thin]).plot(
                 ax=self.ax, facecolor=THIN_COLOUR, edgecolor=THIN_COLOUR,
                 linewidth=THIN_LINEWIDTH, zorder=4)
+
+    def _draw_stress(self) -> None:
+        """Mark each load-bearing neck, in the colour of how badly it is loaded.
+
+        Three marks, not one, and the reason is the zoom this tool is read at.
+        The shaded blob is the neck's honest extent, and the honest extent of
+        the worst necks is sub-pixel -- Nova Scotia's 0.20 mm throat is a
+        fiftieth of a cell -- so on its own it would say nothing is wrong
+        precisely where something is.  The bar across the throat and the ring on
+        a neck at risk are drawn in screen units, so they survive any zoom, and
+        both carry an ink casing because the thin layer may well be switched on
+        underneath them in its own red.
+
+        Colour never carries the meaning alone: the ring says *at risk* by being
+        there at all, and the status line counts them.
+        """
+        if not self.btn_stress.isChecked():
+            return
+        params = self._stress_params()
+        floor = self.stress_spin.value()
+        for province in self.provinces:
+            report = province.stress_report(params)
+            for neck in report.necks:
+                if neck.severity < floor:
+                    continue
+                colour = SEVERITY_CMAP(min(neck.severity / STRESS_VMAX, 1.0))
+                if neck.region is not None and not neck.region.is_empty:
+                    # Outlined, never filled. Show thin paints whole swathes of
+                    # coast in its own red -- 327 patches on Nova Scotia alone --
+                    # and a filled neck lands in the middle of that as one more
+                    # red shape, which is the one reading this layer must not
+                    # have: the two are different claims about the same place.
+                    gpd.GeoSeries([neck.region]).plot(
+                        ax=self.ax, facecolor="none", edgecolor=colour,
+                        linewidth=STRESS_LINEWIDTH, zorder=5)
+                if neck.throat is not None and not neck.throat.is_empty:
+                    xs, ys = zip(*neck.throat.coords)
+                    self.ax.plot(xs, ys, color=STRESS_CASING,
+                                 linewidth=STRESS_LINEWIDTH + 1.4,
+                                 solid_capstyle="round", zorder=6)
+                    self.ax.plot(xs, ys, color=colour,
+                                 linewidth=STRESS_LINEWIDTH,
+                                 solid_capstyle="round", zorder=7)
+                if neck.at_risk:
+                    self.ax.plot([neck.point.x], [neck.point.y], marker="o",
+                                 markersize=STRESS_MARKER_PT,
+                                 markerfacecolor="none",
+                                 markeredgecolor=STRESS_CASING,
+                                 markeredgewidth=3.0, zorder=8)
+                    self.ax.plot([neck.point.x], [neck.point.y], marker="o",
+                                 markersize=STRESS_MARKER_PT,
+                                 markerfacecolor="none", markeredgecolor=colour,
+                                 markeredgewidth=1.8, zorder=9)
 
     # -- pan / selection ----------------------------------------------------
     def _shift_view(self, dx: float, dy: float) -> None:
@@ -873,6 +1057,11 @@ class ProvinceViewer(QMainWindow):
         if not has and self.btn_thin.isChecked():
             self.btn_thin.setChecked(False)      # nothing left to measure
         self.btn_worst.setEnabled(has and self.btn_thin.isChecked())
+        self.grp_stress.setEnabled(has)
+        self.btn_stress.setEnabled(has)
+        if not has and self.btn_stress.isChecked():
+            self.btn_stress.setChecked(False)
+        self.btn_worst_neck.setEnabled(has and self.btn_stress.isChecked())
         self.lbl_count.setText(
             f"{len(self.picked)} of {len(self.provinces)} selected" if has
             else "none loaded")
@@ -975,6 +1164,120 @@ class ProvinceViewer(QMainWindow):
             bits.append(f"{len(unmeasured)} could not be measured")
         return "; ".join(bits)
 
+    # -- stress -------------------------------------------------------------
+    def _stress_params(self) -> StressParams:
+        """What the necks are measured against, as the controls now read it.
+
+        ``report_above`` is held at zero whatever the spin box says, so that the
+        measurement is of the province and not of the filter: Min severity then
+        decides what is *drawn* from an answer already in hand.
+        """
+        return StressParams(scale=self.scale_spin.value(), report_above=0.0)
+
+    def _toggle_stress(self, checked: bool) -> None:
+        """Measure the layer and mark it, or take the marks away.
+
+        Fifteen seconds for eight provinces, which is long enough that a frozen
+        window would read as a crash, so each province is named as it is reached
+        and the event loop is let breathe between them -- the same bargain
+        ``app.main_window`` strikes with its progress bar. The guard is because
+        letting events through means the button can be pressed again mid-run.
+        """
+        if self._measuring:
+            return
+        if checked and self.provinces:
+            params = self._stress_params()
+            self._measuring = True
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            try:
+                total = len(self.provinces)
+                for number, province in enumerate(self.provinces, start=1):
+                    self.status.setText(
+                        f"Measuring stress {number} of {total}: {province.name} …")
+                    QApplication.processEvents()
+                    province.stress_report(params)
+            finally:
+                QApplication.restoreOverrideCursor()
+                self._measuring = False
+        self._redraw(preserve_view=True)
+        self._sync_buttons()
+        self._update_status()
+        self.canvas.setFocus()
+
+    def _on_stress_severity(self, _value: float) -> None:
+        """A new floor is a new picture of the same measurement, so just redraw."""
+        if not self.btn_stress.isChecked():
+            return
+        self._redraw(preserve_view=True)
+        self._sync_buttons()
+        self._update_status()
+
+    def stress_reports(self) -> list:
+        """``(province, report)`` for the layer on show, measuring as needed."""
+        params = self._stress_params()
+        return [(province, province.stress_report(params))
+                for province in self.provinces]
+
+    def shown_necks(self) -> list:
+        """``(province, neck)`` for every neck the Min severity floor lets through."""
+        floor = self.stress_spin.value()
+        return [(province, neck)
+                for province, report in self.stress_reports()
+                for neck in report.necks if neck.severity >= floor]
+
+    def _worst_neck(self):
+        """The neck most likely to break in this layer, or None."""
+        shown = self.shown_necks()
+        if not shown:
+            return None
+        return max(shown, key=lambda pair: pair[1].severity)
+
+    def zoom_to_worst_neck(self) -> None:
+        """Take the view to the neck most likely to break."""
+        if not self.btn_stress.isChecked() or not self.provinces:
+            return
+        found = self._worst_neck()
+        if found is None:
+            self._update_status("No neck above that severity to go to — ")
+            return
+        province, neck = found
+        wanted = STRESS_ZOOM_MM * self._stress_params().mpm
+        (x0, x1), (y0, y1) = self.ax.get_xlim(), self.ax.get_ylim()
+        # One factor on both spans, as Zoom to Worst and Real Size do it: the
+        # limits matplotlib holds have already been through apply_aspect, and
+        # scaling them together keeps that agreement where fresh limits fight it.
+        factor = wanted / max(x1 - x0, 1e-9)
+        half_x, half_y = (x1 - x0) * factor / 2.0, (y1 - y0) * factor / 2.0
+        self.ax.set_xlim(neck.point.x - half_x, neck.point.x + half_x)
+        self.ax.set_ylim(neck.point.y - half_y, neck.point.y + half_y)
+        self.canvas.draw_idle()
+        self._update_status(f"At the worst neck, in {province.name}: {neck} — ")
+
+    def _stress_fragment(self) -> str:
+        """The status line's stress segment, or empty when not showing."""
+        if not self.btn_stress.isChecked() or not self.provinces:
+            return ""
+        reports = self.stress_reports()
+        unmeasured = [p.name for p, report in reports if not report.measured]
+        shown = self.shown_necks()
+        floor = self.stress_spin.value()
+        bits = []
+        if shown:
+            risky = [neck for _, neck in shown if neck.at_risk]
+            provinces = {province.name for province, _ in shown}
+            worst_province, worst = max(shown, key=lambda pair: pair[1].severity)
+            bits.append(f"{len(shown)} neck(s) in {len(provinces)} province(s)"
+                        + (f", {len(risky)} at risk" if risky else ""))
+            bits.append(f"worst {worst.throat_mm:.2f} mm holding "
+                        f"{worst.load_mm2:.0f} mm² in {worst_province.name} "
+                        f"(wants {worst.needed_mm:.2f} mm)")
+        else:
+            bits.append(f"no neck at severity {floor:g} or worse")
+        if unmeasured:
+            # Never folded into "nothing found": not measured is not sound.
+            bits.append(f"{len(unmeasured)} could not be measured")
+        return "; ".join(bits)
+
     # -- printed size / real size -------------------------------------------
     def _perkm_text(self) -> str:
         return f"{km_per_mm(self.scale_spin.value()):g} km/mm"
@@ -986,6 +1289,11 @@ class ProvinceViewer(QMainWindow):
             # question about the same land: re-measure rather than leave the
             # old marks sitting under a scale that no longer produced them.
             self._toggle_thin(True)
+        if self.btn_stress.isChecked():
+            # Same again, and more so: a neck's throat, its load and what that
+            # load is allowed to weigh are all printed quantities, so every
+            # severity on screen belongs to the old reduction.
+            self._toggle_stress(True)
         self.canvas.draw_idle()
         self._update_status("Print scale changed — ")
 
@@ -1195,6 +1503,7 @@ class ProvinceViewer(QMainWindow):
         bits.append(self._printed_extent_text())
         bits.append(f"at 1:{grouped(self.scale_spin.value())}")
         bits.append(self._thin_fragment())
+        bits.append(self._stress_fragment())
         self.status.setText(f"{prefix}{', '.join(b for b in bits if b)}.")
 
     def _update_title(self) -> None:

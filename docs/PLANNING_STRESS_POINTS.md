@@ -565,10 +565,9 @@ physics, in one place.
    needed to find it — a lake is a hole, and the distance transform sees its shore
    like any other. But the report should probably say when a neck's water is
    interior, because widening it means filling a lake, which is a different edit.
-6. **Province viewer and island editor integration.** `UI_province_viewer` is
-   where the printing verdict for the whole country lives, and `UI_island_editor`
-   is what the incremental path is built for. Both are out of scope for the first
-   build: get the lib, the grid contract and the harness right first.
+6. **Province viewer integration — done.** `UI_province_viewer` grew a **Show
+   stress** layer beside *Show thin*; see §11. `UI_island_editor`, which is what
+   the incremental path is really built for, is still to come.
 
 ---
 
@@ -660,3 +659,51 @@ the spliced width field is bit-exact against a full pass, and the incremental
 necks equal a from-scratch run edit after edit — which is what
 `TestRestressAgreesWithAFullRun` asserts, and what `verify=True` checks from
 inside.
+
+
+---
+
+## 11. The province viewer's layer
+
+`UI_province_viewer` is where the printing verdict for the whole country lives,
+and *Show thin* was only ever half of it. **Show stress** is the other half, and
+the country-wide picture is the argument for it: eight rings across the eight
+cleaned provinces, four of them in Nunavut, one on the Strait of Canso, each at a
+place that will actually break — against *Show thin*, which marks 327 patches on
+Nova Scotia alone.
+
+Four decisions the viewer needed that the harness did not.
+
+**The raster is thrown away.** `stress_points` hands its grid back so an edit can
+reuse it, which is exactly what the island editor will want and exactly what a
+viewer does not: nothing here writes, and the layer draws from each neck's own
+geometry. Keeping them costs **116 MB** for the eight cleaned provinces, 51 MB of
+it Nunavut. `Province.stress_report` drops the grid before caching.
+
+**Min severity filters; it does not re-measure.** The measurement runs with
+`report_above` held at zero and the spin box decides what is *drawn*, so turning
+it is instant where re-measuring would be fifteen seconds. The print scale is the
+opposite case and does re-measure: a throat, its load and what that load may
+weigh are all printed quantities, so every severity on screen belongs to the
+reduction that produced it. **1.0 is the default** — the anchor — because this
+tool is a survey of thirteen provinces asking which will break, not where every
+sound neck is.
+
+**A neck is outlined, never filled.** *Show thin* paints whole swathes of coast
+in its own red, and a filled neck lands in the middle of that as one more red
+shape — the one reading this layer must not have, since the two are different
+claims about the same place. Rendered and looked at: with both layers on Nova
+Scotia the filled version was indistinguishable, the outlined one is not. The
+colour rides a ring and a throat bar in screen units, with an ink casing, because
+at country zoom the honest extent of the worst neck is a fiftieth of a cell.
+
+**Fifteen seconds cannot look like a hang.** Eight provinces take 15.2 s
+measured, so each is named as it is reached and the event loop is let breathe
+between them — the bargain `app.main_window` already strikes with its progress
+bar. Letting events through also lets the button be pressed again, so there is a
+guard, and a test that presses it mid-run.
+
+The severity ramp is spelled out in both `UI_stress_points` and
+`UI_province_viewer`, because a harness is throwaway and a viewer is kept and
+neither should import the other. `tests/test_province_viewer_stress.py` holds the
+two copies in step.
