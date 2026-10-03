@@ -4,9 +4,15 @@ A design plan for a lib that finds the **load-bearing necks** in a province: the
 narrow places that hold two larger pieces of land together, scored by how much
 load each one carries, and drawn as a severity gradient over the map.
 
+It is built to be **re-asked cheaply**. The first call hands back the raster it
+worked on; a second entry point takes that back with a grid of what changed and
+recomputes only the parts an edit can reach. §3 is that design, and the locality
+it rests on is proven by measurement, not assumed.
+
 > **Status: planned.** Nothing is built. Every number below was measured by
 > prototype against the cleaned GeoJSON in `Data/JSonProvinces-Cleaned/` at
-> 1:8,000,000, not estimated — the measurements are labelled where they appear.
+> 1:8,000,000, not estimated — the measurements are labelled where they appear,
+> and the few figures that are derived rather than measured say so.
 
 ---
 
@@ -45,7 +51,9 @@ cleaned province GeoJSON
    +-- LIB_stress_points ...... what will snap when it is handled?  (this plan)
             |
             v
-      StressReport ---- UI_stress_points overlay (severity gradient)
+      StressReport + StressGrid ---- UI_stress_points overlay (severity gradient)
+            |            ^                   |
+            |            +-------------------+  the grid comes back for the next edit
             |
             +--> act: widen the neck (LIB_island_bridges, wider merge buffer)
                  or accept it and print the piece in two parts
@@ -73,20 +81,20 @@ So the width is not an input. It is the output.
 Euclidean distance transform; the local width at a pixel is `2 × distance to the
 nearest water`. One `scipy.ndimage.distance_transform_edt` call gives a
 continuous width everywhere, which is both the detector's input and the gradient
-the overlay wants. Measured: 0.02 s for Nova Scotia, 0.15 s for British
-Columbia, 0.53 s for Nunavut at a 0.1 mm pixel. The rasterised area matches the
+the overlay wants. Measured: 0.01 s for Nova Scotia, 0.15 s for British
+Columbia, 0.52 s for Nunavut at a 0.1 mm pixel. The rasterised area matches the
 vector area to the digit (Nova Scotia, 889 mm² both ways), so the grid is not
 costing accuracy at this pixel.
 
-**Step 2 — flood the land from the thick places down.** Add land pixels to a
-union-find in **descending width order**. Every time adding a pixel joins two
-existing components, that is a neck, and it arrives with everything the score
-needs, exactly:
+**Step 2 — flood the land from the thick places down.** Add land to a union-find
+in **descending width order**. Every time an addition joins two existing
+components, that is a neck, and it arrives with everything the score needs,
+exactly:
 
-* its **throat width** — the width at the pixel that closed the gap, which is by
+* its **throat width** — the width at which the gap closed, which is by
   construction the widest cross-section that still severs the two sides;
-* the **two masses** — the printed area of each side, accumulated from every
-  pixel that has drained into it;
+* the **two masses** — the printed area of each side, accumulated from everything
+  that has drained into it;
 * its **location**, for the throat bar and the zoom-to.
 
 No threshold is chosen, every neck in the province is found with its own width,
@@ -98,44 +106,190 @@ Prototyped; it is wrong, measured. A width threshold is global, so cutting Nova
 Scotia at 2.15 mm severs every *other* narrow place too, and the pieces stop
 corresponding to the neck being asked about: 528.9 / 12.8 mm² from the global cut
 against 474.7 / 51.8 mm² from the flood, which is the honest pair. The flood's
-accumulated catchments are the right quantity. Where an exact per-neck figure is
-wanted, the cut must be **local** — remove the throat pixels at that one neck and
-label — and that runs per reported neck, of which there are a handful.
+accumulated catchments are the right quantity.
 
-### Making it fast enough: collapse the thick land
+### Collapse the thick land, and do the flood in C
 
-Flooding one pixel at a time in Python costs 6.9 s for British Columbia and
-13.5 s for Nunavut (measured) — too slow for a button. A full-grid banded scan is
-no better (6.5 s / 13.5 s), because the cost there is `ndimage.label` over the
-whole grid once per band.
+Merges that happen in land wider than a few millimetres are not stress points —
+there is no printing problem at a 50 mm throat, and British Columbia's flood duly
+reports one at 54.6 mm. So land at or above `ceiling_mm` is **collapsed to one
+node per connected lobe**, carrying its full area, and only the narrow land is
+flooded. The result is identical for every neck below the ceiling.
 
-The fix follows from what the answer needs. Merges that happen in land wider than
-a few millimetres are not stress points — there is no printing problem at a 50 mm
-throat, and British Columbia's flood duly reports one at 54.6 mm. So land at or
-above `ceiling_mm` can be **collapsed to one node per connected lobe**, carrying
-its full pixel count, and only the narrow land is flooded pixel by pixel. The
-result is identical for every neck below the ceiling, and the cost falls to the
-narrow land alone:
+Flooding one pixel at a time in Python then costs 0.22 s for Nova Scotia, 0.98 s
+for British Columbia and 4.55 s for Nunavut (measured) — the narrow land is 45 k,
+197 k and 896 k pixels. Two ways round it were measured:
 
-| Province | grid | land | narrow (<3 mm) | width field | flood | necks found |
-|---|---|---|---|---|---|---|
-| Nova Scotia | 0.33 Mpx | 0.09 Mpx | 45 k (50%) | 0.02 s | 0.22 s | 2 |
-| British Columbia | 2.97 Mpx | 1.43 Mpx | 197 k (14%) | 0.15 s | 0.98 s | 4 |
-| Nunavut | 10.07 Mpx | 3.05 Mpx | 896 k (29%) | 0.53 s | 4.55 s | 13 |
+* **Band the descent over the whole grid** (`ndimage.label` per band): no better,
+  6.5 s / 13.5 s, because every band pays for a full-grid labelling.
+* **Compress to a graph and band that.** Nodes are the lobes plus the narrow
+  pixels, edges are 4-adjacency weighted by `min(width)` — the width at which the
+  edge activates. Sort the edges once, and each band is a prefix, so
+  `csgraph.connected_components` does the descent in C. Measured: Nunavut
+  3.54 s total, of which 2.62 s is the descent — against 5.2 s. This is the
+  implementation to build.
 
-All measured at `pixel_mm=0.1`, `ceiling_mm=3.0`, `min_lobe_mm2=25`. Nunavut's
-223 islands are the worst case at ~5 s; dropping the ceiling to 2.0 mm takes it
-to 3.9 s and loses only necks already scoring under 0.3 severity. Verified
-against the one-pixel-at-a-time flood: same necks, same throats, same masses.
-
-**Cost class: threaded, with a progress bar** — `UI_border_regions` is the
-precedent. Too slow for a draw loop, so the harness and any viewer must cache the
-report keyed on the geometry and the parameters, exactly as `UI_province_viewer`
-already caches its `ThinReport`.
+`band_mm` is an accuracy knob, not just a speed one: at 0.1 mm bands British
+Columbia's two 0.40 mm necks collapse into one event and the province reports 3
+necks instead of 4. **Default 0.05 mm**, with a test that asserts all four.
 
 ---
 
-## 3. The stress model, calibrated off a number this project already stands behind
+## 3. Reuse and incremental update
+
+### Where the time actually goes
+
+Measured on Nunavut, the worst province (10.1 Mpx grid, 3.05 Mpx of land):
+
+| stage | cost | share |
+|---|---|---|
+| read GeoJSON + reproject | 0.23 s | 4% |
+| **rasterise** | **0.10 s** | **2%** |
+| width field (EDT) | 0.52 s | 10% |
+| lobe + patch labelling, bincounts | 0.07 s | 1% |
+| the flood | 2.6 s (banded) – 4.6 s (per pixel) | 83% |
+
+So the burn itself is 2% and caching it alone would buy nothing. What has to come
+back from the first call is the **derived** raster state — the width field above
+all — and that is what `StressGrid` carries. The rest of this section is the two
+locality results that make an update cheap, and the three attempts that failed.
+
+### The width field is exactly local — measured bit-exact
+
+**Claim.** Clamped at `ceiling_mm`, an edit confined to a region R changes the
+width field only within `dilate(R, ceiling_mm/2)`.
+
+**Why.** A pixel whose clamped width is below the ceiling has water within
+`ceiling/2` of it. If nothing flipped between land and water within `ceiling/2`
+of that pixel, its nearest water is the same water as before, so its distance is
+unchanged; and if its clamped width is *at* the ceiling, the only thing the
+analysis asks of it is that it is thick, which is the same statement.
+
+**Two radii, not one.** The crop cannot see water beyond its own edge, so it must
+be padded further than the region spliced back: **compute on R dilated by
+`ceiling_mm`, splice the inner `ceiling_mm/2`.** With a single `ceiling/2` pad the
+error inside the window reaches 0.54 mm (measured, Nova Scotia) — a 5-pixel lie
+exactly where the answer is being read.
+
+**Measured.** Over 8 brush-sized edits per province, the spliced field is
+**bit-exact** against a full recomputation — worst error 0.000000 mm on all three:
+
+| Province | brush | full field | spliced | speed-up |
+|---|---|---|---|---|
+| Nova Scotia | 0.125 mm | 13.4 ms | 0.44 ms | 30× |
+| British Columbia | 0.25 mm | 140.6 ms | 4.13 ms | 34× |
+| Nunavut | 0.5 mm | 518.7 ms | 13.6 ms | 38× |
+
+`0.125 mm` is `island_editor.brush_mm`, which is the edit this is really for.
+
+### Three locality attempts that failed, and why
+
+Recorded because they look right and each cost a prototype:
+
+1. **Cache per narrow patch.** Dead on arrival: **the narrow land is one patch.**
+   Every coastline pixel is narrow, so the fringe is connected the whole way
+   round. Measured: Nova Scotia has 44,661 of its 44,690 narrow pixels in a
+   single component; British Columbia 154,215 of 196,588; Nunavut's top three
+   patches hold 640 k of 896 k. A patch is not a local unit and a brush stroke
+   anywhere dirties the big one.
+2. **Contract equal-width plateaus** (adjacent pixels of identical width enter
+   the flood together, so collapsing them is exact). Measured gain: **1.2×**.
+   Nunavut 896 k nodes → 734 k. Exact Euclidean distances are too varied to
+   collapse; the idea only pays on a quantised field.
+3. **Dynamic MST.** The merge tree follows from the maximum spanning tree, and an
+   edit only changes edge weights inside the window — but lowering the weight of
+   a *tree* edge invokes the cut rule, which needs the best edge crossing a cut
+   whose other side can be the whole province. Not local.
+
+### The flood is tileable — the reduction is measured
+
+The flood depends on the narrow land only through **bottleneck connectivity**: for
+any two lobes, the width of the widest path between them. That composes over a
+partition, because any path between two tiles must cross a cell on their shared
+boundary.
+
+So tile the grid, and summarise each tile once as a tree whose **terminals** are
+the narrow cells on the tile's boundary plus the lobes it touches, each carrying
+the mass that joins it and the width at which that mass arrives. Reassembly is
+the same band descent of §2 run over the union of the summaries. On an edit only
+the tiles meeting the dirty window are re-summarised; every other summary is
+reused untouched.
+
+**Measured reduction** — boundary terminals against narrow pixels:
+
+| Province | narrow px | 64 px tiles | 128 px tiles | 256 px tiles |
+|---|---|---|---|---|
+| Nova Scotia | 45 k | 2.6 k | 1.5 k | 0.4 k |
+| British Columbia | 197 k | 12.0 k | 5.7 k | 2.7 k |
+| Nunavut | 896 k | 56.1 k | 27.6 k | 12.7 k |
+
+At 128 px the reassembly graph is **3.1%** of the pixel graph on all three
+provinces. And the reassembly at those sizes, measured directly (60 bands):
+
+| graph | 2.6 k | 12.7 k | 27.6 k | 56.1 k |
+|---|---|---|---|---|
+| band descent | 19 ms | 50 ms | 106 ms | 228 ms |
+
+So 128 px tiles put Nunavut's whole reassembly at **0.106 s**. 256 px halves that
+again but quadruples the cost of re-summarising a dirty tile; 128 px is the
+recommended default, and `tile_px` is a config key because this trade is
+measurable per province and nobody should have to guess.
+
+### The budget after an edit
+
+Nunavut, a 0.5 mm brush stroke, 128 px tiles:
+
+| stage | full run | after an edit | |
+|---|---|---|---|
+| rasterise | 0.10 s | re-burn the dirty window | |
+| width field | 0.52 s | **0.014 s** | measured, bit-exact |
+| labelling + bincounts | 0.07 s | 0.07 s | full grid, C, left alone |
+| the flood | 2.6 s | ≤4 tiles × ~16 ms + 0.106 s | *derived* |
+| scoring | negligible | negligible | |
+| **total** | **~3.5 s** | **~0.25 s** | |
+
+The per-tile figure is **derived, not measured**: Nunavut averages 3.2 k narrow
+pixels per live tile, and the measured flood rate is 4.55 s / 896 k px =
+5.1 µs/px. A 35×35 px dirty window spans at most four 128 px tiles. The build has
+to confirm it; it is the one number in this document standing on arithmetic.
+
+0.25 s is not a draw-loop figure and this plan does not pretend otherwise. It is a
+figure you can hang on a brush release, which is what the island editor needs.
+
+### The dirty grid is a contract, and it can be got wrong
+
+`dirty` must be a **conservative superset** of the cells whose land/water state
+changed. A superset costs time; a subset gives a confidently wrong answer, which
+is the one failure this lib must not have — the whole value of the report is that
+it is believed. Three defences:
+
+* **The caller does not have to produce one.** Pass the new land mask and
+  `restress` derives `dirty` by XOR against the cached one: correct by
+  construction, and one array XOR is nothing next to the rest of this.
+* **`StressParams.verify`** recomputes from scratch and asserts the necks match.
+  Off by default, on in the tests, available to anyone debugging a stale overlay.
+* **A full rebuild is always legal and is reported.** `report.rebuilt` is True
+  when the grid could not be reused, so a caller never silently gets a slow path
+  or a stale one.
+
+A rebuild is forced by: a different `pixel_mm`, `ceiling_mm` or `tile_px` (the
+summaries are keyed on all three); a different transform; a change that reaches
+outside the grid's extent; or a `dirty` that cannot be reconciled with the land
+handed in. The grid is therefore built with a **margin** so that growing the land
+a little does not immediately throw the cache away.
+
+### Memory
+
+Held per province, Nunavut being the worst: the land mask as packed bits is
+1.3 MB; the narrow width stored sparsely (index plus `uint16` hundredths of a
+millimetre, clamped at the ceiling) is 5.4 MB over its 896 k narrow pixels; the
+tile summaries are small. **~8 MB**, against 40 MB for a dense `float32` field.
+Worth saying because the island editor has undo/redo: the grid must be shared
+copy-on-write across undo states, not snapshotted per step.
+
+---
+
+## 4. The stress model, calibrated off a number this project already stands behind
 
 A printed piece is a flat slab of one thickness `t` of one material, so a neck is
 a **beam of cross-section `w × t`**, and mass is printed **area** — the same
@@ -211,11 +365,12 @@ Three things to read off it:
 
 ---
 
-## 4. The API
+## 5. The API
 
 Shaped like `ThinParams`/`ThinReport`, which is the pattern for a measuring lib
 here: print-mm throughout, converted through `print.scale` at the moment of use,
-geometry in EPSG:3347.
+geometry in EPSG:3347 — with the raster state added as a returned, re-feedable
+object.
 
 ```python
 @dataclass
@@ -223,13 +378,32 @@ class StressParams:
     scale: float = cfg("print.scale")
     pixel_mm: float = cfg("stress.pixel_mm")          # 0.1 — the width resolution
     ceiling_mm: float = cfg("stress.ceiling_mm")      # 3.0 — above this, not a neck
+    band_mm: float = cfg("stress.band_mm")            # 0.05 — throat resolution
+    tile_px: int = cfg("stress.tile_px")              # 128 — the reuse unit
     min_lobe_mm2: float = cfg("stress.min_lobe_mm2")  # 25.0 — "a larger area"
+    margin_mm: float = cfg("stress.margin_mm")        # 5.0 — room to grow before a rebuild
     thickness_mm: float = cfg("print.border_thickness_mm")
     capacity_mm2: float = cfg("bridges.mass_per_bridge_mm2")   # 400 — the anchor
     capacity_at_mm: float = cfg("bridges.width_mm")            # 1.0
     lever_power: float = cfg("stress.lever_power")    # 1.0 — 0 disables the arm
     report_above: float = cfg("stress.report_above")  # 0.0 — severity floor
+    verify: bool = False                              # recompute fully and assert
     work_crs: str = cfg("crs.working")
+
+@dataclass
+class StressGrid:
+    """The raster and everything derived from it, for the next call to reuse."""
+    transform: object           # Affine; fixed for the grid's life
+    shape: tuple
+    land: object                # packed bits
+    narrow: object              # sparse width, uint16 hundredths of a mm, clamped
+    tiles: dict                 # tile key -> cached summary
+    pixel_mm: float             # what was used, after any coarsening
+    ceiling_mm: float
+    tile_px: int
+    bounds: tuple               # including the margin
+    def covers(self, geom) -> bool: ...
+    def dirty_from(self, land_after) -> object: ...   # XOR: a superset by construction
 
 @dataclass
 class Neck:
@@ -249,10 +423,11 @@ class Neck:
 @dataclass
 class StressReport:
     necks: list                 # worst first
-    width: object               # the width field, for the gradient (array + transform)
+    grid: StressGrid            # hand this back to restress()
     measured: bool = True       # False when the geometry defeated it, even repaired
     repaired: bool = False      # make_valid was needed
-    pixel_mm: float = 0.0       # what was actually used, after any coarsening
+    rebuilt: bool = True        # the grid was built from scratch, not reused
+    tiles_recomputed: int = 0   # how much of the cache an edit actually cost
     land_area_mm2: float = 0.0
     @property
     def worst(self) -> float: ...
@@ -260,11 +435,19 @@ class StressReport:
     def sound(self) -> bool: ...          # measured, and nothing at risk
 ```
 
-Two functions:
+Three functions:
 
 ```python
-stress_points(geom, params=None) -> StressReport     # the whole analysis
-severity_field(report) -> (array, transform)         # the gradient the overlay draws
+stress_points(geom, params=None) -> StressReport
+    # the whole analysis; report.grid is the raster state to keep
+
+restress(grid, land=None, geom=None, dirty=None, params=None) -> StressReport
+    # the new land state as a mask or as geometry, plus optionally which cells
+    # changed.  dirty=None derives it by XOR.  Falls back to a full rebuild when
+    # the grid cannot be reused, and says so in report.rebuilt.
+
+severity_field(report) -> (array, transform)
+    # the gradient the overlay draws, straight off the cached grid
 ```
 
 **`measured` is not optional.** Copied deliberately from `thin_features`: real
@@ -280,13 +463,14 @@ can resolve, so the report has to say which pixel produced it.
 
 ---
 
-## 5. The overlay and the gradient
+## 6. The overlay and the gradient
 
 Three layers over the existing map, each answering a different question:
 
 1. **The width field**, continuous, faint, under everything — *where is the land
    narrow at all?* The distance transform through `imshow`, with the land as the
-   alpha mask. It costs nothing extra; it is already computed.
+   alpha mask. It costs nothing extra: it is in the grid already, which is also
+   what makes a redraw after an edit cheap.
 2. **The necks**, each narrow patch filled by its **severity** on a sequential
    ramp with **1.0 anchored at the ramp's midpoint** — so the colour reads as
    sound / marginal / at-risk rather than merely dark / light. This is the layer
@@ -310,17 +494,26 @@ Interaction, mirroring the viewer's `Show thin` group:
 
 * **Find Stress Points** — threaded, progress bar, status naming the next step.
 * **Min area (mm²)** and **Ceiling (mm)** spinboxes — live off the cached report
-  where they only re-filter, re-running only when they change the field.
+  where they only re-filter; `min_lobe_mm2` and `report_above` re-filter, while
+  `ceiling_mm` invalidates the tile summaries and re-runs.
 * **Worst** — zoom to the highest-severity neck; the whole point of the tool.
 * **Show branch** — highlight the land a selected neck holds. "This 0.2 mm neck
   holds *that*" is the sentence the overlay exists to say, and it is more
   convincing than a number.
 * A one-line verdict: `3 necks at risk — worst 0.28 mm holding 368 mm² (wants
   0.96 mm)`. Never a bare count.
+* After a re-run, the status says what it cost: `re-checked 3 tiles in 0.24 s`.
+  The incremental path is invisible when it works and that is exactly when a
+  stale overlay would go unnoticed, so it reports itself.
+
+The harness should also carry a **brush**, or the incremental path has nothing to
+be driven by. The simplest honest version: a drag that flips cells, feeding
+`restress` on release — which is the island editor's gesture in miniature, and
+the thing worth proving before the editor depends on it.
 
 ---
 
-## 6. Config
+## 7. Config
 
 A new `stress` block, beside `thin`:
 
@@ -328,7 +521,10 @@ A new `stress` block, beside `thin`:
 "stress": {
   "pixel_mm": 0.1,
   "ceiling_mm": 3.0,
+  "band_mm": 0.05,
+  "tile_px": 128,
   "min_lobe_mm2": 25.0,
+  "margin_mm": 5.0,
   "lever_power": 1.0,
   "report_above": 0.0
 }
@@ -341,47 +537,61 @@ physics, in one place.
 
 ---
 
-## 7. Open decisions
+## 8. Open decisions
 
-1. **`lever_power` default: 1.0 or 0.0?** Measured in §3: the top four necks are
+1. **`lever_power` default: 1.0 or 0.0?** Measured in §4: the top four necks are
    the same either way, and one more crosses 1.0 with the arm in. 1.0 is the
    physics and the numbers say it is low-risk — **recommend 1.0**, reconsider if a
    province shows the arm promoting something visibly fine.
 2. **Which thickness?** `print.border_thickness_mm` (2.0) and `terrain.base_mm`
    (2.0) are the same number today, so the choice is free and will not stay free.
    Default to the border thickness, let the caller pass it.
-3. **Does the width field belong in `LIB_thin_features` instead?** The distance
+3. **Is the labelling worth making local too?** It is 0.07 s of a 0.25 s edit —
+   the largest remaining fixed cost once the flood is tiled. Connected components
+   can split under an erase, which is the hard direction, so leave it global until
+   0.07 s is the thing in the way.
+4. **Does the width field belong in `LIB_thin_features` instead?** The distance
    transform would serve both, and `thin_features`' opening is exact where a
    raster is not. Recommend keeping them apart: `thin_features` is vector and
    exact and must stay so; this lib is raster by nature. Revisit only if a third
    caller wants the field.
-4. **Lakes.** A neck between two lakes is a real neck, and nothing special is
+5. **Lakes.** A neck between two lakes is a real neck, and nothing special is
    needed to find it — a lake is a hole, and the distance transform sees its shore
    like any other. But the report should probably say when a neck's water is
    interior, because widening it means filling a lake, which is a different edit.
-5. **Province viewer integration.** `UI_province_viewer` is where the printing
-   verdict for the whole country lives, and this belongs there eventually,
-   alongside `Show thin`. Out of scope for the first build: get the lib and its
-   harness right first.
+6. **Province viewer and island editor integration.** `UI_province_viewer` is
+   where the printing verdict for the whole country lives, and `UI_island_editor`
+   is what the incremental path is built for. Both are out of scope for the first
+   build: get the lib, the grid contract and the harness right first.
 
 ---
 
-## 8. Build order
+## 9. Build order
 
-1. `lib/LIB_stress_points.py` — grid, width field, lobe collapse, flood, scoring.
-   `tests/test_stress_points.py` alongside it, on synthetic shapes where the
-   answer is known by construction: a dumbbell with a 0.5 mm bar (one neck, one
-   throat, both masses exact), the same bar at 1.5 mm (sound), a plain square (no
-   necks — the corner-sliver trap `thin_features` had to fix with mitre joins), a
-   spit (narrow, carries nothing, must **not** be reported), two blobs joined
-   twice (a cycle: the load is shared, not doubled), and an invalid
+The width-field splice and the tiling ship **together**. The splice alone takes
+Nunavut from 3.5 s to 3.0 s, which nobody would notice; the tiling is where the
+order of magnitude is, and the splice is what makes the tiling's input cheap.
+
+1. `lib/LIB_stress_points.py` — grid, width field, lobe collapse, the compressed
+   graph, the banded descent, scoring. `tests/test_stress_points.py` on synthetic
+   shapes where the answer is known by construction: a dumbbell with a 0.5 mm bar
+   (one neck, one throat, both masses exact), the same bar at 1.5 mm (sound), a
+   plain square (no necks — the corner-sliver trap `thin_features` had to fix with
+   mitre joins), a spit (narrow, carries nothing, must **not** be reported), two
+   blobs joined twice (a cycle: the load is shared, not doubled), and an invalid
    self-intersecting ring (`measured` False, or repaired and flagged).
 2. Geometry extraction for the overlay — throat bar, region, branch — tested for
    the bar's length against the throat and the branch's area against `load_mm2`.
 3. Regression on real data: the four provinces measured here, asserting the known
-   necks are found with their throats and masses. The table in §3 is the fixture.
-4. `harnesses/UI_stress_points.py` — the standard skeleton, threaded run, the
-   three layers, Worst, Show branch. `tests/test_stress_points_ui.py` following
-   `test_island_bridges_ui.py`.
-5. `docs/USING_STRESS_POINTS.md` once the behaviour is real, and a status note at
-   the top of this file.
+   necks are found with their throats and masses. The table in §4 is the fixture,
+   and the four British Columbia necks are the `band_mm` regression.
+4. `StressGrid` and `restress`. **The test that matters is equality, not speed:**
+   for a few hundred random brush edits per province, the incremental necks must
+   equal a from-scratch run exactly. `verify=True` is that test's mechanism, and
+   the same switch ships for anyone debugging a stale overlay. Then assert the
+   rebuild triggers fire — pixel change, transform change, an edit off the edge.
+5. `harnesses/UI_stress_points.py` — the standard skeleton, threaded run, the
+   three layers, Worst, Show branch, and a brush to exercise `restress`.
+   `tests/test_stress_points_ui.py` following `test_island_bridges_ui.py`.
+6. `docs/USING_STRESS_POINTS.md` once the behaviour is real, with the measured
+   edit budget, and a status note at the top of this file.
