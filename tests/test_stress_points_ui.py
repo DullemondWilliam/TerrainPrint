@@ -136,6 +136,47 @@ class TestControlsReachTheLib:
         getattr(window, control).setValue(value)
         assert getattr(window.params(), field) == pytest.approx(value)
 
+    def test_every_control_says_what_it_does(self):
+        """A knob with no hover is a knob you have to read the source to use.
+
+        Enforced rather than spot-checked, so that adding one later and
+        forgetting the tooltip fails here instead of being found by somebody
+        turning it to see what happens. The captions carry it too: ``Band:`` on
+        its own tells you nothing, and the caption is the half of the pair the
+        pointer lands on first.
+        """
+        from PySide6.QtWidgets import (QAbstractButton, QAbstractSpinBox,
+                                       QComboBox, QLabel)
+        window = U.StressPointsTester()
+        controls = [(name, obj) for name, obj in vars(window).items()
+                    if isinstance(obj, (QAbstractButton, QAbstractSpinBox,
+                                        QComboBox))]
+        assert len(controls) >= 20, "did the controls move off the window?"
+        assert [name for name, obj in controls if not obj.toolTip()] == []
+        captions = [label for label in window.findChildren(QLabel)
+                    if label.text().endswith(":")]
+        assert captions, "the parameter rows should be captioned"
+        assert [c.text() for c in captions if not c.toolTip()] == []
+
+    def test_a_caption_says_the_same_thing_as_its_box(self):
+        """One wording per parameter: the caption takes the widget's own text
+        rather than keeping a second copy that could drift from it."""
+        window = U.StressPointsTester()
+        caption = window._caption("Band:", window.band_spin)
+        assert caption.toolTip() == window.band_spin.toolTip()
+        assert caption.text() == "Band:"
+
+    def test_the_action_buttons_explain_themselves(self):
+        """The five that do something, each naming what it will cost or change
+        rather than repeating its own label."""
+        window = U.StressPointsTester()
+        for name in ("btn_import", "btn_run", "btn_zoom", "btn_whole",
+                     "btn_save"):
+            tip = getattr(window, name).toolTip()
+            label = getattr(window, name).text().rstrip(" …")
+            assert len(tip) > 60, f"{name}: a tooltip that short is a label"
+            assert tip != label
+
     def test_the_defaults_are_the_libs_defaults(self):
         """The window must open on the lib's own numbers, or the first run
         answers a question nobody asked."""

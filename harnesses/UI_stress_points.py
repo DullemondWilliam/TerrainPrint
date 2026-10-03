@@ -195,18 +195,44 @@ class StressPointsTester(QMainWindow):
         toolbar = QHBoxLayout()
         self.btn_import = QPushButton("Import GeoJSON …")
         self.btn_import.clicked.connect(self.import_geojson)
+        self.btn_import.setToolTip(
+            "Load a province, replacing whatever is on screen.\nReprojected to "
+            "EPSG:3347 on the way in, so every millimetre below is a\nreal "
+            "ground distance rather than a distance on a lon/lat grid.\nAll the "
+            "parts of the file are measured as one piece — a province\nis "
+            "printed on its own, so it is its own outline that has to survive.")
         self.btn_run = QPushButton("Find Stress Points")
         self.btn_run.clicked.connect(self.run)
         self.btn_run.setEnabled(False)
+        self.btn_run.setToolTip(
+            "Measure the province against every parameter on the row below.\n"
+            "Finds each neck with its own throat width — no width is chosen for "
+            "it —\nweighs what falls off if the neck goes, and scores that "
+            "against what a\nneck that wide can carry. Off the UI thread: about "
+            "0.4 s on Nova Scotia,\n1.7 s on British Columbia, 6.7 s on "
+            "Nunavut.")
         self.btn_zoom = QPushButton("Zoom to Worst")
         self.btn_zoom.clicked.connect(self.zoom_to_worst)
         self.btn_zoom.setEnabled(False)
+        self.btn_zoom.setToolTip(
+            "Frame the neck with the highest severity.\nThe only way to see "
+            "one: a 0.20 mm throat is a fiftieth of a cell at\nprovince extent, "
+            "so the shading of the worst fault on the map is\nsmaller than the "
+            "pixel drawn for it.")
         self.btn_whole = QPushButton("Whole Province")
         self.btn_whole.clicked.connect(self.zoom_out)
         self.btn_whole.setEnabled(False)
+        self.btn_whole.setToolTip(
+            "Back out to the whole province, after a zoom or a Worst.\nThe "
+            "survey view: how many necks there are and where they fall.")
         self.btn_save = QPushButton("Save Necks …")
         self.btn_save.clicked.connect(self.save_necks)
         self.btn_save.setEnabled(False)
+        self.btn_save.setToolTip(
+            "Write the necks out as GeoJSON — a throat bar and a blob each,\n"
+            "carrying the throat width, the load, the lever arm, the width the "
+            "neck\nwants and its severity. In the CRS the file arrived in, so "
+            "it drops\nstraight back onto the map it came from.")
         for widget in (self.btn_import, self.btn_run, self.btn_zoom,
                        self.btn_whole, self.btn_save):
             toolbar.addWidget(widget)
@@ -284,7 +310,7 @@ class StressPointsTester(QMainWindow):
                               ("Min area:", self.min_lobe_spin),
                               ("Lever:", self.lever_spin),
                               ("Report above:", self.above_spin)):
-            counts_bar.addWidget(QLabel(label))
+            counts_bar.addWidget(self._caption(label, widget))
             counts_bar.addWidget(widget)
         counts_bar.addStretch(1)
         root.addLayout(counts_bar)
@@ -354,13 +380,13 @@ class StressPointsTester(QMainWindow):
         draw_bar.addWidget(self.region_check)
         draw_bar.addWidget(self.bars_check)
         draw_bar.addWidget(self.label_check)
-        draw_bar.addWidget(QLabel("Ramp to:"))
+        draw_bar.addWidget(self._caption("Ramp to:", self.vmax_spin))
         draw_bar.addWidget(self.vmax_spin)
         draw_bar.addSpacing(16)
         draw_bar.addWidget(self.brush_check)
         draw_bar.addWidget(self.brush_spin)
         draw_bar.addSpacing(16)
-        draw_bar.addWidget(QLabel("Branch of:"))
+        draw_bar.addWidget(self._caption("Branch of:", self.neck_box))
         draw_bar.addWidget(self.neck_box)
         draw_bar.addStretch(1)
         root.addLayout(draw_bar)
@@ -402,6 +428,18 @@ class StressPointsTester(QMainWindow):
         spin.setValue(value)
         spin.setToolTip(tip)
         return spin
+
+    @staticmethod
+    def _caption(text: str, widget) -> QLabel:
+        """A label for a control, carrying the control's own explanation.
+
+        ``Band:`` on its own tells you nothing, and the caption is the half of
+        the pair the pointer lands on first. Taking the tooltip from the widget
+        rather than repeating it keeps one wording for one parameter.
+        """
+        label = QLabel(text)
+        label.setToolTip(widget.toolTip())
+        return label
 
     # -- parameters ---------------------------------------------------------
     def params(self) -> StressParams:
