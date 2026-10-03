@@ -30,6 +30,14 @@ def _part_count(geom) -> int:
     return len(list(geom.geoms))
 
 
+def _rings(geom) -> list:
+    """Every interior ring across every part, in document order."""
+    if geom is None or geom.is_empty:
+        return []
+    parts = [geom] if geom.geom_type == "Polygon" else list(geom.geoms)
+    return [ring for p in parts for ring in p.interiors]
+
+
 def _interiors(geom) -> int:
     """Total interior rings across every part."""
     if geom is None or geom.is_empty:
@@ -127,15 +135,50 @@ class TestDrawBridge(unittest.TestCase):
         self.assertIsNot(result, self.doc)
         self.assertGreater(result.area, self.doc.area)
 
-    def test_a_stroke_that_encircles_the_strait_fills_it(self):
+    def test_a_stroke_that_encircles_the_strait_keeps_the_water(self):
         """
-        Crossing at two places traps sea between the crossings; that pocket
-        would read as a border inside the landmass, so it is filled.
+        Crossing at two places seals sea between the crossings.  The brush adds
+        only the land it was dragged over, so that water stays water -- a lake
+        in the finished landmass, exactly as the eraser keeps a hole it opens.
         """
         path = [(5_000, 1_000), (25_000, 1_000), (25_000, 9_000), (5_000, 9_000)]
         result = draw_bridge(self.doc, path, 1.0)
         self.assertEqual(_part_count(result), 1)
-        self.assertEqual(_interiors(result), 0)
+        self.assertEqual(_interiors(result), 1)
+        # The lagoon is the strait between the two crossings, less their width:
+        # 10 km of water across, 8 km between the stroke's inner edges.
+        lagoon = Polygon(_rings(result)[0])
+        self.assertAlmostEqual(lagoon.area / (10_000 * 7_000), 1.0, places=2)
+
+    def test_a_stroke_ringed_around_open_sea_makes_a_lake(self):
+        """The same rule with no coastline involved: a drawn ring holds water."""
+        path = [(40_000, 0), (60_000, 0), (60_000, 20_000), (40_000, 20_000),
+                (40_000, 0)]
+        result = draw_bridge(self.doc, path, 2.0)
+        self.assertEqual(_interiors(result), 1)
+        lagoon = Polygon(_rings(result)[0])
+        self.assertAlmostEqual(lagoon.area / (18_000 * 18_000), 1.0, places=2)
+
+    def test_a_hairline_ring_the_union_leaves_is_dropped(self):
+        """
+        Sealing a hairline slit leaves a ring too thin to hold water -- the same
+        crumb the union leaves where a stroke grazes a real coastline (30 m2
+        against an 18 km brush).  It would draw as a scratch inside solid land,
+        so it goes, where a slit wide enough to be water is kept.
+        """
+        # A 5 cm slit 5 km into the coast; a stroke along the shore seals the
+        # top 2 km of it, which rings the 150 m2 that is left.
+        slit = box(9_999.975, 5_000, 10_000.025, 10_000)
+        shore = [(2_000, 10_000), (18_000, 10_000)]
+        hairline = draw_bridge(box(0, 0, 20_000, 10_000).difference(slit),
+                               shore, 4.0)
+        self.assertEqual(_interiors(hairline), 0)
+
+        # The same inlet 100 m wide is water, and a 4 km brush keeps it.
+        inlet = box(9_950, 5_000, 10_050, 10_000)
+        lagoon = draw_bridge(box(0, 0, 20_000, 10_000).difference(inlet),
+                             shore, 4.0)
+        self.assertEqual(_interiors(lagoon), 1)
 
     def test_a_real_lake_survives_a_bridge(self):
         """Filling merge-made pockets must not swallow the document's own lakes."""

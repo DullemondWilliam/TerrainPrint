@@ -15,11 +15,13 @@ cutting one landmass into two.
 
 Interior rings
 --------------
-Unlike drawing, erasing **keeps every hole it opens**.  A stroke that closes a
-ring inside a landmass is a pocket the user deliberately rubbed out, and filling
-it back in would undo the edit — where a *bridge* encloses open sea only as a
-side effect of joining two shores, which is why that case is filled.  ``Remove
-Lakes`` is there for a pocket that turns out not to be wanted.
+Erasing **keeps every hole it opens**.  A stroke that closes a ring inside a
+landmass is a pocket the user deliberately rubbed out, and filling it back in
+would undo the edit.  Drawing keeps its holes on the same rule — one brush, one
+answer, whichever way it is dragged — and ``Remove Lakes`` is there for a pocket
+that turns out not to be wanted.  Only the automatic bridges fill the water they
+enclose (see :func:`lib.LIB_island_bridges.apply_bridges`): there the strait is
+closed as a side effect of a crossing nobody drew.
 
 Coordinates are expected in a projected metre CRS (the project uses EPSG:3347),
 so the brush width is a real ground distance.

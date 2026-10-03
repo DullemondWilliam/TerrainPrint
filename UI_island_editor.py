@@ -24,7 +24,8 @@ Workflow
      the thing that matters.
    - **Draw Bridge** — paint a land bridge by hand at a chosen brush width, for
      the gaps no workable buffer closes (left-drag draws while the mode is on;
-     Esc cancels a stroke, or leaves the mode).
+     Esc cancels a stroke, or leaves the mode).  Water a stroke seals off stays
+     water, as it does under the eraser.
    - **Erase** — the same brush in reverse: rub land out to trim a coastline or
      cut a landmass in two, where removal by island or by area cannot reach.
    - **Remove** — drop the clicked islands; it sits with the selection
@@ -590,7 +591,9 @@ class IslandEditor(QMainWindow):
             "Drag on the map to paint a land bridge at the brush width. "
             "While this is on, left-drag draws instead of panning — pan with "
             "the toolbar's pan tool, and zoom with the wheel as usual. "
-            "Esc cancels a stroke, or leaves the mode.")
+            "Water the stroke closes off is kept as a lake, and so are the "
+            "lakes already there (use ‘Remove Lakes’ for one you did not "
+            "want). Esc cancels a stroke, or leaves the mode.")
         self.btn_erase = self._button("Erase", self._toggle_erase, enabled=False)
         self.btn_erase.setCheckable(True)
         self.btn_erase.setToolTip(
