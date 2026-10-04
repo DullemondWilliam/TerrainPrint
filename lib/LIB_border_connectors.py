@@ -289,11 +289,33 @@ def notch_province(mesh, lobes_m, x0_m, y0_m, p: ConnectorParams):
 
     ``x0_m, y0_m`` must be the same local origin (min easting / northing) that the
     province mesh was built with, so the pockets land under the border tabs.
+
+    Done in manifold space, like the coastline cut in ``LIB_terrain_trim``:
+    ``trimesh.boolean`` (4.0 has no manifold3d engine) returned a New Brunswick
+    terrain solid that was no longer watertight, where the same cut through
+    manifold3d stayed closed and removed the same 40 mm3.
     """
-    cutter = _union(pocket_cutters(lobes_m, x0_m, y0_m, p))
-    if cutter is None:
+    tool = None
+    for lobe in lobes_m:
+        lobe_c = lobe.buffer(p.clearance_mm * p.mpm)     # pocket slightly oversized
+        cutter = _extrude_man(_to_mm(lobe_c, p.mpm, x0_m, y0_m),
+                              -0.1, p.dovetail_mm)
+        if cutter is not None:
+            tool = cutter if tool is None else tool + cutter
+    if tool is None:
         return mesh
-    return trimesh.boolean.difference([mesh, cutter])
+    notched = _man_to_trimesh(_trimesh_to_man(mesh) - tool)
+    if notched is None:
+        raise ValueError("the pockets removed the whole piece; check the "
+                         "origin the mesh was built with.")
+    return notched
+
+
+def _trimesh_to_man(mesh):
+    """Trimesh -> manifold3d.Manifold for boolean ops."""
+    return m3d.Manifold(m3d.Mesh(
+        vert_properties=np.asarray(mesh.vertices, dtype=np.float32),
+        tri_verts=np.asarray(mesh.faces, dtype=np.uint32)))
 
 
 # ---------------------------------------------------------------------------
