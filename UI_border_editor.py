@@ -51,8 +51,9 @@ and two rows of its own:
   touching the province growing moves, so it moves the border rather than
   making enclaves, and the pair still covers exactly the ground it did.  It
   edits the pair as imported; if the seam had been simplified, that is run
-  again on the edited pair.  **Undo Push** (Ctrl+Z) takes a stroke back; Esc
-  leaves the brush.
+  again on the edited pair.  **Undo** (Ctrl+Z) and **Redo** (Ctrl+Shift+Z or
+  Ctrl+Y) step through the pushes; the history lasts until another border is
+  opened.  Esc leaves the brush.
 
 What "cleaned" means
 --------------------
@@ -84,7 +85,7 @@ from matplotlib.figure import Figure
 from shapely.geometry import Point
 from shapely.ops import unary_union
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QCheckBox, QDoubleSpinBox,
                                QFileDialog, QGroupBox, QHBoxLayout, QLabel,
@@ -244,6 +245,10 @@ class SeamPage(SharedBorderTester):
         # _invalidate, which this class extends.
         self.fit_before = None            #: FitReport of the pair as edited
         self.fit_after = None             #: FitReport of the simplified pair
+        #: True from the moment a run is asked for. The harness's run() calls
+        #: _set_busy before it creates the thread, so ``_thread`` alone reads
+        #: idle at exactly the moment the buttons are being locked.
+        self._busy = False
         super().__init__()
         # A main window by birth; here it is one page of another window.
         self.setWindowFlags(Qt.Widget)
@@ -267,7 +272,10 @@ class SeamPage(SharedBorderTester):
         self.province_a = None
         self.province_b = None
         self._status_word = ""
-        self._undo: list = []             #: (geom_a, geom_b) before each push
+        #: Edit history, as ``(geom_a, geom_b, note)``: the pair before each
+        #: push on the undo side, the pair after each undone push on the redo.
+        self._undo: list = []
+        self._redo: list = []
         self._push_mode = None            #: GROW_A, GROW_B, or None
         self._stroke = None               #: points of an in-progress stroke
         self._stroke_ax = None
@@ -280,12 +288,53 @@ class SeamPage(SharedBorderTester):
         self.canvas.mpl_connect("button_press_event", self._on_press)
         self.canvas.mpl_connect("motion_notify_event", self._on_motion)
         self.canvas.mpl_connect("button_release_event", self._on_release)
-        for keys, slot in (("Ctrl+Z", self.undo_push),
-                           ("Escape", self._escape)):
-            shortcut = QShortcut(QKeySequence(keys), self)
+        # Every sequence the platform lists, plus the island editor's: on
+        # Windows StandardKey.Redo is Ctrl+Y alone, and Ctrl+Shift+Z is what
+        # the other window taught the hand.
+        self._bind(QKeySequence.StandardKey.Undo, self.undo_push, "Ctrl+Z")
+        self._bind(QKeySequence.StandardKey.Redo, self.redo_push,
+                   "Ctrl+Shift+Z", "Ctrl+Y")
+        self._bind(None, self._escape, "Escape")
+        # …and keep the number boxes from swallowing them (see eventFilter).
+        for entry in (self.tol_spin, self.seg_spin, self.angle_spin,
+                      self.smooth_spin, self.nozzle_spin, self.drift_spin,
+                      self.brush_spin, *self.fit_spins.values()):
+            entry.installEventFilter(self)
+        self._sync_fit_label()
+
+    def _bind(self, standard_key, slot, *extra) -> None:
+        """Wire ``slot`` to a standard key's bindings plus ``extra`` sequences,
+        once each, live while focus is anywhere on this page."""
+        seqs = (list(QKeySequence.keyBindings(standard_key))
+                if standard_key is not None else [])
+        seqs += [QKeySequence(text) for text in extra]
+        seen = set()
+        for seq in seqs:
+            if seq.isEmpty() or seq.toString() in seen:
+                continue
+            seen.add(seq.toString())
+            shortcut = QShortcut(seq, self)
             shortcut.setContext(Qt.WidgetWithChildrenShortcut)
             shortcut.activated.connect(slot)
-        self._sync_fit_label()
+
+    def eventFilter(self, obj, event):
+        """
+        Stop a focused number box from claiming undo/redo for its own text.
+
+        A ``QDoubleSpinBox`` edits through a ``QLineEdit``, which keeps a text
+        history of its own and claims Ctrl+Z for it by accepting the
+        ``ShortcutOverride`` sent before a shortcut fires.  Type a brush width
+        and Ctrl+Z would roll back a digit instead of the last push.  Refusing
+        the override lets the page's shortcuts have it, as in the island
+        editor; every other key is left alone.
+        """
+        if event.type() == QEvent.Type.ShortcutOverride and (
+                event.matches(QKeySequence.StandardKey.Undo)
+                or event.matches(QKeySequence.StandardKey.Redo)
+                or event.keyCombination().toCombined()
+                == QKeySequence("Ctrl+Shift+Z")[0].toCombined()):
+            return True
+        return super().eventFilter(obj, event)
 
     # -- building ---------------------------------------------------------
     def _build_fit_row(self) -> QHBoxLayout:
@@ -349,11 +398,16 @@ class SeamPage(SharedBorderTester):
             lambda value: update_local("seam.brush_mm", value))
         row.addWidget(QLabel("Brush:"))
         row.addWidget(self.brush_spin)
-        self.btn_undo = QPushButton("Undo Push")
-        self.btn_undo.setToolTip("Take back the last stroke (Ctrl+Z).")
+        self.btn_undo = QPushButton("Undo")
+        self.btn_undo.setToolTip("Take back the last push (Ctrl+Z).")
         self.btn_undo.clicked.connect(self.undo_push)
-        self.btn_undo.setEnabled(False)
-        row.addWidget(self.btn_undo)
+        self.btn_redo = QPushButton("Redo")
+        self.btn_redo.setToolTip(
+            "Put back the push just undone (Ctrl+Shift+Z or Ctrl+Y).")
+        self.btn_redo.clicked.connect(self.redo_push)
+        for button in (self.btn_undo, self.btn_redo):
+            button.setEnabled(False)
+            row.addWidget(button)
         self.push_label = QLabel(
             "Drag across the seam to hand land from one province to the "
             "other. Esc leaves the brush.")
@@ -367,7 +421,9 @@ class SeamPage(SharedBorderTester):
                   status: str = "not cleaned") -> None:
         """Put a pair on the editor, as Import A and Import B would have."""
         self.set_push_mode(None)
-        self._undo = []
+        # A history belongs to one pair: undoing into another border's
+        # geometry would hand this pair's land to strangers.
+        self._undo, self._redo = [], []
         self.province_a, self.province_b = province_a, province_b
         self.geom_a, self.geom_b = province_a.geometry, province_b.geometry
         self.path_a, self.path_b = province_a.path, province_b.path
@@ -397,7 +453,9 @@ class SeamPage(SharedBorderTester):
         self.heading.setText(
             f"{self.province_a.label} ⇄ {self.province_b.label} — "
             f"{self._status_word}{edited}")
-        self.btn_undo.setEnabled(bool(edits) and self._thread is None)
+        idle = not self._busy and self._thread is None
+        self.btn_undo.setEnabled(bool(self._undo) and idle)
+        self.btn_redo.setEnabled(bool(self._redo) and idle)
 
     def save_both(self) -> None:
         """Apply: hand the result back; the window decides where it goes."""
@@ -406,6 +464,7 @@ class SeamPage(SharedBorderTester):
         self.applied.emit(self.result)
 
     def _set_busy(self, busy: bool) -> None:
+        self._busy = busy
         super()._set_busy(busy)
         # Leaving mid-run would orphan the worker's result, and pushing would
         # edit the pair out from under it.
@@ -614,20 +673,34 @@ class SeamPage(SharedBorderTester):
                 "province that touches the one growing.")
             return False
         moved_mm2 = (grown.area - grow.area) / self._params().mpm ** 2
-        self._undo.append((self.geom_a, self.geom_b))
+        winner = self.province_a if growing_a else self.province_b
+        note = f"moved {moved_mm2:.2f} mm² to {winner.label}"
+        self._undo.append((self.geom_a, self.geom_b, note))
+        self._redo = []                   # a new edit ends the old future
         self.geom_a, self.geom_b = ((grown, shrunk) if growing_a
                                     else (shrunk, grown))
-        winner = self.province_a if growing_a else self.province_b
-        self.push_label.setText(
-            f"Moved {moved_mm2:.2f} mm² to {winner.label}.")
+        self.push_label.setText(f"{note[0].upper()}{note[1:]}.")
         self._after_edit()
         return True
 
     def undo_push(self) -> None:
-        if not self._undo or self._thread is not None:
+        """Step back one push (Ctrl+Z)."""
+        if not self._undo or self._busy or self._thread is not None:
             return
-        self.geom_a, self.geom_b = self._undo.pop()
-        self.push_label.setText("Last push undone.")
+        geom_a, geom_b, note = self._undo.pop()
+        self._redo.append((self.geom_a, self.geom_b, note))
+        self.geom_a, self.geom_b = geom_a, geom_b
+        self.push_label.setText(f"Undone: {note}.")
+        self._after_edit()
+
+    def redo_push(self) -> None:
+        """Step forward again (Ctrl+Shift+Z or Ctrl+Y)."""
+        if not self._redo or self._busy or self._thread is not None:
+            return
+        geom_a, geom_b, note = self._redo.pop()
+        self._undo.append((self.geom_a, self.geom_b, note))
+        self.geom_a, self.geom_b = geom_a, geom_b
+        self.push_label.setText(f"Redone: {note}.")
         self._after_edit()
 
     def _after_edit(self) -> None:

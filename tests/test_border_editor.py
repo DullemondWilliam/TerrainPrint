@@ -16,6 +16,7 @@ import pytest
 from shapely.geometry import Polygon, box
 
 import geopandas as gpd
+from PySide6.QtCore import Qt
 
 import UI_border_editor as U
 from lib.LIB_border_ledger import LEDGER_NAME
@@ -423,3 +424,157 @@ class TestPushBrush:
         window.open_editor()
         assert page._undo == []
         assert page._push_mode is None
+
+
+class TestUndoRedo:
+    """Pushes step back and forward, and the history belongs to one pair."""
+
+    def _pushed(self, tmp_path, times=1):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        page.set_push_mode(_grow(page, "CAN_East"))
+        page.brush_spin.setValue(4.0)
+        states = [(page.geom_a, page.geom_b)]
+        for i in range(times):
+            y = O + (17 + 3 * i) * MM
+            assert page.push([(O + 21 * MM, y), (O + 28 * MM, y)])
+            states.append((page.geom_a, page.geom_b))
+        return window, page, states
+
+    def test_redo_puts_back_what_undo_took(self, tmp_path):
+        window, page, states = self._pushed(tmp_path)
+        page.undo_push()
+        assert (page.geom_a, page.geom_b) == states[0]
+        assert page.btn_redo.isEnabled()
+        page.redo_push()
+        assert (page.geom_a, page.geom_b) == states[1]
+        assert not page.btn_redo.isEnabled()
+        assert page.btn_undo.isEnabled()
+        assert page.push_label.text().startswith("Redone: moved")
+
+    def test_steps_through_several_pushes_in_order(self, tmp_path):
+        window, page, states = self._pushed(tmp_path, times=3)
+        page.undo_push()
+        page.undo_push()
+        assert (page.geom_a, page.geom_b) == states[1]
+        assert "1 push" in page.heading.text()
+        page.redo_push()
+        assert (page.geom_a, page.geom_b) == states[2]
+        page.undo_push()
+        page.undo_push()
+        page.undo_push()
+        assert (page.geom_a, page.geom_b) == states[0]
+        assert not page.btn_undo.isEnabled()
+        assert "push" not in page.heading.text()
+        page.undo_push()                           # nothing left: a no-op
+        assert (page.geom_a, page.geom_b) == states[0]
+
+    def test_a_new_push_ends_the_redo_history(self, tmp_path):
+        window, page, states = self._pushed(tmp_path, times=2)
+        page.undo_push()
+        assert page.btn_redo.isEnabled()
+        page.push([(O + 21 * MM, O + 24 * MM), (O + 28 * MM, O + 24 * MM)])
+        assert not page.btn_redo.isEnabled()
+        page.redo_push()                           # nothing to redo
+        assert len(page._undo) == 2
+
+    def test_redo_re_measures_the_fit(self, tmp_path):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        page.set_push_mode(_grow(page, "CAN_East"))
+        page.brush_spin.setValue(12.0)
+        page.push(ACROSS_THE_TAB)
+        page.undo_push()
+        assert len(page.fit_before.locking) == 1
+        page.redo_push()
+        assert page.fit_before.locking == []
+
+    def test_redo_after_simplifying_runs_it_again(self, tmp_path,
+                                                  monkeypatch):
+        window, page, states = self._pushed(tmp_path)
+        page.undo_push()
+        page._on_done(simplify_shared_border(page.geom_a, page.geom_b,
+                                             page._params()))
+        runs = []
+        monkeypatch.setattr(page, "run", lambda: runs.append(1))
+        page.redo_push()
+        assert runs == [1]
+
+    def test_both_are_locked_while_a_run_is_in_flight(self, tmp_path):
+        window, page, states = self._pushed(tmp_path, times=2)
+        page.undo_push()
+        page._set_busy(True)
+        assert not page.btn_undo.isEnabled()
+        assert not page.btn_redo.isEnabled()
+        page._thread = object()                    # as if a run were going
+        page.undo_push()
+        page.redo_push()
+        assert (page.geom_a, page.geom_b) == states[1]
+        page._thread = None
+        page._set_busy(False)
+        assert page.btn_undo.isEnabled() and page.btn_redo.isEnabled()
+
+    def test_opening_another_border_clears_both(self, tmp_path):
+        window, page, states = self._pushed(tmp_path, times=2)
+        page.undo_push()
+        page.btn_back.click()
+        window.open_editor()
+        assert page._undo == [] and page._redo == []
+        assert not page.btn_undo.isEnabled()
+        assert not page.btn_redo.isEnabled()
+
+
+class TestUndoRedoKeys:
+    """The shortcuts fire from the map and from a focused number box."""
+
+    @pytest.fixture
+    def shown(self, tmp_path, qtbot):
+        window = _mushroom_window(tmp_path)
+        qtbot.addWidget(window)
+        window.resize(1200, 700)
+        window.show()
+        qtbot.waitExposed(window)
+        window.activateWindow()
+        page = window.seam_page
+        page.set_push_mode(_grow(page, "CAN_East"))
+        page.brush_spin.setValue(12.0)
+        before = (page.geom_a, page.geom_b)
+        page.push(ACROSS_THE_TAB)
+        after = (page.geom_a, page.geom_b)
+        return window, page, before, after
+
+    @pytest.mark.parametrize("focus_on", ["canvas", "brush_spin", "tol_spin"])
+    def test_ctrl_z_undoes_wherever_the_focus_is(self, shown, qtbot,
+                                                 focus_on):
+        window, page, before, after = shown
+        target = getattr(page, focus_on)
+        target.setFocus()
+        qtbot.keyClick(target, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+        assert (page.geom_a, page.geom_b) == before
+
+    @pytest.mark.parametrize("focus_on", ["canvas", "brush_spin"])
+    @pytest.mark.parametrize("keys", [
+        (Qt.Key.Key_Y, Qt.KeyboardModifier.ControlModifier),
+        (Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier
+         | Qt.KeyboardModifier.ShiftModifier)],
+        ids=["ctrl+y", "ctrl+shift+z"])
+    def test_both_redo_keys_redo(self, shown, qtbot, focus_on, keys):
+        window, page, before, after = shown
+        page.undo_push()
+        target = getattr(page, focus_on)
+        target.setFocus()
+        qtbot.keyClick(target, *keys)
+        assert (page.geom_a, page.geom_b) == after
+
+    def test_a_number_box_keeps_its_value_through_ctrl_z(self, shown, qtbot):
+        """Ctrl+Z goes to the push history, not the box's own text history."""
+        window, page, before, after = shown
+        page.brush_spin.setFocus()
+        page.brush_spin.selectAll()
+        qtbot.keyClicks(page.brush_spin, "3")
+        qtbot.keyClick(page.brush_spin, Qt.Key.Key_Return)
+        assert page.brush_spin.value() == pytest.approx(3.0)
+        qtbot.keyClick(page.brush_spin, Qt.Key.Key_Z,
+                       Qt.KeyboardModifier.ControlModifier)
+        assert page.brush_spin.value() == pytest.approx(3.0)
+        assert (page.geom_a, page.geom_b) == before

@@ -220,7 +220,8 @@ elephant's foot, clearance; default 0.2 mm). Measure it once on your printer.
 
 **Push border:** *Grow A* / *Grow B* turn the map into a brush that hands the
 land under the stroke to that province, so a locking tab or thin finger can be
-pushed back by hand. Ctrl+Z undoes a stroke; Esc leaves the brush.
+pushed back by hand. *Undo* (Ctrl+Z) and *Redo* (Ctrl+Shift+Z or Ctrl+Y)
+step through the pushes until another border is opened; Esc leaves the brush.
 
 ## Recommended Workflow
 
