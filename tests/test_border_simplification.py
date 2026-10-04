@@ -16,8 +16,10 @@ from lib.LIB_border_simplification import (
     _remove_reversals,
     _find_shared_arcs,
     _reconstruct_ring,
+    _condition_arc,
     topo_simplify_two_tolerances,
 )
+from shapely.geometry import Polygon
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +246,84 @@ class TestTopoSimplifyTwoTolerances(unittest.TestCase):
         pts_lo = sum(len(s) for s in coast_lo)
         pts_hi = sum(len(s) for s in coast_hi)
         self.assertGreaterEqual(pts_lo, pts_hi)
+
+
+# ---------------------------------------------------------------------------
+# Seam clean-up -- LIB_shared_border's passes, run per internal arc
+# ---------------------------------------------------------------------------
+def _zigzag_pair(amplitude=200.0, step=500.0):
+    """
+    Two provinces meeting along a zigzag seam at x ~ 100 km.
+
+    The zigzag's 500 m steps are what a 1 km min_segment should collapse; its
+    200 m amplitude sits inside a 1 km DP corridor, so DP alone keeps every
+    vertex -- the case the clean-up exists for.
+    """
+    ys = np.arange(0.0, 100_000.0 + step, step)
+    seam = [(100_000.0 + (amplitude if i % 2 else 0.0), y)
+            for i, y in enumerate(ys)]
+    seam[-1] = (100_000.0, 100_000.0)
+    left = Polygon([(0, 0)] + seam + [(0, 100_000)])
+    right = Polygon(seam + [(200_000, 100_000), (200_000, 0)])
+    return gpd.GeoDataFrame({"name": ["A", "B"]}, geometry=[left, right],
+                            crs="EPSG:3347")
+
+
+def _shortest(seg):
+    pts = np.asarray(seg, dtype=float)
+    return float(np.hypot(*(pts[1:] - pts[:-1]).T).min())
+
+
+class TestSeamCleanup(unittest.TestCase):
+
+    def test_off_by_default(self):
+        """No clean-up arguments -> the DP-only result, unchanged."""
+        gdf = _zigzag_pair()
+        _, _, plain = topo_simplify_two_tolerances(gdf, 100, 100)
+        _, _, zero = topo_simplify_two_tolerances(gdf, 100, 100,
+                                                  min_segment_m=0,
+                                                  min_angle_deg=0)
+        self.assertEqual(sum(map(len, plain)), sum(map(len, zero)))
+
+    def test_dp_alone_keeps_the_zigzag(self):
+        """The premise: DP at a small tolerance leaves sub-1 km runs."""
+        _, _, internal = topo_simplify_two_tolerances(_zigzag_pair(), 100, 100)
+        self.assertLess(min(_shortest(s) for s in internal), 1_000)
+
+    def test_min_segment_collapses_short_runs(self):
+        _, _, internal = topo_simplify_two_tolerances(
+            _zigzag_pair(), 100, 100, min_segment_m=1_000)
+        self.assertGreaterEqual(min(_shortest(s) for s in internal), 1_000)
+
+    def test_coastal_arcs_are_left_alone(self):
+        gdf = _zigzag_pair()
+        _, coast_plain, _ = topo_simplify_two_tolerances(gdf, 100, 100)
+        _, coast_clean, _ = topo_simplify_two_tolerances(
+            gdf, 100, 100, min_segment_m=1_000, min_angle_deg=20)
+        self.assertEqual(sum(map(len, coast_plain)), sum(map(len, coast_clean)))
+
+    def test_pair_still_partitions_after_cleanup(self):
+        """The invariant: no gap, no overlap, both sides moved together."""
+        gdf = _zigzag_pair()
+        result, _, _ = topo_simplify_two_tolerances(
+            gdf, 100, 100, min_segment_m=1_000, min_angle_deg=20)
+        a, b = result.geometry
+        self.assertTrue(a.is_valid and b.is_valid)
+        self.assertAlmostEqual(a.intersection(b).area, 0.0, places=3)
+        self.assertAlmostEqual((a.area + b.area) / 1e6,
+                               a.union(b).area / 1e6, places=6)
+
+    def test_despike_removes_a_needle(self):
+        coords = [(0, 0), (10, 0), (11, 50), (12, 0), (20, 0)]
+        out = _condition_arc(coords, 0.0, 20.0)
+        self.assertNotIn((11, 50), out)
+        self.assertEqual((out[0], out[-1]), (coords[0], coords[-1]))
+
+    def test_closed_arc_is_never_collapsed_below_a_ring(self):
+        """An arc that is a whole ring keeps 4+ points, or comes back as is."""
+        ring = [(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)]
+        out = _condition_arc(ring, 1_000.0, 0.0)
+        self.assertGreaterEqual(len(out), 4)
 
 
 if __name__ == "__main__":

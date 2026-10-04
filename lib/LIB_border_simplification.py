@@ -6,6 +6,17 @@ Topology-aware simplification of province boundaries with two separate tolerance
   - internal_tol : arcs shared between two provinces (inter-provincial borders)
 
 Uses TopoJSON to ensure shared borders are simplified identically → zero gaps.
+
+Seam clean-up
+-------------
+Douglas-Peucker measures *perpendicular* deviation, so a tight zigzag inside the
+tolerance corridor survives it with every vertex intact -- the sub-nozzle chatter
+and needle spikes ``LIB_shared_border`` was written to remove.  Passing
+``min_segment_m`` / ``min_angle_deg`` runs that lib's two printability passes over
+every **internal** arc after its DP pass.  Doing it per arc rather than per pair
+of provinces is what keeps it exact across a whole map: an arc is conditioned
+once and both sides reference it, and its endpoints are the junctions where three
+regions meet, which both passes pin.  Both default to 0 (off).
 """
 
 import logging
@@ -15,6 +26,10 @@ import pandas as pd
 import geopandas as gpd
 from shapely.geometry import Polygon, MultiPolygon, LineString
 import topojson as tp
+
+# The same two passes LIB_shared_border runs over a pair's seam, applied here
+# per arc so one definition of "printable seam" serves both.
+from lib.LIB_shared_border import _despike, _drop_short_segments
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +62,25 @@ def _simplify_arc(arc_coords: list, tolerance_m: float) -> list:
     simplified = LineString(arc_coords).simplify(tolerance_m, preserve_topology=False)
     pts = list(simplified.coords)
     return pts if len(pts) >= 2 else arc_coords[:2]
+
+
+def _condition_arc(coords: list, min_segment_m: float,
+                   min_angle_deg: float) -> list:
+    """
+    Collapse sub-``min_segment_m`` runs and drop needle vertices from one arc.
+
+    Endpoints are pinned by both passes, so the arc still meets its neighbours
+    at the same junctions.  A closed arc (a whole ring held by one arc, e.g. an
+    island two regions share) needs four points to stay a ring; if the passes
+    would leave fewer, the arc is returned as it came rather than have its
+    polygon silently dropped on reconstruction.
+    """
+    out = _drop_short_segments(list(coords), min_segment_m)
+    out = _despike(out, min_angle_deg)
+    closed = len(coords) >= 2 and tuple(coords[0]) == tuple(coords[-1])
+    if closed and len(out) < 4:
+        return coords
+    return out
 
 
 def _remove_reversals(coords: list) -> list:
@@ -160,6 +194,9 @@ def topo_simplify_two_tolerances(
     gdf: gpd.GeoDataFrame,
     coast_tol_m: float,
     internal_tol_m: float,
+    *,
+    min_segment_m: float = 0.0,
+    min_angle_deg: float = 0.0,
 ) -> tuple[gpd.GeoDataFrame, list, list]:
     """
     Build a TopoJSON topology and simplify with two separate tolerances.
@@ -169,6 +206,10 @@ def topo_simplify_two_tolerances(
     gdf            : GeoDataFrame in a projected metre CRS (e.g. EPSG:3347)
     coast_tol_m    : simplification tolerance in metres for coastal/international arcs
     internal_tol_m : simplification tolerance in metres for inter-provincial shared arcs
+    min_segment_m  : seam clean-up -- collapse internal-arc runs shorter than this
+                     (metres; 0 skips the pass)
+    min_angle_deg  : seam clean-up -- drop internal-arc corners sharper than this
+                     (degrees; 0 skips the pass)
 
     Returns
     -------
@@ -199,6 +240,9 @@ def topo_simplify_two_tolerances(
         simplified  = _simplify_arc(arc, tol)
         if is_internal:
             simplified = _remove_reversals(simplified)
+            if min_segment_m > 0 or min_angle_deg > 0:
+                simplified = _condition_arc(simplified, min_segment_m,
+                                            min_angle_deg)
         new_arcs.append(simplified)
         seg = np.array(simplified)
         if is_internal:
