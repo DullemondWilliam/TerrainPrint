@@ -132,14 +132,21 @@ class TestTheThreeRows:
     def test_the_scoreboard_runs_down_the_right_of_all_three(self, editor):
         assert cell(editor, editor.grp_scores) == (0, 1, 3, 1)
 
-    def test_the_stress_layer_sits_in_that_same_column(self, editor):
-        """The two standing measurements of the document, stacked: what the
-        editing has cost, and what the printer will make of the result."""
-        assert cell(editor, editor.grp_stress) == (0, 1, 3, 1)
+    @pytest.mark.parametrize("name", ["grp_thin", "grp_stress"])
+    def test_the_judgement_layers_sit_in_that_same_column(self, editor, name):
+        """The standing measurements of the document, stacked: what the editing
+        has cost, and what the printer will make of the result."""
+        assert cell(editor, getattr(editor, name)) == (0, 1, 3, 1)
 
-    def test_the_scoreboard_comes_first_in_it(self, editor):
+    @pytest.mark.parametrize("first, second", [
+        ("grp_scores", "grp_thin"),     # the cost, then the two judgements
+        ("grp_thin", "grp_stress"),     # narrow land, then what it holds up
+    ])
+    def test_the_column_reads_top_to_bottom_in_that_order(self, editor,
+                                                          first, second):
         column = row_layout(editor, editor.grp_scores)
-        assert column.indexOf(editor.grp_scores) < column.indexOf(editor.grp_stress)
+        assert (column.indexOf(getattr(editor, first))
+                < column.indexOf(getattr(editor, second)))
 
     def test_the_controls_take_the_slack_and_the_scoreboard_does_not(self, editor):
         """So the panel keeps the width it needs and no more."""
@@ -166,6 +173,7 @@ class TestTheGroups:
         "grp_bridges": "Bridge Merge",
         "grp_freehand": "Freehand",
         "grp_scores": "Scores",
+        "grp_thin": "Printability",
         "grp_stress": "Stress",
     }
 
@@ -182,6 +190,7 @@ class TestTheGroups:
         ("grp_bridges", ["bridge_width_spin", "bridge_span_spin", "btn_bridge"]),
         ("grp_freehand", ["btn_draw", "btn_erase", "brush_spin"]),
         ("grp_stress", ["btn_stress", "stress_spin", "btn_worst_neck"]),
+        ("grp_thin", ["btn_thin", "btn_worst_patch"]),
     ])
     def test_each_group_holds_its_own(self, editor, group, members):
         box = getattr(editor, group)

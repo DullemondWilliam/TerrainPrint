@@ -45,7 +45,16 @@ Workflow
    are arithmetic and follow every edit; the third rasterises both versions at
    a quarter of the nozzle width and sits behind **Recalculate**, because
    running it on every brush stroke would make the editor feel slow.
-5. **Stress** (under the scoreboard) — the other standing measurement: will
+5. **Printability** (under the scoreboard) — mark, in red, every piece of
+   land narrower than *Min width*, which is exactly what **Amputate** would
+   remove: the layer is the preview of that cut, measured by asking whether a
+   disc that wide fits inside the land, so it catches necks, spits and whole
+   islets alike.  One width drives both, so the preview and the edit cannot
+   disagree.  **Worst patch** frames the largest of them, a one-millimetre
+   fault being a few pixels on a map of a whole province.  About half a second
+   on the worst province, and asked again whenever the width, the print scale
+   or the land changes.
+6. **Stress** (under it) — the other standing measurement: will
    what is left survive being printed and handled?  **Show** marks every neck
    that is *holding land up*, coloured on the **severity** ramp, where **1.0
    means the neck is exactly as wide as its load wants** — so the colour says
@@ -73,11 +82,12 @@ Workflow
    What counts as a neck comes from the shared config, so this window, the
    province viewer and ``harnesses/UI_stress_points.py`` cannot drift into
    disagreeing about the same coast.
-6. **Save GeoJSON …** — write the province back out, CRS preserved.
-7. **Keyboard** — every button carries a shortcut, named at the foot of its
+7. **Save GeoJSON …** — write the province back out, CRS preserved.
+8. **Keyboard** — every button carries a shortcut, named at the foot of its
    tooltip. Ctrl+O / Ctrl+S open and save; Ctrl+A, Ctrl+Shift+A and Ctrl+I work
-   the selection; F5 recalculates the scores and F6 shows the stress, with W
-   for its worst neck; Home, Alt+Left / Alt+Right and
+   the selection; the three measurements down the right take F5, F6 and F7 —
+   the scores, the thin land and the stress — with W and Shift+W for the worst
+   patch and the worst neck; Home, Alt+Left / Alt+Right and
    P / Z move the *view*; and each edit takes the initial of the word that
    tells it apart — G, M, B, S, A, L, D, E — with Delete for *Remove*.
    The keys hang on the buttons, so a key is live exactly when its button is:
@@ -155,7 +165,8 @@ from lib.LIB_project_config import get as cfg
 from lib.LIB_shape_scores import (ScoreParams, land_mm2, outline_mm,
                                   score_shapes)
 from lib.LIB_stress_points import StressParams, restress, stress_points
-from lib.LIB_thin_features import ThinParams, printable, thin_features
+from lib.LIB_thin_features import (ThinParams, ThinReport, printable,
+                                   thin_features)
 from lib.LIB_screen_calibration import (MM_PER_INCH, load_saved_ppi,
                                         monitor_at, px_per_mm)
 
@@ -223,6 +234,23 @@ BRIDGE_SPAN_MM = (0.0, 200.0, cfg("bridges.max_span_mm"), 2, 0.5)
 #: bridge width is a size you build to, this is a limit you measure against.
 #: The province viewer's *Show thin* marks exactly what this value would take.
 MIN_WIDTH_MM = (0.0, 50.0, cfg("thin.width_mm"), 3, 0.05)
+
+#: Land too thin to print. A saturated red rather than the palette's softer
+#: ``REMOVE_COLOUR``, because a patch can be a printed millimetre across: what
+#: marks it has to win against the island fill under it at a zoom where it is
+#: only a few pixels wide. The same red the province viewer marks it in.
+THIN_COLOUR = "#C0392B"
+
+#: Stroke on a thin patch, in points. The fill alone is sub-pixel at province
+#: zoom -- a patch a printed millimetre across is drawn as a line rather than
+#: as nothing. The mark sits exactly where the fault is; only its rendered
+#: width is generous.
+THIN_LINEWIDTH = 0.9
+
+#: What share of the view the worst patch takes up once framed. Small enough to
+#: keep its surroundings on screen -- a fault means nothing without the land
+#: around it.
+THIN_ZOOM_SHARE = 0.15
 
 #: The severity ramp for the stress layer, and the marks drawn on it. Severity
 #: is a **state** -- sound, marginal, at risk -- rather than a plain magnitude,
@@ -531,6 +559,14 @@ class IslandEditor(QMainWindow):
         #: while the necks are on screen and not a moment longer.
         self._stress_grid = None
         self._stress_again = False         # the document moved mid-measurement
+        #: The thin land, and what it was measured on: the document by
+        #: reference and the ground radius, which is what the measurement
+        #: actually used -- turning the print scale changes the answer exactly
+        #: as turning Min width does, and a cache keyed on the printed width
+        #: alone would keep serving the old marks.
+        self._thin = None
+        self._thin_doc = None
+        self._thin_key = None
 
         central = QWidget()
         root = QVBoxLayout(central)
@@ -700,9 +736,11 @@ class IslandEditor(QMainWindow):
         # island-at-a-time removal can touch.
         self.width_spin = self._spin(*MIN_WIDTH_MM,
             "Land narrower than this, as it will print (mm), is what "
-            "‘Amputate’ removes. The km/mm box under the map, beside the print "
-            "scale, says "
+            "‘Amputate’ removes — and what Printability, bottom right, marks "
+            "in red. One width: see it, then take it. The km/mm box under the "
+            "map, beside the print scale, says "
             "what one millimetre is worth on the ground.")
+        self.width_spin.valueChanged.connect(self._on_min_width)
         self.btn_amputate = self._button("Amputate", self.amputate,
                                          enabled=False)
         self.btn_amputate.setToolTip(
@@ -713,8 +751,9 @@ class IslandEditor(QMainWindow):
             "Counter-intuitive but measured: removing the thin land keeps more "
             "coastline than widening it would, because these faults are "
             "slivers and inflating a sliver eats the coast around it.\n\n"
-            "Open the same file in the province viewer and press ‘Show thin’ "
-            "to see exactly what this will take before you take it.")
+            "Press ‘Show’ under Printability, bottom right, to see exactly "
+            "what this will take before you take it: the layer marks the same "
+            "width this removes.")
         self.btn_lakes = self._button("Remove Lakes", self.remove_lakes_action, enabled=False)
 
         # The brush is the manual counterpart to the two heuristics either side
@@ -828,6 +867,45 @@ class IslandEditor(QMainWindow):
         scores_column.addWidget(self.btn_recalc,
                                 alignment=Qt.AlignmentFlag.AlignRight)
 
+        # -- the thin layer, under the scoreboard -----------------------------
+        # *Min width* over in Whole province is this layer's knob as well as
+        # Amputate's: one width, marked and then removed. That is the case for
+        # the layer being here at all -- the province viewer answers "which of
+        # thirteen provinces has a problem", which is not a question you can
+        # ask one file at a time, but "show me what Amputate is about to take"
+        # is, and until now this window answered it by telling you to go and
+        # open the other one.
+        self.btn_thin = self._button("Show", self._toggle_thin, enabled=False)
+        self.btn_thin.setCheckable(True)
+        self.btn_thin.setToolTip(
+            "Mark every piece of land narrower than *Min width*, over in "
+            "Whole province — which is exactly what ‘Amputate’ would remove, "
+            "so this is the preview of that cut.\n\n"
+            "Measured by asking whether a disc that wide fits inside the land, "
+            "so it catches necks, spits and whole islets alike. Below about a "
+            "millimetre a neck snaps when the piece is lifted and a spit "
+            "breaks off in the post.\n\n"
+            "Everything marked is land ‘Amputate’ takes: none of it survives "
+            "the cut. The cut is not quite the province minus the red, though "
+            "— re-growing the land squares off sharp corners, which on Nova "
+            "Scotia at 1 mm gives back 4.3 mm² where it takes 29.6.\n\n"
+            "About half a second on the worst province, and measured again "
+            "whenever the width, the print scale or the land changes.")
+        self.btn_worst_patch = self._button("Worst patch",
+                                            self.zoom_to_worst_patch,
+                                            enabled=False)
+        self.btn_worst_patch.setToolTip(
+            "Go to the largest patch of land under the width. A "
+            "one-millimetre fault is a few pixels on a map of a whole "
+            "province, so it has to be gone to rather than looked for.")
+        self.grp_thin = QGroupBox("Printability")
+        thin_column = QVBoxLayout(self.grp_thin)
+        thin_column.setContentsMargins(8, 2, 8, 4)
+        thin_column.setSpacing(4)
+        thin_column.addWidget(self.btn_thin)
+        thin_column.addWidget(self.btn_worst_patch,
+                              alignment=Qt.AlignmentFlag.AlignRight)
+
         # -- the stress layer, under the scoreboard ---------------------------
         # The other standing measurement of the document, so it sits in the same
         # column: Scores says what the editing has cost against the province as
@@ -916,6 +994,13 @@ class IslandEditor(QMainWindow):
         measures.setContentsMargins(0, 0, 0, 0)
         measures.setSpacing(4)
         measures.addWidget(self.grp_scores)
+        # Printability before Stress, as the province viewer reads them and for
+        # its reason: this finds narrow land, that finds the narrow land which
+        # is holding something up. Both take the scoreboard's shape -- what
+        # there is to say, then the action under it, right-aligned -- which is
+        # also what keeps the column no wider than the scoreboard and the
+        # window inside a 1080p desktop.
+        measures.addWidget(self.grp_thin)
         measures.addWidget(self.grp_stress)
         measures.addStretch(1)
         head.addLayout(measures, 0, 1, 3, 1)
@@ -1087,13 +1172,17 @@ class IslandEditor(QMainWindow):
                 (self.btn_lakes, "L"),
                 (self.btn_draw, "D"),
                 (self.btn_erase, "E"),
-                # The two measurements take function keys, together: F5 reads
-                # the scores, F6 reads the stress. They are what the window
-                # *reads* rather than changes, and the initial is spoken for
-                # anyway (S is Remove Small). Worst neck takes W, with nothing
-                # to collide with.
-                (self.btn_stress, "F6"),
-                (self.btn_worst_neck, "W"),
+                # The measurements take function keys, in the order they
+                # sit in down the right: F5 the scores, F6 the thin land, F7
+                # the stress. They are what the window *reads* rather than
+                # changes, and their initials are spoken for anyway (S is
+                # Remove Small). Their two "take me to the fault" buttons take
+                # W and Shift+W, in that same order -- the narrow land first,
+                # then the narrow land that is holding something up.
+                (self.btn_thin, "F6"),
+                (self.btn_worst_patch, "W"),
+                (self.btn_stress, "F7"),
+                (self.btn_worst_neck, "Shift+W"),
         ):
             widget.setShortcut(QKeySequence(sequence))
             self._hint(widget, widget.shortcut())
@@ -1279,6 +1368,10 @@ class IslandEditor(QMainWindow):
             self._update_status("Print scale changed — ")
         else:
             self.canvas.draw_idle()
+        # The thin layer is measured in printed millimetres as well, but its
+        # cache is keyed on the ground radius, so the ``_redraw`` above has
+        # already asked the question again at the new reduction.
+        #
         # And every number in a stress report is a printed one too: the throat,
         # the load and the width the load wants all move with the reduction, so
         # the necks are no longer the necks of this scale. The raster goes with
@@ -1435,6 +1528,7 @@ class IslandEditor(QMainWindow):
             if sel:
                 gs.iloc[sorted(sel)].plot(ax=self.ax, facecolor=SELECT_COLOUR,
                                           edgecolor=SELECT_EDGE, linewidth=1.0)
+        self._draw_thin()
         self._draw_stress()
         if preserve_view:
             self.ax.set_xlim(xlim)
@@ -1699,6 +1793,13 @@ class IslandEditor(QMainWindow):
         self.btn_invert.setEnabled(has)
         self.btn_save.setEnabled(has)
         self.grp_scores.setEnabled(has)
+        self.grp_thin.setEnabled(has)
+        self.btn_thin.setEnabled(has)
+        # Reads the cache rather than measuring: every path that gets here has
+        # just redrawn, and the draw is what fills it.
+        self.btn_worst_patch.setEnabled(
+            bool(self._thin is not None and self._thin.worst
+                 and self.btn_thin.isChecked()))
         self.grp_stress.setEnabled(has)
         # The toggle stays live through a measurement, unlike the harness's Run
         # button: this is a layer, and a layer switched off has to go off --
@@ -1863,10 +1964,10 @@ class IslandEditor(QMainWindow):
         for widget in (self.grp_selection, self.grp_expansion, self.grp_bridges,
                        self.grp_province, self.grp_freehand, self.btn_import,
                        self.btn_save, self.btn_undo, self.btn_redo,
-                       # Not because it edits anything, but because the plan is
-                       # about to replace the document the necks would be of --
-                       # and one heavy thread at a time is kinder to the machine.
-                       self.grp_stress):
+                       # Neither edits anything, but the plan is about to
+                       # replace the document both of them are about -- and one
+                       # heavy thread at a time is kinder to the machine.
+                       self.grp_thin, self.grp_stress):
             widget.setEnabled(not busy)
         if busy:
             if self._brush_mode is not None:
@@ -2095,6 +2196,132 @@ class IslandEditor(QMainWindow):
         return (f"Agree {scores.agreement * 100:8.2f}%  @ {pixel}   "
                 f"+{scores.added_mm2:,.1f} / −{scores.lost_mm2:,.1f} mm²")
 
+    # -- printability ------------------------------------------------------
+    def _thin_params(self) -> ThinParams:
+        """What counts as too thin, as the controls now read it.
+
+        The same ``Min width`` ``amputate`` reads, deliberately: the layer is
+        the preview of that cut, and two knobs would let the preview and the
+        edit disagree.
+        """
+        return ThinParams(scale=self.scale_spin.value(),
+                          width_mm=self.width_spin.value())
+
+    def _thin_report(self):
+        """The thin land, measured once and kept, or None when not showing.
+
+        Keyed on the ground radius rather than on the printed width, because
+        that is what the measurement used: turning the print scale changes the
+        answer exactly as turning Min width does.  The document is held by
+        reference, as the gap and the scores are, so a freed snapshot cannot
+        alias a new one into a stale hit.
+
+        Measured here rather than up front because ``_redraw`` runs on every
+        click and every threshold tweak, and half a second of Nunavut thirty
+        times over is a window that has stopped responding.
+        """
+        if not self.btn_thin.isChecked() or self.doc is None:
+            return None
+        params = self._thin_params()
+        key = round(params.radius_m, 6)
+        if self._thin_doc is self.doc and self._thin_key == key:
+            return self._thin
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            self._thin = thin_features(self.doc, params)
+        except Exception:
+            # Measured inside a draw, so a dialog is the wrong answer -- it
+            # would come back on every redraw. A report that says it could not
+            # tell is the right one, and the status line reads it out: the lib
+            # answers that way itself for a geometry it cannot repair, and
+            # "I could not tell" is not "there is nothing wrong".
+            self._thin = ThinReport(measured=False)
+        finally:
+            QApplication.restoreOverrideCursor()
+        self._thin_doc, self._thin_key = self.doc, key
+        return self._thin
+
+    def _toggle_thin(self, checked: bool) -> None:
+        """Mark the land too thin to print, or take the marks away."""
+        self._redraw(preserve_view=True)
+        self._sync_buttons()
+        self._update_status("" if checked else "Printability off — ")
+        self.canvas.setFocus()
+
+    def _on_min_width(self, _value: float) -> None:
+        """A new width is a new question; the old marks are not its answer.
+
+        Nothing is thrown away -- the cache is keyed on the width, so it
+        re-measures itself -- but the map has to be asked again, and Amputate's
+        own figure in the status line moves with it.
+        """
+        if not self.btn_thin.isChecked():
+            return
+        self._redraw(preserve_view=True)
+        self._sync_buttons()
+        self._update_status("Min width changed — ")
+
+    def _draw_thin(self) -> None:
+        """Paint the land under *Min width*, over the islands it is in.
+
+        One artist for the whole province's thin land, not one per patch:
+        Nunavut has 7 250 of them and geopandas would make 7 250 artists.
+
+        Under the stress layer rather than over it (zorder 4 against 5 and up),
+        because the two are different claims about the same coast and the
+        narrower one is the one you act on: a neck at risk has to stay findable
+        on a shore painted red end to end.
+        """
+        report = self._thin_report()
+        if report is None or report.thin is None or report.thin.is_empty:
+            return
+        gpd.GeoSeries([report.thin]).plot(
+            ax=self.ax, facecolor=THIN_COLOUR, edgecolor=THIN_COLOUR,
+            linewidth=THIN_LINEWIDTH, zorder=4)
+
+    def zoom_to_worst_patch(self) -> None:
+        """Take the view to the largest patch of land under the width."""
+        report = self._thin_report()
+        worst = report.worst[0] if report is not None and report.worst else None
+        if worst is None:
+            self._update_status("Nothing too thin to go to — ")
+            return
+        minx, miny, maxx, maxy = worst.bounds
+        centre_x, centre_y = (minx + maxx) / 2.0, (miny + maxy) / 2.0
+        (x0, x1), (y0, y1) = self.ax.get_xlim(), self.ax.get_ylim()
+        wanted = max(maxx - minx, maxy - miny, 1.0) / THIN_ZOOM_SHARE
+        # One factor on both spans, as Real Size and Worst neck do it: the
+        # limits matplotlib holds have already been through apply_aspect, and
+        # scaling them together keeps that agreement where fresh limits fight it.
+        factor = wanted / max(x1 - x0, 1e-9)
+        half_x, half_y = (x1 - x0) * factor / 2.0, (y1 - y0) * factor / 2.0
+        self.ax.set_xlim(centre_x - half_x, centre_x + half_x)
+        self.ax.set_ylim(centre_y - half_y, centre_y + half_y)
+        self.canvas.draw_idle()
+        params = self._thin_params()
+        self._update_status(
+            f"At the worst patch: {worst.area / params.mpm ** 2:.2f} mm² of "
+            f"land under {params.width_mm:g} mm — ")
+
+    def _thin_fragment(self) -> str:
+        """The status line's printability segment, or empty when not showing."""
+        report = self._thin_report()
+        if report is None:
+            return ""
+        width = self.width_spin.value()
+        if not report.measured:
+            # Never folded into "nothing found": not measured is not clean.
+            return "thin land could not be measured"
+        if report.clean:
+            return f"nothing under {width:g} mm"
+        bits = [f"{report.patches} thin patch(es), "
+                f"{report.thin_area_mm2:.1f} mm² under {width:g} mm"]
+        if report.whole_parts:
+            # A different problem with a different fix, so it is said
+            # separately: these want removing, not widening.
+            bits.append(f"{report.whole_parts} island(s) too thin end to end")
+        return "; ".join(bits)
+
     # -- stress ------------------------------------------------------------
     def _stress_params(self) -> StressParams:
         """What the necks are measured against, as the controls now read it.
@@ -2238,7 +2465,9 @@ class IslandEditor(QMainWindow):
         of a cell -- so on its own it would say nothing is wrong precisely where
         something is.  The bar across the throat and the ring on a neck at risk
         are drawn in screen units, so they survive any zoom, and both carry an
-        ink casing to stay legible over an island's selection orange.
+        ink casing to stay legible over whatever is under them -- an island's
+        selection orange, or the thin layer's red, which is a different claim
+        about the same place and may well be switched on beside it.
 
         Colour never carries the meaning alone: the ring says *at risk* by being
         there at all, and the status line counts them.
@@ -2543,6 +2772,9 @@ class IslandEditor(QMainWindow):
         if gap:
             bits.append(gap)
         bits.append(f"{below} below {thr:g} mm²")
+        thin = self._thin_fragment()
+        if thin:
+            bits.append(thin)
         stress = self._stress_fragment()
         if stress:
             bits.append(stress)

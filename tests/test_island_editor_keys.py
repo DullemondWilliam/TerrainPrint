@@ -217,8 +217,10 @@ class TestButtonShortcuts:
         "btn_lakes": "L",
         "btn_draw": "D",
         "btn_erase": "E",
-        "btn_stress": "F6",
-        "btn_worst_neck": "W",
+        "btn_thin": "F6",
+        "btn_worst_patch": "W",
+        "btn_stress": "F7",
+        "btn_worst_neck": "Shift+W",
     }
 
     @pytest.mark.parametrize("name, keys", sorted(EXPECTED.items()))
