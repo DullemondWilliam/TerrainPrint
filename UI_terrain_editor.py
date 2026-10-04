@@ -1006,6 +1006,10 @@ class TerrainEditorTester(QMainWindow):
                                    show=False)
         view = canvas.central_widget.add_view()
         view.camera = scene.TurntableCamera(fov=0, elevation=28, azimuth=-55)
+        # vispy's orthographic depth range defaults to +/-1e6: too coarse to
+        # resolve a 1 mm dovetail pocket against the bar laid into it, so the
+        # Assembly view drew pieces over lobes that were really in place.
+        view.camera.depth_value = 1000.0
         return canvas, view
 
     @staticmethod
