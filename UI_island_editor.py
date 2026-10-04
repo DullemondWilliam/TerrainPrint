@@ -39,13 +39,19 @@ Workflow
      faults costs three times as much coastline.
    - **Remove Lakes** — strip interior rings (lakes) from the whole province.
 3. **Undo / Redo** (Ctrl+Z / Ctrl+Shift+Z) — every edit is one step on a stack.
-4. **Scores** (top right) — what the session has cost, against the province
+4. **The side panel** (down the right of the map) — the three standing
+   measurements of the document, read against the map rather than done to it:
+   what the editing has **cost**, and the two judgements the printer will
+   make of the result.  They sit beside the map so they can be watched while
+   the coast is cut about, and so that they cost its height nothing.
+
+   **Scores**, first — what the session has cost, against the province
    as it was imported: how much **coast** is left, how much **land**, and how
    much of the print would still **agree** with the original.  The first two
    are arithmetic and follow every edit; the third rasterises both versions at
    a quarter of the nozzle width and sits behind **Recalculate**, because
    running it on every brush stroke would make the editor feel slow.
-5. **Printability** (under the scoreboard) — mark, in red, every piece of
+   **Printability**, under it — mark, in red, every piece of
    land narrower than *Min width*, which is exactly what **Amputate** would
    remove: the layer is the preview of that cut, measured by asking whether a
    disc that wide fits inside the land, so it catches necks, spits and whole
@@ -54,7 +60,7 @@ Workflow
    fault being a few pixels on a map of a whole province.  About half a second
    on the worst province, and asked again whenever the width, the print scale
    or the land changes.
-6. **Stress** (under it) — the other standing measurement: will
+   **Stress**, last — the other judgement: will
    what is left survive being printed and handled?  **Show** marks every neck
    that is *holding land up*, coloured on the **severity** ramp, where **1.0
    means the neck is exactly as wide as its load wants** — so the colour says
@@ -82,8 +88,8 @@ Workflow
    What counts as a neck comes from the shared config, so this window, the
    province viewer and ``harnesses/UI_stress_points.py`` cannot drift into
    disagreeing about the same coast.
-7. **Save GeoJSON …** — write the province back out, CRS preserved.
-8. **Keyboard** — every button carries a shortcut, named at the foot of its
+5. **Save GeoJSON …** — write the province back out, CRS preserved.
+6. **Keyboard** — every button carries a shortcut, named at the foot of its
    tooltip. Ctrl+O / Ctrl+S open and save; Ctrl+A, Ctrl+Shift+A and Ctrl+I work
    the selection; the three measurements down the right take F5, F6 and F7 —
    the scores, the thin land and the stress — with W and Shift+W for the worst
@@ -234,6 +240,21 @@ BRIDGE_SPAN_MM = (0.0, 200.0, cfg("bridges.max_span_mm"), 2, 0.5)
 #: bridge width is a size you build to, this is a limit you measure against.
 #: The province viewer's *Show thin* marks exactly what this value would take.
 MIN_WIDTH_MM = (0.0, 50.0, cfg("thin.width_mm"), 3, 0.05)
+
+#: What the side panel is made wide enough for, measured in the scoreboard's
+#: own monospace font rather than guessed at in pixels.
+#:
+#: It is the **aligned table** at its widest -- a seven-figure area either side
+#: of the arrow, which is a whole province at a very fine print scale -- and
+#: deliberately not the widest line the panel can produce. That is the
+#: agreement row, which carries a computed pixel size (``0.288352 mm/px
+#: coarsened`` on a real run) and so has no bounded width at all; sizing to it
+#: would have cost the map 300 px to spare one row a fold. The table keeps its
+#: columns, the agreement row wraps when it must, and the map keeps the rest.
+SCORES_WIDEST = "Land  1,234,567.8 → 1,234,567.8 mm²   -12.3%"
+
+#: Room for the group box's frame and margins either side of that line.
+SIDE_PADDING_PX = 28
 
 #: Land too thin to print. A saturated red rather than the palette's softer
 #: ``REMOVE_COLOUR``, because a patch can be a printed millimetre across: what
@@ -736,7 +757,7 @@ class IslandEditor(QMainWindow):
         # island-at-a-time removal can touch.
         self.width_spin = self._spin(*MIN_WIDTH_MM,
             "Land narrower than this, as it will print (mm), is what "
-            "‘Amputate’ removes — and what Printability, bottom right, marks "
+            "‘Amputate’ removes — and what Printability, down the right, marks "
             "in red. One width: see it, then take it. The km/mm box under the "
             "map, beside the print scale, says "
             "what one millimetre is worth on the ground.")
@@ -751,7 +772,7 @@ class IslandEditor(QMainWindow):
             "Counter-intuitive but measured: removing the thin land keeps more "
             "coastline than widening it would, because these faults are "
             "slivers and inflating a sliver eats the coast around it.\n\n"
-            "Press ‘Show’ under Printability, bottom right, to see exactly "
+            "Press ‘Show’ under Printability, down the right, to see exactly "
             "what this will take before you take it: the layer marks the same "
             "width this removes.")
         self.btn_lakes = self._button("Remove Lakes", self.remove_lakes_action, enabled=False)
@@ -827,7 +848,7 @@ class IslandEditor(QMainWindow):
             shaping.addWidget(group)
         shaping.addStretch(1)
 
-        # -- the scoreboard, top right ---------------------------------------
+        # -- the scoreboard, first down the side panel ------------------------
         # The status line at the foot of the window says what just happened;
         # this says where the province has got to overall, which is a standing
         # figure rather than a running commentary -- so it sits up with the
@@ -851,6 +872,16 @@ class IslandEditor(QMainWindow):
         font.setStyleHint(font.StyleHint.Monospace)
         font.setFamily("Consolas")
         self.lbl_scores.setFont(font)       # so the columns line up
+        # The agreement row can outrun the panel -- its pixel size is computed,
+        # so it has no bounded width -- and folding it is the cheaper answer
+        # than widening the panel for the longest thing it can ever say.
+        # A wrapping label is only given the height for its fold if its policy
+        # says the height depends on the width; without that it keeps the one
+        # line's worth it was first laid out with and the fold is cut off.
+        self.lbl_scores.setWordWrap(True)
+        scores_policy = self.lbl_scores.sizePolicy()
+        scores_policy.setHeightForWidth(True)
+        self.lbl_scores.setSizePolicy(scores_policy)
         self.btn_recalc = self._button("Recalculate", self.recalculate_scores,
                                        enabled=False)
         self.btn_recalc.setToolTip(
@@ -867,7 +898,7 @@ class IslandEditor(QMainWindow):
         scores_column.addWidget(self.btn_recalc,
                                 alignment=Qt.AlignmentFlag.AlignRight)
 
-        # -- the thin layer, under the scoreboard -----------------------------
+        # -- the thin layer, second down the side panel -----------------------
         # *Min width* over in Whole province is this layer's knob as well as
         # Amputate's: one width, marked and then removed. That is the case for
         # the layer being here at all -- the province viewer answers "which of
@@ -906,7 +937,7 @@ class IslandEditor(QMainWindow):
         thin_column.addWidget(self.btn_worst_patch,
                               alignment=Qt.AlignmentFlag.AlignRight)
 
-        # -- the stress layer, under the scoreboard ---------------------------
+        # -- the stress layer, last down the side panel -----------------------
         # The other standing measurement of the document, so it sits in the same
         # column: Scores says what the editing has cost against the province as
         # imported, this says whether what is left will survive being printed
@@ -966,21 +997,23 @@ class IslandEditor(QMainWindow):
         stress_row = QHBoxLayout()
         stress_row.setContentsMargins(0, 0, 0, 0)
         stress_row.setSpacing(4)
-        # Two short rows rather than one long one, and the reason is the window
-        # rather than the taste: this column's width is set by the scoreboard
-        # above it, and a third control on that line would push the editor's
-        # minimum width past a 1080p desktop (test_island_editor_layout pins it).
+        # Two short rows rather than one long one: the panel is as wide as the
+        # scoreboard's longest line and no wider, and three controls abreast
+        # would not fit inside that without widening the panel at the map's
+        # expense.
         for widget in (self.btn_stress, self.stress_spin):
             stress_row.addWidget(widget)
         stress_column.addLayout(stress_row)
         stress_column.addWidget(self.btn_worst_neck,
                                 alignment=Qt.AlignmentFlag.AlignRight)
 
-        # -- the three rows, with the scoreboard alongside all of them --------
-        # A grid rather than a stack of box layouts: the scoreboard has to span
-        # the rows of controls, and only a grid can say that. Column 0 takes all
-        # the slack so the controls keep the width they had and the panel keeps
-        # the width it needs.
+        # -- the three rows of edit controls ----------------------------------
+        # A grid rather than a stack of box layouts, because the row a control
+        # is in is the thing being said: row 1 is the document, row 2 what the
+        # edit is pointed at, row 3 how the land is reshaped. The measurements
+        # used to span a second column here and now sit beside the map (see
+        # ``side``), which gives these rows the whole width and the map back
+        # the height the column was costing it.
         head = QGridLayout()
         head.setContentsMargins(0, 0, 0, 0)
         head.setHorizontalSpacing(8)
@@ -988,27 +1021,53 @@ class IslandEditor(QMainWindow):
         head.addLayout(top, 0, 0)
         head.addLayout(scope, 1, 0)
         head.addLayout(shaping, 2, 0)
-        # The right-hand column is the measurements, stacked: what the
-        # editing has cost, and what the printer will make of the result.
-        measures = QVBoxLayout()
-        measures.setContentsMargins(0, 0, 0, 0)
-        measures.setSpacing(4)
-        measures.addWidget(self.grp_scores)
-        # Printability before Stress, as the province viewer reads them and for
-        # its reason: this finds narrow land, that finds the narrow land which
-        # is holding something up. Both take the scoreboard's shape -- what
-        # there is to say, then the action under it, right-aligned -- which is
-        # also what keeps the column no wider than the scoreboard and the
-        # window inside a 1080p desktop.
-        measures.addWidget(self.grp_thin)
-        measures.addWidget(self.grp_stress)
-        measures.addStretch(1)
-        head.addLayout(measures, 0, 1, 3, 1)
         head.setColumnStretch(0, 1)
         root.addLayout(head)
 
-        root.addWidget(self.caption)
-        root.addWidget(self.canvas, stretch=1)
+        # -- the map, and the measurements down its right ---------------------
+        # The three are standing statements about the document rather than
+        # things you do to it, and they are read *against the map*: a neck the
+        # Stress group counts is a neck you are looking at. So they sit beside
+        # it, full height, where they can be watched while the coast is cut
+        # about -- and where they cost the map no height at all, which is what
+        # they did while they were stacked above it.
+        #
+        # Scores first, then Printability, then Stress: what the editing has
+        # cost, then the two judgements, in the order the province viewer reads
+        # them -- this finds narrow land, that finds the narrow land which is
+        # holding something up.
+        self.side = QWidget()
+        side = QVBoxLayout(self.side)
+        side.setContentsMargins(0, 0, 0, 0)
+        side.setSpacing(4)
+        for group in (self.grp_scores, self.grp_thin, self.grp_stress):
+            side.addWidget(group)
+        side.addStretch(1)
+        # One width, held. The scoreboard's lines are the widest thing in the
+        # panel and they change on every edit -- "press Recalculate" is 25
+        # characters where a measured agreement is 68 -- so left to itself the
+        # panel would breathe in and out and carry the map's right edge with
+        # it. Measured from the font rather than guessed, as the km/mm box and
+        # the selection count are, so it survives a theme with a wider one.
+        self.side.setFixedWidth(
+            self.lbl_scores.fontMetrics().horizontalAdvance(SCORES_WIDEST)
+            + SIDE_PADDING_PX)
+
+        self.caption.setMinimumWidth(0)
+        self.caption.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                   QSizePolicy.Policy.Preferred)
+        map_column = QVBoxLayout()
+        map_column.setContentsMargins(0, 0, 0, 0)
+        map_column.setSpacing(4)
+        map_column.addWidget(self.caption)
+        map_column.addWidget(self.canvas, stretch=1)
+
+        middle = QHBoxLayout()
+        middle.setContentsMargins(0, 0, 0, 0)
+        middle.setSpacing(8)
+        middle.addLayout(map_column, stretch=1)
+        middle.addWidget(self.side)
+        root.addLayout(middle, stretch=1)
 
         # -- under the map: what it says, and how it is looked at -------------
         # The navigation tools and the print scale belong to the *map*, not to
@@ -2032,7 +2091,7 @@ class IslandEditor(QMainWindow):
         The report is the point as much as the edit is.  What this costs is
         never obvious in advance -- on a fjord coast it can take a fifth of the
         coastline for half a percent of the land -- so it says what went, and
-        the Scores panel bottom right holds the same arithmetic against the
+        the Scores panel down the right holds the same arithmetic against the
         file as imported.
         """
         if self.doc is None:

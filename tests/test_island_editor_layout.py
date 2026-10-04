@@ -75,6 +75,21 @@ def in_grid(editor, widget) -> bool:
     return True
 
 
+def beside_the_map(editor):
+    """``(position in the window, the row)`` holding the map and the panel."""
+    root = editor.centralWidget().layout()
+    for i in range(root.count()):
+        row = root.itemAt(i).layout()
+        if row is not None and row.indexOf(editor.side) >= 0:
+            return i, row
+    raise AssertionError("the side panel is in no row of the window")
+
+
+def panel(editor):
+    """The side panel's own column, for reading it top to bottom."""
+    return editor.side.layout()
+
+
 def under_the_map(editor):
     """``(position in the window, the row)`` holding the map's own controls."""
     root = editor.centralWidget().layout()
@@ -129,28 +144,14 @@ class TestTheThreeRows:
     def test_each_control_is_in_its_row(self, editor, name, row):
         assert cell(editor, getattr(editor, name))[:2] == (row, 0)
 
-    def test_the_scoreboard_runs_down_the_right_of_all_three(self, editor):
-        assert cell(editor, editor.grp_scores) == (0, 1, 3, 1)
+    @pytest.mark.parametrize("name", ["grp_scores", "grp_thin", "grp_stress"])
+    def test_the_measurements_are_not_in_these_rows_at_all(self, editor, name):
+        """They are statements about the document, not edits, and they are read
+        against the map -- so they sit beside it (see TestTheSidePanel)."""
+        assert not in_grid(editor, getattr(editor, name))
 
-    @pytest.mark.parametrize("name", ["grp_thin", "grp_stress"])
-    def test_the_judgement_layers_sit_in_that_same_column(self, editor, name):
-        """The standing measurements of the document, stacked: what the editing
-        has cost, and what the printer will make of the result."""
-        assert cell(editor, getattr(editor, name)) == (0, 1, 3, 1)
-
-    @pytest.mark.parametrize("first, second", [
-        ("grp_scores", "grp_thin"),     # the cost, then the two judgements
-        ("grp_thin", "grp_stress"),     # narrow land, then what it holds up
-    ])
-    def test_the_column_reads_top_to_bottom_in_that_order(self, editor,
-                                                          first, second):
-        column = row_layout(editor, editor.grp_scores)
-        assert (column.indexOf(getattr(editor, first))
-                < column.indexOf(getattr(editor, second)))
-
-    def test_the_controls_take_the_slack_and_the_scoreboard_does_not(self, editor):
-        """So the panel keeps the width it needs and no more."""
-        assert head(editor).columnStretch(0) > head(editor).columnStretch(1)
+    def test_the_controls_take_the_slack(self, editor):
+        assert head(editor).columnStretch(0) > 0
 
     @pytest.mark.parametrize("first, second", [
         ("grp_selection", "grp_province"),      # what you clicked, then everything
@@ -203,6 +204,49 @@ class TestTheGroups:
         assert editor.grp_expansion.layout().indexOf(editor.btn_remove_sel) < 0
 
 
+class TestTheSidePanel:
+    """The three standing measurements, down the right of the map.
+
+    They are not edits and they are not a running commentary: each says where
+    the province has got to -- what the editing has cost, and what the printer
+    will make of the result. They are read *against* the map, so they sit
+    beside it, where they also cost it no height.
+    """
+
+    @pytest.mark.parametrize("name", ["grp_scores", "grp_thin", "grp_stress"])
+    def test_each_measurement_is_in_the_panel(self, editor, name):
+        assert panel(editor).indexOf(getattr(editor, name)) >= 0
+
+    @pytest.mark.parametrize("first, second", [
+        ("grp_scores", "grp_thin"),     # the cost, then the two judgements
+        ("grp_thin", "grp_stress"),     # narrow land, then what it holds up
+    ])
+    def test_the_panel_reads_top_to_bottom_in_that_order(self, editor,
+                                                         first, second):
+        column = panel(editor)
+        assert (column.indexOf(getattr(editor, first))
+                < column.indexOf(getattr(editor, second)))
+
+    def test_it_is_to_the_right_of_the_map(self, editor):
+        _, row = beside_the_map(editor)
+        assert row.indexOf(editor.side) == row.count() - 1
+
+    def test_the_map_takes_the_slack_and_the_panel_does_not(self, editor):
+        """The window grows into the map, never into the panel."""
+        _, row = beside_the_map(editor)
+        assert row.stretch(row.indexOf(editor.side)) == 0
+        assert max(row.stretch(i) for i in range(row.count())) > 0
+
+    def test_it_holds_one_width(self, editor):
+        """The scoreboard's lines change on every edit; a panel that sized
+        itself to them would carry the map's right edge in and out."""
+        assert editor.side.minimumWidth() == editor.side.maximumWidth()
+
+    def test_it_costs_the_map_no_height(self, editor):
+        """The whole point of the move: these used to stack above the map."""
+        assert head(editor).minimumSize().height() < editor.side.sizeHint().height()
+
+
 class TestTheWindowStillFitsAScreen:
     """The reason for three rows rather than two."""
 
@@ -211,11 +255,33 @@ class TestTheWindowStillFitsAScreen:
         assert minimum < MAX_MINIMUM_WIDTH_PX
 
     def test_the_map_takes_the_height_the_chrome_does_not(self, editor):
-        """Rows are cheap only while the canvas keeps the stretch."""
+        """Rows are cheap only while the map's row keeps the stretch."""
         root = editor.centralWidget().layout()
         stretches = [root.stretch(i) for i in range(root.count())]
         assert stretches.count(0) == len(stretches) - 1
-        assert root.stretch(root.indexOf(editor.canvas)) == 1
+        assert root.stretch(beside_the_map(editor)[0]) == 1
+
+    def test_the_minimum_width_ignores_what_the_scoreboard_says(self, editor):
+        """A scoreboard beside the *map* cannot widen the window; one beside
+        the *controls* could, and did.
+
+        Stacked above the map, the panel shared a row with 1 610 px of edit
+        controls, so its longest line went straight onto the window's minimum:
+        1 852 px empty and 2 140 px with a province loaded, against the 1 920
+        this file pins. Beside the map it is measured against the canvas, which
+        yields -- so what the scoreboard says cannot reach the minimum at all.
+        (``test_it_holds_one_width`` is what keeps the panel itself still.)"""
+        root = editor.centralWidget().layout()
+        root.activate()
+        before = root.minimumSize().width()
+        editor.lbl_scores.setText(
+            "Coast   19,984.1 \u2192   16,004.8 mm   -19.9%\n"
+            "Land  1,422,083.0 \u2192 1,381,527.0 mm\u00b2   -2.9%\n"
+            "Agree    96.20%  @ 0.288352 mm/px coarsened   "
+            "+6,865.1 / \u221247,420.5 mm\u00b2")
+        root.invalidate()
+        root.activate()
+        assert root.minimumSize().width() == before
 
 
 class TestUnderTheMap:
@@ -238,8 +304,7 @@ class TestUnderTheMap:
         assert not in_grid(editor, getattr(editor, name))
 
     def test_the_row_comes_after_the_map(self, editor):
-        root = editor.centralWidget().layout()
-        assert under_the_map(editor)[0] > root.indexOf(editor.canvas)
+        assert under_the_map(editor)[0] > beside_the_map(editor)[0]
 
     def test_the_status_keeps_the_left_and_the_controls_the_right(self, editor):
         """Reading starts at the left, and that is where the eye goes after an
