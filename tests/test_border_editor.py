@@ -205,3 +205,221 @@ class TestApply:
         assert again.list_done.count() == 0
         assert any("changed since cleaned" in again.list_todo.item(i).text()
                    for i in range(again.list_todo.count()))
+
+
+# ---------------------------------------------------------------------------
+# Fit check and push brush
+# ---------------------------------------------------------------------------
+
+def _mushroom_window(tmp_path):
+    """West has a locking mushroom tab reaching into East."""
+    seam = [(20, 0), (20, 17), (22, 17), (22, 15), (28, 15), (28, 25),
+            (22, 25), (22, 19), (20, 19), (20, 40)]
+    seam = [(O + x * MM, O + y * MM) for x, y in seam]
+    west = Polygon([(O, O)] + seam + [(O, O + 40 * MM)])
+    east = Polygon([(O + 40 * MM, O)] + seam + [(O + 40 * MM, O + 40 * MM)])
+    folder = tmp_path / "mushroom"
+    folder.mkdir()
+    for name, geom in (("CAN_West", west), ("CAN_East", east)):
+        gpd.GeoDataFrame(geometry=[geom], crs="EPSG:3347").to_file(
+            folder / f"{name}.geojson", driver="GeoJSON")
+    window = U.BorderEditor()
+    window.set_save_dir(tmp_path / "saved")
+    window.load(U.geojson_in(folder))
+    window.select_border(window.borders[0])
+    window.open_editor()
+    return window
+
+
+def _fills(ax, colour):
+    from matplotlib.colors import to_rgba
+    want = tuple(round(c, 3) for c in to_rgba(colour)[:3])
+    return [p for p in ax.patches
+            if tuple(round(c, 3) for c in p.get_facecolor()[:3]) == want]
+
+
+def _grow(page, name):
+    """The push mode that grows the province called ``name``."""
+    return U.GROW_A if page.province_a.name == name else U.GROW_B
+
+
+ACROSS_THE_TAB = [(O + 21 * MM, O + 20 * MM), (O + 28 * MM, O + 20 * MM)]
+
+
+class TestFitOnTheList:
+
+    def test_each_border_says_whether_it_meshes(self, tmp_path):
+        window = _window(tmp_path)
+        texts = [window.list_todo.item(i).text()
+                 for i in range(window.list_todo.count())]
+        assert all(" · " in t for t in texts)
+        assert any("meshes cleanly" in t for t in texts)
+
+    def test_a_locking_border_says_so_and_is_coloured(self, tmp_path):
+        window = _mushroom_window(tmp_path)
+        window.show_borders()
+        item = window.list_todo.item(0)
+        assert "1 locking tab" in item.text()
+        assert item.foreground().color().name().lower() == \
+            U.LOCK_COLOUR.lower()
+
+    def test_fit_is_not_remeasured_while_nothing_changes(self, tmp_path,
+                                                         monkeypatch):
+        window = _window(tmp_path)
+        calls = []
+        real = U.fit_report
+        monkeypatch.setattr(U, "fit_report",
+                            lambda *a, **k: calls.append(1) or real(*a, **k))
+        window._refresh_lists()
+        assert calls == []
+
+
+class TestFitOnTheEditPage:
+
+    def test_marks_the_locking_tab(self, tmp_path):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        assert len(page.fit_before.locking) == 1
+        assert _fills(page.ax_before, U.LOCK_COLOUR)
+        assert "1 locking tab" in page.fit_label.text()
+        assert page.btn_worst.isEnabled()
+
+    def test_show_fit_off_clears_the_marks(self, tmp_path):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        page.fit_check.setChecked(False)
+        assert page.fit_before is None
+        assert not _fills(page.ax_before, U.LOCK_COLOUR)
+
+    def test_the_simplified_pair_is_checked_too(self, tmp_path):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        page._on_done(simplify_shared_border(page.geom_a, page.geom_b,
+                                             page._params()))
+        assert page.fit_after is not None
+        assert "simplified:" in page.fit_label.text()
+
+    def test_settings_are_saved_for_the_list_to_use(self, tmp_path):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        page.fit_spins["seam.fit_tab_mm"].setValue(1.0)
+        assert U.cfg("seam.fit_tab_mm") == pytest.approx(1.0)
+        # Too small a search to see a 6 mm head: the lock is gone, on the
+        # page and, once back, on the list.
+        assert page.fit_before.locking == []
+        window.show_borders()
+        assert "locking" not in window.list_todo.item(0).text()
+
+    def test_zoom_to_worst_frames_the_tab(self, tmp_path):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        page.zoom_to_worst_fit()
+        x0, x1 = page.ax_before.get_xlim()
+        y0, y1 = page.ax_before.get_ylim()
+        assert x0 < O + 24 * MM < x1 and y0 < O + 20 * MM < y1
+        assert (x1 - x0) < 40 * MM            # closer in than the whole pair
+
+
+class TestPushBrush:
+
+    def test_buttons_are_named_after_the_provinces(self, tmp_path):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        assert {page.btn_grow_a.text(), page.btn_grow_b.text()} == \
+            {"Grow East", "Grow West"}
+
+    def test_the_two_directions_are_exclusive(self, tmp_path):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        page.btn_grow_a.click()
+        page.btn_grow_b.click()
+        assert page._push_mode == U.GROW_B
+        assert not page.btn_grow_a.isChecked()
+        page._escape()
+        assert page._push_mode is None
+
+    def test_pushing_the_tab_back_clears_the_lock(self, tmp_path):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        page.set_push_mode(_grow(page, "CAN_East"))
+        page.brush_spin.setValue(12.0)
+        before = page.geom_a.union(page.geom_b)
+        assert page.push(ACROSS_THE_TAB)
+        assert page.fit_before.locking == []
+        assert len(page._undo) == 1
+        assert "1 push" in page.heading.text()
+        assert page.btn_undo.isEnabled()
+        after = page.geom_a.union(page.geom_b)
+        assert before.symmetric_difference(after).area / MM ** 2 < 1e-6
+
+    def test_undo_puts_it_back(self, tmp_path):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        original = (page.geom_a, page.geom_b)
+        page.set_push_mode(_grow(page, "CAN_East"))
+        page.brush_spin.setValue(12.0)
+        page.push(ACROSS_THE_TAB)
+        page.undo_push()
+        assert (page.geom_a, page.geom_b) == original
+        assert len(page.fit_before.locking) == 1
+        assert not page.btn_undo.isEnabled()
+
+    def test_a_stroke_that_moves_nothing_is_not_an_edit(self, tmp_path):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        page.set_push_mode(_grow(page, "CAN_West"))
+        deep_in_west = [(O + 1 * MM, O + 1 * MM), (O + 2 * MM, O + 2 * MM)]
+        assert not page.push(deep_in_west)
+        assert page._undo == []
+        assert "Nothing moved" in page.push_label.text()
+
+    def test_a_push_after_simplifying_runs_it_again(self, tmp_path,
+                                                    monkeypatch):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        page._on_done(simplify_shared_border(page.geom_a, page.geom_b,
+                                             page._params()))
+        runs = []
+        monkeypatch.setattr(page, "run", lambda: runs.append(1))
+        page.set_push_mode(_grow(page, "CAN_East"))
+        page.brush_spin.setValue(12.0)
+        page.push(ACROSS_THE_TAB)
+        assert runs == [1]
+        assert page.result is None             # stale until the run lands
+
+    def test_no_pushing_while_a_run_is_in_flight(self, tmp_path):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        page.set_push_mode(U.GROW_A)
+        page._set_busy(True)
+        assert page._push_mode is None
+        assert not page.btn_grow_a.isEnabled()
+        page._set_busy(False)
+        assert page.btn_grow_a.isEnabled()
+
+    def test_apply_saves_the_pushed_border(self, tmp_path):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        page.set_push_mode(_grow(page, "CAN_East"))
+        page.brush_spin.setValue(12.0)
+        page.push(ACROSS_THE_TAB)
+        east = page.province_a if page.province_a.name == "CAN_East" \
+            else page.province_b
+        pushed = (page.geom_a if east is page.province_a else page.geom_b).area
+        page._on_done(simplify_shared_border(page.geom_a, page.geom_b,
+                                             page._params()))
+        page.btn_save.click()
+        saved = U.read_province(tmp_path / "saved" / "CAN_East.geojson")
+        assert saved.geometry.area == pytest.approx(pushed, rel=0.01)
+        assert window.list_done.count() == 1
+
+    def test_a_new_pair_starts_with_no_pushes(self, tmp_path):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        page.set_push_mode(_grow(page, "CAN_East"))
+        page.brush_spin.setValue(12.0)
+        page.push(ACROSS_THE_TAB)
+        page.btn_back.click()
+        window.open_editor()
+        assert page._undo == []
+        assert page._push_mode is None

@@ -19,8 +19,10 @@ Two screens
    folder already holds a file of the same name, that one is loaded instead, so
    the work done last time is the work you continue from.
 2. The **Not cleaned** and **Cleaned** lists, and the map: seams are drawn red
-   until cleaned and green after.  Click a province on the map to select it, or
-   click a border in a list to select both of its provinces.
+   until cleaned and green after.  Each border also says whether its printed
+   pieces will mesh -- "meshes cleanly", or what will not -- in purple when a
+   tab locks and red for narrow land.  Click a province on the map to select
+   it, or click a border in a list to select both of its provinces.
 3. **Edit Border →** -- once the two selected provinces share a seam (or
    double-click a border in either list).
 
@@ -32,6 +34,25 @@ differences:
   into the save folder under their own file names, in the CRS each arrived in,
   records the border as cleaned, and returns to the list.
 * **← Borders** goes back without saving.
+
+and two rows of its own:
+
+* **Fit** -- where the printed pieces will not mesh (``lib.LIB_seam_fit``),
+  marked on both panels: narrow land at the seam in red, fingers too thin to
+  survive in amber, and tabs whose head is wider than their neck -- which lock
+  the pieces together, so they only go in from above and shrinkage piles up
+  at them -- in purple.  **Edge loss** is what each printed edge loses per
+  side, **Min width** the narrowest land that survives, **Largest tab** the
+  widest tab head looked for.  The settings are saved as they are turned, and
+  the list judges every border by them.  **Zoom to Worst Fit** frames the
+  worst one.
+* **Push border** -- a brush that moves the border.  **Grow <A>** hands the
+  land under the stroke from B to A; **Grow <B>** the other way.  Only land
+  touching the province growing moves, so it moves the border rather than
+  making enclaves, and the pair still covers exactly the ground it did.  It
+  edits the pair as imported; if the seam had been simplified, that is run
+  again on the edited pair.  **Undo Push** (Ctrl+Z) takes a stroke back; Esc
+  leaves the brush.
 
 What "cleaned" means
 --------------------
@@ -47,8 +68,8 @@ can be done in any order.
 
 Run with:  python UI_border_editor.py
 
-Reuses ``lib.LIB_shared_border``, ``lib.LIB_border_ledger`` and the seam editor
-from ``harnesses.UI_shared_border``.
+Reuses ``lib.LIB_shared_border``, ``lib.LIB_border_ledger``,
+``lib.LIB_seam_fit`` and the seam editor from ``harnesses.UI_shared_border``.
 """
 
 import sys
@@ -64,15 +85,18 @@ from shapely.geometry import Point
 from shapely.ops import unary_union
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QApplication, QFileDialog, QGroupBox,
-                               QHBoxLayout, QLabel, QListWidget,
-                               QListWidgetItem, QMainWindow, QMessageBox,
-                               QPushButton, QStackedWidget, QVBoxLayout,
-                               QWidget)
+from PySide6.QtGui import QColor, QKeySequence, QShortcut
+from PySide6.QtWidgets import (QApplication, QCheckBox, QDoubleSpinBox,
+                               QFileDialog, QGroupBox, QHBoxLayout, QLabel,
+                               QListWidget, QListWidgetItem, QMainWindow,
+                               QMessageBox, QPushButton, QStackedWidget,
+                               QVBoxLayout, QWidget)
 
 from harnesses.UI_shared_border import SharedBorderTester
 from lib.LIB_border_ledger import LEDGER_NAME, BorderLedger, find_borders
 from lib.LIB_project_config import get as cfg
+from lib.LIB_project_config import update_local
+from lib.LIB_seam_fit import FitParams, fit_report, push_border
 
 GEOJSON_FILTER = "GeoJSON (*.geojson *.json);;All files (*)"
 GEOJSON_GLOBS = ("*.geojson", "*.json")
@@ -97,6 +121,34 @@ SEAM_WIDTH_SELECTED = 4.5
 #: How far the pointer may move between press and release and still be a
 #: click rather than a pan, in pixels.
 CLICK_SLOP_PX = 5
+
+#: The fit overlay. Narrow land in the red Show thin uses; a locking tab in
+#: purple, because it is a different fault -- the land is wide enough, its
+#: shape is what traps the pieces -- and a finger too thin to survive in amber.
+NARROW_COLOUR = "#C0392B"
+LOCK_COLOUR = "#8E44AD"
+FINGER_COLOUR = "#E67E22"
+
+#: The two push modes: grow province A into B, or B into A.
+GROW_A, GROW_B = "a", "b"
+
+#: The fit settings, as ``(config key, label, lo, hi, decimals, step, tip)``.
+#: Saved to the local config as they are turned, so the list on the first page
+#: -- which reads the config -- judges every border by the same numbers the
+#: edit page was showing.
+FIT_SETTINGS = (
+    ("seam.edge_loss_mm", "Edge loss:", 0.0, 2.0, 2, 0.05,
+     "What each printed edge loses or gains, per side: over-extrusion, the\n"
+     "elephant's foot, slicer clearance. A feature at the seam loses twice\n"
+     "this across."),
+    ("thin.width_mm", "Min width:", 0.0, 20.0, 2, 0.05,
+     "The narrowest land that survives as a solid -- the same setting as\n"
+     "Show thin. Land at the seam needs this plus twice the edge loss."),
+    ("seam.fit_tab_mm", "Largest tab:", 0.5, 50.0, 1, 0.5,
+     "The widest tab head looked for. Pockets in one province narrower than\n"
+     "this are closed over, and the other province's land in them is a tab.\n"
+     "A bulge wider than this is just the border going somewhere."),
+)
 
 PAGE_BORDERS, PAGE_EDIT = 0, 1
 
@@ -172,13 +224,26 @@ class SeamPage(SharedBorderTester):
 
     Subclassed rather than copied so it *is* the same editor -- every control,
     the threaded run, the linked panels -- and stays so as the harness changes.
-    Only the ends are different: the pair arrives from the list, and Save Both
+    The ends are different: the pair arrives from the list, and Save Both
     becomes Apply, which hands the result back instead of asking for a folder.
+    And two rows are added under the harness's own:
+
+    * **Fit** -- marks, on both panels, where the printed pieces will not mesh
+      (``lib.LIB_seam_fit``): narrow land at the seam, fingers too thin to
+      survive, and tabs that lock.
+    * **Push** -- a brush that moves the border by hand, handing the land it
+      covers from one province to the other. It edits the pair as imported
+      (the left panel); if the seam had been simplified, the simplification is
+      run again on the edited pair, so the right panel stays live.
     """
     back_requested = Signal()
     applied = Signal(object)              # SeamResult
 
     def __init__(self):
+        # Set before the harness builds itself: its __init__ calls
+        # _invalidate, which this class extends.
+        self.fit_before = None            #: FitReport of the pair as edited
+        self.fit_after = None             #: FitReport of the simplified pair
         super().__init__()
         # A main window by birth; here it is one page of another window.
         self.setWindowFlags(Qt.Widget)
@@ -194,28 +259,145 @@ class SeamPage(SharedBorderTester):
         self.btn_back.clicked.connect(self.back_requested.emit)
         self.heading = QLabel("")
         self.heading.setStyleSheet("font-weight:bold;")
-        toolbar = self.btn_a.parentWidget().layout().itemAt(0).layout()
+        root = self.centralWidget().layout()
+        toolbar = root.itemAt(0).layout()
         toolbar.insertWidget(0, self.btn_back)
         toolbar.insertWidget(1, self.heading)
 
         self.province_a = None
         self.province_b = None
+        self._status_word = ""
+        self._undo: list = []             #: (geom_a, geom_b) before each push
+        self._push_mode = None            #: GROW_A, GROW_B, or None
+        self._stroke = None               #: points of an in-progress stroke
+        self._stroke_ax = None
+        self._preview = None
 
+        # Under the harness's two rows, above the map: index 2 is its toolbar.
+        root.insertLayout(2, self._build_fit_row())
+        root.insertLayout(3, self._build_push_row())
+
+        self.canvas.mpl_connect("button_press_event", self._on_press)
+        self.canvas.mpl_connect("motion_notify_event", self._on_motion)
+        self.canvas.mpl_connect("button_release_event", self._on_release)
+        for keys, slot in (("Ctrl+Z", self.undo_push),
+                           ("Escape", self._escape)):
+            shortcut = QShortcut(QKeySequence(keys), self)
+            shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(slot)
+        self._sync_fit_label()
+
+    # -- building ---------------------------------------------------------
+    def _build_fit_row(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        self.fit_check = QCheckBox("Show fit")
+        self.fit_check.setChecked(True)
+        self.fit_check.setToolTip(
+            "Mark where the printed pieces will not mesh: narrow land at the "
+            "seam (red),\nfingers too thin to survive (amber), and tabs whose "
+            "head is wider than\ntheir neck, which lock the pieces together "
+            "(purple).")
+        self.fit_check.toggled.connect(self._refit)
+        row.addWidget(self.fit_check)
+        self.fit_spins = {}
+        for key, label, lo, hi, decimals, step, tip in FIT_SETTINGS:
+            spin = QDoubleSpinBox()
+            spin.setDecimals(decimals)
+            spin.setRange(lo, hi)
+            spin.setSingleStep(step)
+            spin.setSuffix(" mm")
+            spin.setValue(float(cfg(key)))
+            spin.setToolTip(tip)
+            spin.valueChanged.connect(
+                lambda value, key=key: self._on_fit_setting(key, value))
+            self.fit_spins[key] = spin
+            row.addWidget(QLabel(label))
+            row.addWidget(spin)
+        self.btn_worst = QPushButton("Zoom to Worst Fit")
+        self.btn_worst.setToolTip(
+            "Frame the tightest locking tab, or else the thinnest finger, or "
+            "else the largest patch of narrow land.")
+        self.btn_worst.clicked.connect(self.zoom_to_worst_fit)
+        row.addWidget(self.btn_worst)
+        self.fit_label = QLabel("")
+        self.fit_label.setStyleSheet("color:#555;")
+        row.addWidget(self.fit_label)
+        row.addStretch(1)
+        return row
+
+    def _build_push_row(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Push border:"))
+        self.btn_grow_a = QPushButton("Grow A")
+        self.btn_grow_b = QPushButton("Grow B")
+        for button, mode in ((self.btn_grow_a, GROW_A),
+                             (self.btn_grow_b, GROW_B)):
+            button.setCheckable(True)
+            button.clicked.connect(
+                lambda checked, mode=mode: self.set_push_mode(
+                    mode if checked else None))
+            row.addWidget(button)
+        self.brush_spin = QDoubleSpinBox()
+        self.brush_spin.setDecimals(2)
+        self.brush_spin.setRange(0.05, 50.0)
+        self.brush_spin.setSingleStep(0.25)
+        self.brush_spin.setSuffix(" mm")
+        self.brush_spin.setValue(float(cfg("seam.brush_mm")))
+        self.brush_spin.setToolTip(
+            "Brush width on paper, measured across the stroke.")
+        self.brush_spin.valueChanged.connect(
+            lambda value: update_local("seam.brush_mm", value))
+        row.addWidget(QLabel("Brush:"))
+        row.addWidget(self.brush_spin)
+        self.btn_undo = QPushButton("Undo Push")
+        self.btn_undo.setToolTip("Take back the last stroke (Ctrl+Z).")
+        self.btn_undo.clicked.connect(self.undo_push)
+        self.btn_undo.setEnabled(False)
+        row.addWidget(self.btn_undo)
+        self.push_label = QLabel(
+            "Drag across the seam to hand land from one province to the "
+            "other. Esc leaves the brush.")
+        self.push_label.setStyleSheet("color:#555;")
+        row.addWidget(self.push_label)
+        row.addStretch(1)
+        return row
+
+    # -- the pair -----------------------------------------------------------
     def load_pair(self, province_a: Province, province_b: Province,
                   status: str = "not cleaned") -> None:
         """Put a pair on the editor, as Import A and Import B would have."""
+        self.set_push_mode(None)
+        self._undo = []
         self.province_a, self.province_b = province_a, province_b
         self.geom_a, self.geom_b = province_a.geometry, province_b.geometry
         self.path_a, self.path_b = province_a.path, province_b.path
         self.source_crs = province_a.source_crs or province_b.source_crs
-        self.heading.setText(
-            f"{province_a.label} ⇄ {province_b.label} — "
-            f"{STATUS_TEXT.get(status, status)}")
+        self._status_word = STATUS_TEXT.get(status, status)
+        self.btn_grow_a.setText(f"Grow {province_a.label}")
+        self.btn_grow_a.setToolTip(
+            f"Brush: land under the stroke passes from {province_b.label} to "
+            f"{province_a.label} (blue).")
+        self.btn_grow_b.setText(f"Grow {province_b.label}")
+        self.btn_grow_b.setToolTip(
+            f"Brush: land under the stroke passes from {province_a.label} to "
+            f"{province_b.label} (grey).")
+        self.fit_before = None
         self._find_seam()
         self._invalidate()
         self._draw_before()
         if self.seam is not None:
             self.zoom_to_seam()
+        self._sync_heading()
+
+    def _sync_heading(self) -> None:
+        if self.province_a is None:
+            return
+        edits = len(self._undo)
+        edited = f", {edits} push(es) not yet saved" if edits else ""
+        self.heading.setText(
+            f"{self.province_a.label} ⇄ {self.province_b.label} — "
+            f"{self._status_word}{edited}")
+        self.btn_undo.setEnabled(bool(edits) and self._thread is None)
 
     def save_both(self) -> None:
         """Apply: hand the result back; the window decides where it goes."""
@@ -225,8 +407,241 @@ class SeamPage(SharedBorderTester):
 
     def _set_busy(self, busy: bool) -> None:
         super()._set_busy(busy)
-        # Leaving mid-run would orphan the worker's result.
-        self.btn_back.setEnabled(not busy)
+        # Leaving mid-run would orphan the worker's result, and pushing would
+        # edit the pair out from under it.
+        for widget in (self.btn_back, self.btn_grow_a, self.btn_grow_b):
+            widget.setEnabled(not busy)
+        if busy:
+            self.set_push_mode(None)
+        self._sync_heading()
+
+    # -- fit --------------------------------------------------------------
+    def fit_params(self) -> FitParams:
+        spins = self.fit_spins
+        return FitParams(
+            scale=self._params().scale,
+            edge_loss_mm=spins["seam.edge_loss_mm"].value(),
+            min_width_mm=spins["thin.width_mm"].value(),
+            tab_mm=spins["seam.fit_tab_mm"].value())
+
+    def _on_fit_setting(self, key: str, value: float) -> None:
+        update_local(key, value)
+        self._refit()
+
+    def _refit(self, *_args) -> None:
+        """Re-measure and redraw both panels, keeping the view where it is."""
+        self.fit_before = self.fit_after = None
+        self._redraw_keeping_view()
+
+    def _ensure_fits(self) -> None:
+        if not self.fit_check.isChecked():
+            self.fit_before = self.fit_after = None
+            return
+        params = self.fit_params()
+        if self.fit_before is None and self.seam is not None:
+            self.fit_before = fit_report(self.geom_a, self.geom_b, self.seam,
+                                         params)
+        if self.fit_after is None and self.result is not None:
+            self.fit_after = fit_report(self.result.a, self.result.b,
+                                        self.result.seam, params)
+
+    def _sync_fit_label(self) -> None:
+        bits = []
+        if self.fit_before is not None:
+            bits.append(f"as edited: {self.fit_before.summary()}")
+        if self.fit_after is not None:
+            bits.append(f"simplified: {self.fit_after.summary()}")
+        width = self.fit_params().required_width_mm
+        self.fit_label.setText(
+            f"Needs {width:g} mm — " + "; ".join(bits) if bits else "")
+        self.btn_worst.setEnabled(self._worst_fit() is not None)
+
+    def _worst_fit(self):
+        for report in (self.fit_after, self.fit_before):
+            if report is not None and report.worst() is not None:
+                return report.worst()
+        return None
+
+    def zoom_to_worst_fit(self) -> None:
+        worst = self._worst_fit()
+        if worst is None:
+            return
+        # A fault is a millimetre across; frame it with room for the seam on
+        # either side, or there is nothing to judge it against.
+        minx, miny, maxx, maxy = worst.bounds
+        grow = max(maxx - minx, maxy - miny, 2 * self._params().mpm) * 1.5
+        cx, cy = (minx + maxx) / 2.0, (miny + maxy) / 2.0
+        self._fit_view((cx - grow, cy - grow, cx + grow, cy + grow))
+
+    def _draw_fit(self, ax, report) -> None:
+        if report is None:
+            return
+        for patch in report.narrow:
+            self._fill(ax, patch.geometry, NARROW_COLOUR, alpha=0.6)
+        for tab in report.problem_tabs:
+            colour = LOCK_COLOUR if tab.locks else FINGER_COLOUR
+            self._fill(ax, tab.geometry, colour, alpha=0.35, edge=colour)
+
+    @staticmethod
+    def _fill(ax, geom, colour, alpha, edge="none") -> None:
+        for poly in _polygons(geom):
+            xs, ys = poly.exterior.xy
+            ax.fill(xs, ys, facecolor=colour, edgecolor=edge, alpha=alpha,
+                    linewidth=1.2, zorder=5)
+
+    def _draw_before(self) -> None:
+        super()._draw_before()
+        self._ensure_fits()
+        self._draw_fit(self.ax_before, self.fit_before)
+        if self._undo:
+            self.ax_before.set_title(
+                f"As edited — {len(self._undo)} push(es), seam "
+                f"{self.seam_stats().get('vertices', 0)} vertices", fontsize=11)
+        self._sync_fit_label()
+        self.canvas.draw_idle()
+
+    def _draw_after(self) -> None:
+        self.fit_after = None
+        super()._draw_after()
+        self._ensure_fits()
+        self._draw_fit(self.ax_after, self.fit_after)
+        self._sync_fit_label()
+        self.canvas.draw_idle()
+
+    def _invalidate(self) -> None:
+        super()._invalidate()
+        self.fit_after = None
+        if hasattr(self, "fit_label"):          # not yet built on the first call
+            self._sync_fit_label()
+
+    def _redraw_keeping_view(self) -> None:
+        """Both panels again; ``ax.clear`` would otherwise reset the view."""
+        view = (self.ax_before.get_xlim(), self.ax_before.get_ylim())
+        self._draw_before()
+        if self.result is not None:
+            self._draw_after()
+        self._set_view(self.ax_before, *view)
+        self.canvas.draw_idle()
+
+    # -- push brush -------------------------------------------------------
+    # Previewed as a fat round-capped line, as in the island editor: that is
+    # exactly the region a circular brush sweeps, so the preview is honest, and
+    # the real geometry is built once, on release.
+    def set_push_mode(self, mode) -> None:
+        self._cancel_stroke()
+        self._push_mode = mode
+        self.btn_grow_a.setChecked(mode == GROW_A)
+        self.btn_grow_b.setChecked(mode == GROW_B)
+        if mode is None:
+            self.canvas.unsetCursor()
+        else:
+            self.canvas.setCursor(Qt.CursorShape.CrossCursor)
+
+    def _escape(self) -> None:
+        """Esc backs out one step: first the stroke, then the brush."""
+        if self._stroke is not None:
+            self._cancel_stroke()
+        else:
+            self.set_push_mode(None)
+
+    def _cancel_stroke(self) -> None:
+        self._stroke = None
+        if self._preview is not None:
+            try:
+                self._preview.remove()
+            except (ValueError, NotImplementedError):
+                pass                       # its axes were already cleared
+            self._preview = None
+            self.canvas.draw_idle()
+
+    def _brush_points(self, ax) -> float:
+        """The brush width in typographic points, for the preview line."""
+        x0, x1 = ax.get_xlim()
+        px_per_m = ax.bbox.width / abs(x1 - x0) if x1 != x0 else 0.0
+        width_m = self.brush_spin.value() * self._params().mpm
+        return max(width_m * px_per_m * 72.0 / self.figure.dpi, 1.0)
+
+    def _on_press(self, event) -> None:
+        if (self._push_mode is None or self.mpl_toolbar.mode
+                or event.button != 1 or self._thread is not None
+                or event.inaxes not in (self.ax_before, self.ax_after)
+                or event.xdata is None or self.geom_a is None):
+            return
+        self._stroke = [(event.xdata, event.ydata)]
+        self._stroke_ax = event.inaxes
+        colour = "#2E86C1" if self._push_mode == GROW_A else "#7F8C8D"
+        self._preview, = event.inaxes.plot(
+            [event.xdata], [event.ydata], color=colour, alpha=0.6,
+            solid_capstyle="round", solid_joinstyle="round",
+            linewidth=self._brush_points(event.inaxes), zorder=6)
+        self.canvas.draw_idle()
+
+    def _on_motion(self, event) -> None:
+        if self._stroke is None or event.inaxes is not self._stroke_ax:
+            return
+        if event.xdata is None:
+            return
+        self._stroke.append((event.xdata, event.ydata))
+        xs, ys = zip(*self._stroke)
+        self._preview.set_data(xs, ys)
+        self.canvas.draw_idle()
+
+    def _on_release(self, event) -> None:
+        if self._stroke is None:
+            return
+        points = self._stroke
+        self._cancel_stroke()
+        self.push(points)
+
+    def push(self, points) -> bool:
+        """
+        Commit one stroke: move the border under it, in the current direction.
+
+        Returns whether anything moved. A stroke that moves nothing stays out
+        of the undo history.
+        """
+        if self._push_mode is None or self.geom_a is None:
+            return False
+        growing_a = self._push_mode == GROW_A
+        grow, shrink = ((self.geom_a, self.geom_b) if growing_a
+                        else (self.geom_b, self.geom_a))
+        grown, shrunk = push_border(grow, shrink, points,
+                                    self.brush_spin.value(),
+                                    self._params().scale)
+        if grown is grow:
+            self.push_label.setText(
+                "Nothing moved — the stroke has to cover land of the other "
+                "province that touches the one growing.")
+            return False
+        moved_mm2 = (grown.area - grow.area) / self._params().mpm ** 2
+        self._undo.append((self.geom_a, self.geom_b))
+        self.geom_a, self.geom_b = ((grown, shrunk) if growing_a
+                                    else (shrunk, grown))
+        winner = self.province_a if growing_a else self.province_b
+        self.push_label.setText(
+            f"Moved {moved_mm2:.2f} mm² to {winner.label}.")
+        self._after_edit()
+        return True
+
+    def undo_push(self) -> None:
+        if not self._undo or self._thread is not None:
+            return
+        self.geom_a, self.geom_b = self._undo.pop()
+        self.push_label.setText("Last push undone.")
+        self._after_edit()
+
+    def _after_edit(self) -> None:
+        """The pair changed: re-find the seam, re-measure, re-simplify."""
+        had_result = self.result is not None
+        self._find_seam()
+        self.fit_before = None
+        self._invalidate()
+        self._redraw_keeping_view()
+        self._sync_heading()
+        # Keep the right panel live: it was showing a simplification, so show
+        # the simplification of what is there now.
+        if had_result and self.seam is not None:
+            self.run()
 
 
 class BorderEditor(QMainWindow):
@@ -242,6 +657,9 @@ class BorderEditor(QMainWindow):
         self.save_dir = DEFAULT_SAVE_DIR
         self.ledger = BorderLedger.load(self.save_dir)
         self._press = None                  #: pointer position at button press
+        #: Fit reports by border, kept while neither province nor the fit
+        #: settings change -- cleaning one border must not re-measure thirty.
+        self._fits: dict = {}
 
         self.stack = QStackedWidget()
         self.stack.addWidget(self._build_borders_page())
@@ -354,6 +772,26 @@ class BorderEditor(QMainWindow):
     def _find_borders(self) -> None:
         self.borders = find_borders(
             {name: p.geometry for name, p in self.provinces.items()})
+
+    def fit_of(self, border):
+        """
+        Will this border's pieces mesh? Measured with the fit settings in the
+        config -- the ones the edit page saves as they are turned -- and kept
+        until a province or a setting changes.
+        """
+        params = FitParams.from_config()
+        geom_a = self.provinces[border.a].geometry
+        geom_b = self.provinces[border.b].geometry
+        settings = (params.edge_loss_mm, params.min_width_mm,
+                    params.tab_mm, params.scale)
+        cached = self._fits.get(border.key)
+        # The geometries are held in the cache entry, so their ids cannot be
+        # handed on to new objects while the entry still names them.
+        if cached is not None and cached[0] is geom_a and cached[1] is geom_b                 and cached[2] == settings:
+            return cached[3]
+        report = fit_report(geom_a, geom_b, border.seam, params)
+        self._fits[border.key] = (geom_a, geom_b, settings, report)
+        return report
 
     # -- import --------------------------------------------------------------
     def import_folder(self) -> None:
@@ -497,6 +935,9 @@ class BorderEditor(QMainWindow):
 
     def show_borders(self) -> None:
         self.stack.setCurrentIndex(PAGE_BORDERS)
+        # The fit settings may have been turned on the edit page.
+        self._refresh_lists()
+        self._sync()
         self._update_title()
 
     def apply_result(self, result) -> None:
@@ -547,13 +988,15 @@ class BorderEditor(QMainWindow):
         names = (f"{self.provinces[border.a].label} — "
                  f"{self.provinces[border.b].label}")
         status = self.status_of(border)
+        fit = self.fit_of(border).summary()
         if status == "cleaned":
             entry = self.ledger.entry(border)
             return (f"{names}   {entry.get('vertices_before', '?')} → "
-                    f"{border.vertices} vertices")
+                    f"{border.vertices} vertices · {fit}")
         if status == "changed":
-            return f"{names}   {border.vertices} vertices · changed since cleaned"
-        return f"{names}   {border.vertices} vertices"
+            return (f"{names}   {border.vertices} vertices · changed since "
+                    f"cleaned · {fit}")
+        return f"{names}   {border.vertices} vertices · {fit}"
 
     def _refresh_lists(self) -> None:
         for widget, borders in ((self.list_todo, self.not_cleaned()),
@@ -563,6 +1006,10 @@ class BorderEditor(QMainWindow):
             for border in borders:
                 item = QListWidgetItem(self._item_text(border))
                 item.setData(Qt.UserRole, border.key)
+                if self.fit_of(border).problems:
+                    item.setForeground(QColor(LOCK_COLOUR)
+                                       if self.fit_of(border).locking
+                                       else QColor(NARROW_COLOUR))
                 widget.addItem(item)
             widget.blockSignals(False)
         self.box_todo.setTitle(f"Not cleaned ({self.list_todo.count()})")
@@ -680,7 +1127,8 @@ class BorderEditor(QMainWindow):
         if border is None:
             return f"{labels[0]} and {labels[1]} do not share a border."
         return (f"{labels[0]} ⇄ {labels[1]}: {border.vertices} vertices, "
-                f"{STATUS_TEXT[self.status_of(border)]}.")
+                f"{STATUS_TEXT[self.status_of(border)]}; "
+                f"{self.fit_of(border).summary()}.")
 
     def _set_status(self, prefix: str = "") -> None:
         if not self.provinces:

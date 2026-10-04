@@ -124,6 +124,23 @@ DEFAULTS = {
         # Refuse a simplification that drags the border further than this from
         # where it really runs.
         "max_deviation_mm": 1.5,
+        # Will the two printed pieces mesh? (LIB_seam_fit, read by the Border
+        # Editor.) What each printed edge loses or gains, per side --
+        # over-extrusion, elephant's foot, slicer clearance. The same 0.2 mm
+        # the dovetail and butterfly-key pockets are oversized by.
+        "edge_loss_mm": 0.2,
+        # Narrow land within this distance of the seam is the seam's problem.
+        "fit_band_mm": 3.0,
+        # The widest tab head looked for: pockets narrower than this are
+        # closed over, and the land filling them is a tab. A bulge wider than
+        # this is just the border going somewhere.
+        "fit_tab_mm": 8.0,
+        # A tab whose head is wider than its neck by more than this factor is
+        # captured: the pieces only go together from above, and the tab pins
+        # them so shrinkage along the seam cannot spread out.
+        "lock_ratio": 1.05,
+        # The Border Editor's push brush, measured across the stroke.
+        "brush_mm": 2.0,
     },
     "borders": {
         # Defining the borders between provinces, in printed millimetres

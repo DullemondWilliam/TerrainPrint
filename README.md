@@ -71,6 +71,7 @@ flowchart TD
 ├── docs/USING_DEMTO3D.md              # DEM -> STL is now done in QGIS (DEMto3D plugin)
 ├── lib/                               # Library modules (imported as lib.LIB_*)
 │   ├── LIB_border_ledger.py           # Find shared borders; record which are cleaned
+│   ├── LIB_seam_fit.py                # Where printed pieces will not mesh; push a border
 │   ├── LIB_border_connectors.py       # Border lobes / solid extrusion / province notching
 │   ├── LIB_border_regions.py          # Province vs. state border region construction
 │   ├── LIB_border_simplification.py   # Topology-aware border simplification
@@ -204,6 +205,22 @@ When a province already has a copy in the save folder, that copy is loaded
 instead, so earlier work carries on. A border counts as cleaned only while the
 files still carry the seam that was recorded, so a re-exported province puts
 its borders back on the Not cleaned list, marked "changed since cleaned".
+
+**Fit check:** every border in the list says whether its printed pieces will
+mesh, and the Edit Border page marks the faults on both panels:
+
+| Mark | Fault |
+|---|---|
+| Red | Land at the seam narrower than *Min width* + 2 × *Edge loss* |
+| Amber | A finger (deeper than it is wide) too thin to survive |
+| Purple | A tab whose head is wider than its neck: it locks the pieces, so they only go in from above and shrinkage piles up at it |
+
+*Edge loss* is what each printed edge loses per side (over-extrusion,
+elephant's foot, clearance; default 0.2 mm). Measure it once on your printer.
+
+**Push border:** *Grow A* / *Grow B* turn the map into a brush that hands the
+land under the stroke to that province, so a locking tab or thin finger can be
+pushed back by hand. Ctrl+Z undoes a stroke; Esc leaves the brush.
 
 ## Recommended Workflow
 
