@@ -217,6 +217,7 @@ class TestButtonShortcuts:
         "btn_lakes": "L",
         "btn_draw": "D",
         "btn_erase": "E",
+        "btn_original": "O",
         "btn_thin": "F6",
         "btn_worst_patch": "W",
         "btn_stress": "F7",

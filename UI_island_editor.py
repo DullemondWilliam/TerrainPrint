@@ -51,7 +51,13 @@ Workflow
    are arithmetic and follow every edit; the third rasterises both versions at
    a quarter of the nozzle width and sits behind **Recalculate**, because
    running it on every brush stroke would make the editor feel slow.
-   **Printability**, under it — mark, in red, every piece of
+   **Original**, under it — lay the province as it was imported over the one
+   being edited, in purple, at an opacity you set.  Tinted land was there
+   before, land with no tint you have added, tint with no land under it you
+   have taken away: the Scores figures as a picture.  It draws the *imported*
+   file, which undo walks back to and saving does not move.
+
+   **Printability**, under that — mark, in red, every piece of
    land narrower than *Min width*, which is exactly what **Amputate** would
    remove: the layer is the preview of that cut, measured by asking whether a
    disc that wide fits inside the land, so it catches necks, spits and whole
@@ -95,7 +101,8 @@ Workflow
    the scores, the thin land and the stress — with W and Shift+W for the worst
    patch and the worst neck; Home, Alt+Left / Alt+Right and
    P / Z move the *view*; and each edit takes the initial of the word that
-   tells it apart — G, M, B, S, A, L, D, E — with Delete for *Remove*.
+   tells it apart — G, M, B, S, A, L, D, E, and O for the imported shape —
+   with Delete for *Remove*.
    The keys hang on the buttons, so a key is live exactly when its button is:
    no merging with nothing selected. The bare letters give way to a focused
    spin box, which takes the keystrokes it would accept as input before any
@@ -103,7 +110,8 @@ Workflow
 
 **The settings are kept.** Every box in the window -- the buffer, the brush,
 the two area and width thresholds, the bridge width and span, the severity
-floor and the print scale -- is written back to ``project_config.local.json``
+floor, the ghost's opacity and the print scale -- is written back to
+``project_config.local.json``
 as it is turned, so the next launch starts where the last one left off.  The
 gitignored half of the config, because these are what this desk works at; the
 tracked file keeps the project's shipped numbers.  Three of the keys are read
@@ -161,7 +169,7 @@ from PySide6.QtWidgets import (QApplication, QDoubleSpinBox, QFileDialog,
                                QFrame, QGridLayout, QGroupBox, QHBoxLayout,
                                QLabel, QLineEdit, QMainWindow, QMessageBox,
                                QProgressBar, QPushButton, QSizePolicy,
-                               QSpinBox, QVBoxLayout, QWidget)
+                               QSlider, QSpinBox, QVBoxLayout, QWidget)
 
 from lib.LIB_island_bridges import (BridgeParams, apply_bridges,
                                     plan_bridges)
@@ -264,6 +272,18 @@ SCORES_WIDEST = "Land  1,234,567.8 → 1,234,567.8 mm²   -12.3%"
 #: Room for the group box's frame and margins either side of that line.
 SIDE_PADDING_PX = 28
 
+#: The province as it was imported, drawn over the edits as a ghost. A hue of
+#: its own: every other colour on this map means something about the land as it
+#: is now -- selected, below the area, too thin, a neck at risk -- and this one
+#: is the only mark about land that may no longer be there.
+ORIGINAL_COLOUR = "#7D3C98"
+ORIGINAL_EDGE = "#4A235A"
+
+#: How strongly it is drawn, as ``(lo, hi, default)`` in percent. Kept in the
+#: config like the rest of the window's settings, because how hard you want to
+#: be looking at it is a preference and not a property of the file.
+ORIGINAL_OPACITY = (0, 100, cfg("island_editor.original_opacity"))
+
 #: Land too thin to print. A saturated red rather than the palette's softer
 #: ``REMOVE_COLOUR``, because a patch can be a printed millimetre across: what
 #: marks it has to win against the island fill under it at a zoom where it is
@@ -362,6 +382,7 @@ SAVED_SETTINGS = (
     ("bridges.max_span_mm", "bridge_span_spin"),
     ("stress.report_above", "stress_spin"),
     ("print.scale", "scale_spin"),
+    ("island_editor.original_opacity", "opacity_slider"),
 )
 
 #: How long after the last turn of a box the settings are written, in ms.
@@ -953,6 +974,50 @@ class IslandEditor(QMainWindow):
         scores_column.addWidget(self.btn_recalc,
                                 alignment=Qt.AlignmentFlag.AlignRight)
 
+        # -- the province as imported, under the scoreboard -------------------
+        # The picture of what the Scores box above says in numbers: both are
+        # measured against ``original_doc`` and nothing else, so they belong
+        # together and in that order -- the figure, then the shape it is the
+        # figure for.
+        #
+        # Drawn *over* the edited province rather than under it, which is what
+        # makes the slider worth having: under it, an opacity would only shade
+        # the land that has been removed, where over it the ghost tints
+        # everything that was there before, and land you have *added* is the
+        # part with no tint on it. Both halves of the edit, in one picture.
+        self.btn_original = self._button("Show", self._toggle_original,
+                                         enabled=False)
+        self.btn_original.setCheckable(True)
+        self.btn_original.setToolTip(
+            "Lay the province as it was imported over the one you are "
+            "editing, in purple.\n\n"
+            "Tinted land was there before; land with no tint you have added; "
+            "tint with no land under it you have taken away. That is the "
+            "Scores box above as a picture rather than as three "
+            "numbers.\n\n"
+            "It is the *imported* file, not the last saved one — undo walks "
+            "back to it and saving does not move it.")
+        self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.opacity_slider.setRange(ORIGINAL_OPACITY[0], ORIGINAL_OPACITY[1])
+        self.opacity_slider.setValue(int(ORIGINAL_OPACITY[2]))
+        self.opacity_slider.setToolTip(
+            "How strongly the imported shape is drawn over the edited one. "
+            "Low to glance at what has moved, high to line a coast up against "
+            "where it was. Kept for next time, like the boxes above.")
+        self.opacity_slider.valueChanged.connect(self._on_opacity)
+        self.lbl_opacity = QLabel()
+        # Sized for the widest reading it can hold, so the slider does not
+        # shorten by a few pixels as the number goes from 9% to 100%.
+        self.lbl_opacity.setFixedWidth(
+            self.lbl_opacity.fontMetrics().horizontalAdvance("100%") + 6)
+        self.grp_original = QGroupBox("Original")
+        original_row = QHBoxLayout(self.grp_original)
+        original_row.setContentsMargins(8, 2, 8, 4)
+        original_row.setSpacing(4)
+        original_row.addWidget(self.btn_original)
+        original_row.addWidget(self.opacity_slider, stretch=1)
+        original_row.addWidget(self.lbl_opacity)
+
         # -- the thin layer, second down the side panel -----------------------
         # *Min width* over in Whole province is this layer's knob as well as
         # Amputate's: one width, marked and then removed. That is the case for
@@ -1107,7 +1172,8 @@ class IslandEditor(QMainWindow):
         side = QVBoxLayout(self.side)
         side.setContentsMargins(0, 0, 0, 0)
         side.setSpacing(4)
-        for group in (self.grp_scores, self.grp_thin, self.grp_stress):
+        for group in (self.grp_scores, self.grp_original, self.grp_thin,
+                      self.grp_stress):
             side.addWidget(group)
         side.addStretch(1)
         # One width, held. The scoreboard's lines are the widest thing in the
@@ -1219,6 +1285,7 @@ class IslandEditor(QMainWindow):
         self._wire_shortcuts()
         self._update_scores()     # …and the scoreboard saying there is nothing yet
         self._update_panel()      # …and both layers saying they have not run
+        self._on_opacity(self.opacity_slider.value())   # …and the ghost's %
         self._sync_buttons()      # start with the groups greyed and the count set
         self._update_title()
 
@@ -1314,6 +1381,11 @@ class IslandEditor(QMainWindow):
                 # Remove Small). Their two "take me to the fault" buttons take
                 # W and Shift+W, in that same order -- the narrow land first,
                 # then the narrow land that is holding something up.
+                # The ghost is a *view* of the map rather than a
+                # measurement of it, so it takes a bare initial as the brush
+                # modes do, and leaves the function keys to the three boxes
+                # that measure.
+                (self.btn_original, "O"),
                 (self.btn_thin, "F6"),
                 (self.btn_worst_patch, "W"),
                 (self.btn_stress, "F7"),
@@ -1678,6 +1750,7 @@ class IslandEditor(QMainWindow):
             if sel:
                 gs.iloc[sorted(sel)].plot(ax=self.ax, facecolor=SELECT_COLOUR,
                                           edgecolor=SELECT_EDGE, linewidth=1.0)
+        self._draw_original()
         self._draw_thin()
         self._draw_stress()
         if preserve_view:
@@ -1943,6 +2016,12 @@ class IslandEditor(QMainWindow):
         self.btn_invert.setEnabled(has)
         self.btn_save.setEnabled(has)
         self.grp_scores.setEnabled(has)
+        # Nothing to lay over the map until a file has been opened -- and
+        # note this group is *not* locked while a bridge plan runs, unlike the
+        # two below it: the shape it draws is the imported one, which is the
+        # one thing on screen a plan cannot invalidate.
+        self.grp_original.setEnabled(has and self.original_doc is not None)
+        self.btn_original.setEnabled(has and self.original_doc is not None)
         self.grp_thin.setEnabled(has)
         self.btn_thin.setEnabled(has)
         # Reads the cache rather than measuring: every path that gets here has
@@ -2345,6 +2424,38 @@ class IslandEditor(QMainWindow):
                  + (" coarsened" if scores.coarsened else ""))
         return (f"Agree {scores.agreement * 100:8.2f}%  @ {pixel}   "
                 f"+{scores.added_mm2:,.1f} / −{scores.lost_mm2:,.1f} mm²")
+
+    # -- the province as imported -------------------------------------------
+    def _toggle_original(self, _checked: bool) -> None:
+        """Lay the imported shape over the edited one, or take it away."""
+        self._redraw(preserve_view=True)
+        self._sync_buttons()
+
+    def _on_opacity(self, value: int) -> None:
+        """A new strength is the same shape drawn again; nothing is measured."""
+        self.lbl_opacity.setText(f"{value}%")
+        if self.btn_original.isChecked():
+            self._redraw(preserve_view=True)
+
+    def _draw_original(self) -> None:
+        """Draw the imported province over the edited one, at the set opacity.
+
+        One artist for the whole of it, as the thin layer is drawn: a province
+        is up to 223 parts and this is a backdrop, not something to pick out of.
+
+        Above the islands so that the tint reads over the land you have kept,
+        and below the thin and stress marks, which are claims about the land as
+        it is **now** and must not be dimmed by a picture of how it was.
+        """
+        if not self.btn_original.isChecked() or self.original_doc is None:
+            return
+        parts = _polygons(self.original_doc)
+        if not parts:
+            return
+        gpd.GeoSeries(parts).plot(
+            ax=self.ax, facecolor=ORIGINAL_COLOUR, edgecolor=ORIGINAL_EDGE,
+            linewidth=0.8, alpha=self.opacity_slider.value() / 100.0,
+            zorder=3)
 
     # -- printability ------------------------------------------------------
     def _thin_params(self) -> ThinParams:
@@ -2978,7 +3089,11 @@ class IslandEditor(QMainWindow):
 
         Noted rather than written: see ``SETTINGS_WRITE_MS``.
         """
-        self._pending_settings[key] = (int(value) if key == "print.scale"
+        # Kept in the type the control counts in, which is also the type the
+        # control will take back: a print scale is 1:N and a percentage is a
+        # percentage, and JSON would hand either back as 8000000.0 or 40.0 --
+        # the second of which a QSlider refuses outright.
+        self._pending_settings[key] = (value if isinstance(value, int)
                                        else float(value))
         self._settings_timer.start()
 

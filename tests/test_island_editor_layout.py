@@ -144,7 +144,8 @@ class TestTheThreeRows:
     def test_each_control_is_in_its_row(self, editor, name, row):
         assert cell(editor, getattr(editor, name))[:2] == (row, 0)
 
-    @pytest.mark.parametrize("name", ["grp_scores", "grp_thin", "grp_stress"])
+    @pytest.mark.parametrize("name", ["grp_scores", "grp_original",
+                                      "grp_thin", "grp_stress"])
     def test_the_measurements_are_not_in_these_rows_at_all(self, editor, name):
         """They are statements about the document, not edits, and they are read
         against the map -- so they sit beside it (see TestTheSidePanel)."""
@@ -174,6 +175,7 @@ class TestTheGroups:
         "grp_bridges": "Bridge Merge",
         "grp_freehand": "Freehand",
         "grp_scores": "Scores",
+        "grp_original": "Original",
         "grp_thin": "Printability",
         "grp_stress": "Stress",
     }
@@ -192,6 +194,7 @@ class TestTheGroups:
         ("grp_freehand", ["btn_draw", "btn_erase", "brush_spin"]),
         ("grp_stress", ["btn_stress", "stress_spin", "btn_worst_neck"]),
         ("grp_thin", ["btn_thin", "btn_worst_patch"]),
+        ("grp_original", ["btn_original", "opacity_slider", "lbl_opacity"]),
     ])
     def test_each_group_holds_its_own(self, editor, group, members):
         box = getattr(editor, group)
@@ -213,13 +216,15 @@ class TestTheSidePanel:
     beside it, where they also cost it no height.
     """
 
-    @pytest.mark.parametrize("name", ["grp_scores", "grp_thin", "grp_stress"])
+    @pytest.mark.parametrize("name", ["grp_scores", "grp_original",
+                                      "grp_thin", "grp_stress"])
     def test_each_measurement_is_in_the_panel(self, editor, name):
         assert panel(editor).indexOf(getattr(editor, name)) >= 0
 
     @pytest.mark.parametrize("first, second", [
-        ("grp_scores", "grp_thin"),     # the cost, then the two judgements
-        ("grp_thin", "grp_stress"),     # narrow land, then what it holds up
+        ("grp_scores", "grp_original"),  # the cost, then the same in a picture
+        ("grp_original", "grp_thin"),    # then the two judgements
+        ("grp_thin", "grp_stress"),      # narrow land, then what it holds up
     ])
     def test_the_panel_reads_top_to_bottom_in_that_order(self, editor,
                                                          first, second):

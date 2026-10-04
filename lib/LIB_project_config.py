@@ -136,6 +136,10 @@ DEFAULTS = {
         "buffer_mm": 0.25,
         "brush_mm": 0.125,
         "min_area_mm2": 0.02,
+        # How strongly the province as imported is drawn over the edited one,
+        # as a percentage. A ghost rather than a layer: enough to see where
+        # the coast has moved, not so much that it hides what it is over.
+        "original_opacity": 40,
     },
     "thin": {
         # The narrowest land worth printing, in printed millimetres. Land below

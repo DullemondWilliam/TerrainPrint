@@ -18,7 +18,8 @@
   "island_editor": {
     "brush_mm": 0.125,
     "buffer_mm": 0.25,
-    "min_area_mm2": 0.02
+    "min_area_mm2": 0.02,
+    "original_opacity": 40
   },
   "paths": {
     "provinces_in": "Data/JSon-Provinces-Orig",

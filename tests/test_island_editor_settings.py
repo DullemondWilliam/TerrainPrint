@@ -66,6 +66,7 @@ class TestEachBoxIsKept:
         ("bridges.max_span_mm", "bridge_span_spin", 8.0),
         ("stress.report_above", "stress_spin", 1.25),
         ("print.scale", "scale_spin", 4_000_000),
+        ("island_editor.original_opacity", "opacity_slider", 75),
     ])
     def test_turning_it_is_what_the_next_launch_reads(self, editor, key,
                                                       control, value):
@@ -74,13 +75,22 @@ class TestEachBoxIsKept:
         assert saved(key) == value
 
     def test_the_table_covers_every_entry_in_the_window(self, editor):
-        """A box added to the window and left out of SAVED_SETTINGS would
+        """A control added to the window and left out of SAVED_SETTINGS would
         quietly forget itself, which is the bug this file exists about."""
-        from PySide6.QtWidgets import QAbstractSpinBox
+        from PySide6.QtWidgets import QAbstractSpinBox, QSlider
         named = {id(v): k for k, v in vars(editor).items()}
-        entries = {named[id(w)] for w in editor.findChildren(QAbstractSpinBox)
+        entries = {named[id(w)]
+                   for w in (editor.findChildren(QAbstractSpinBox)
+                             + editor.findChildren(QSlider))
                    if id(w) in named}
         assert entries == {control for _, control in M.SAVED_SETTINGS}
+
+    def test_a_percentage_stays_a_whole_number(self, editor):
+        """A QSlider refuses a float outright, so 40.0 from the config would
+        be a crash on the next launch rather than a lost preference."""
+        editor.opacity_slider.setValue(75)
+        editor._write_settings()
+        assert isinstance(saved("island_editor.original_opacity"), int)
 
     def test_the_print_scale_stays_a_whole_number(self, editor):
         """It is 1:N, and a JSON float would read back as 1:8000000.0."""
@@ -161,6 +171,7 @@ class TestTheKeysAreTheOnesTheWindowStartsFrom:
     itself. Each entry's default is built from the key it saves to."""
 
     @pytest.mark.parametrize("key, constant, position", [
+        ("island_editor.original_opacity", "ORIGINAL_OPACITY", 2),
         ("island_editor.buffer_mm", "BUFFER_MM", 2),
         ("island_editor.brush_mm", "BRUSH_MM", 2),
         ("island_editor.min_area_mm2", "AREA_MM2", 2),
