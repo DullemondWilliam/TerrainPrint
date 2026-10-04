@@ -148,6 +148,9 @@ DEFAULTS = {
         # Where the province pipeline reads and writes, relative to the repo.
         "provinces_in": "Data/JSon-Provinces-Orig",
         "provinces_out": "Data/JSonProvinces-Cleaned",
+        # Where UI_border_editor saves provinces once their shared borders are
+        # cleaned, with the ledger of which borders are done.
+        "provinces_bordered": "Data/JSonProvinces-Bordered",
     },
     "island_editor": {
         # Printed sizes, converted to ground units through print.scale at the

@@ -28,6 +28,7 @@
     "original_opacity": 40
   },
   "paths": {
+    "provinces_bordered": "Data/JSonProvinces-Bordered",
     "provinces_in": "Data/JSon-Provinces-Orig",
     "provinces_out": "Data/JSonProvinces-Cleaned"
   },

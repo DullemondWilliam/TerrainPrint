@@ -66,9 +66,11 @@ flowchart TD
 ├── UI_island_editor.py                # Interactive per-file island editor (start here)
 ├── UI_terrain_editor.py               # National DEM → province STL, the whole pipeline
 ├── UI_province_viewer.py              # Every province at once, at print size
+├── UI_border_editor.py                # Clean every shared border, tracking which are done
 ├── harnesses/                         # One throwaway visual harness per lib (UI_*.py)
 ├── docs/USING_DEMTO3D.md              # DEM -> STL is now done in QGIS (DEMto3D plugin)
 ├── lib/                               # Library modules (imported as lib.LIB_*)
+│   ├── LIB_border_ledger.py           # Find shared borders; record which are cleaned
 │   ├── LIB_border_connectors.py       # Border lobes / solid extrusion / province notching
 │   ├── LIB_border_regions.py          # Province vs. state border region construction
 │   ├── LIB_border_simplification.py   # Topology-aware border simplification
@@ -177,6 +179,31 @@ py -3 UI_clip_geotiff.py dem.tif dummy.geojson dummy.tif --info   # inspect meta
 ```
 
 ---
+
+### 5. Border Editor (`UI_border_editor.py`)
+
+Cleans the border every pair of neighbouring provinces shares, one at a time,
+and keeps track of which are done.
+
+```powershell
+py -3 UI_border_editor.py
+```
+
+**Borders page:** *Import Folder …* / *Import Files …* loads the provinces and
+finds every shared seam. Borders are listed as **Not cleaned** or **Cleaned**,
+and drawn red or green on the map. Click two neighbouring provinces (or a border
+in a list) and press *Edit Border →* (or double-click the border).
+
+**Edit Border page:** the Shared Border editor (`harnesses/UI_shared_border.py`)
+with the same parameters and before/after panels. *Apply and Mark Cleaned*
+writes both provinces into the save folder (default
+`Data/JSonProvinces-Bordered`, under their own file names) and records the
+border in `border_ledger.json` there; *← Borders* goes back without saving.
+
+When a province already has a copy in the save folder, that copy is loaded
+instead, so earlier work carries on. A border counts as cleaned only while the
+files still carry the seam that was recorded, so a re-exported province puts
+its borders back on the Not cleaned list, marked "changed since cleaned".
 
 ## Recommended Workflow
 
