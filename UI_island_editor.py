@@ -101,6 +101,14 @@ Workflow
    spin box, which takes the keystrokes it would accept as input before any
    shortcut sees them, so typing a value cannot set off an edit.
 
+**The settings are kept.** Every box in the window -- the buffer, the brush,
+the two area and width thresholds, the bridge width and span, the severity
+floor and the print scale -- is written back to ``project_config.local.json``
+as it is turned, so the next launch starts where the last one left off.  The
+gitignored half of the config, because these are what this desk works at; the
+tracked file keeps the project's shipped numbers.  Three of the keys are read
+by other tools as well, which ``SAVED_SETTINGS`` sets out.
+
 Everything is sized **as it will print**. An editable **Print scale**
 (1:8 000 000 to start) sits under the map, bottom right, with a read-only
 **km/mm** readout beside it, and the three editing parameters — *Buffer*, *Min area*, *Brush* —
@@ -147,7 +155,7 @@ from matplotlib.figure import Figure
 from shapely.geometry import MultiPolygon, Point
 from shapely.ops import unary_union
 
-from PySide6.QtCore import QEvent, QObject, QThread, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QThread, QTimer, Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut, QUndoCommand, QUndoStack
 from PySide6.QtWidgets import (QApplication, QDoubleSpinBox, QFileDialog,
                                QFrame, QGridLayout, QGroupBox, QHBoxLayout,
@@ -167,7 +175,7 @@ from lib.LIB_lake_removal import remove_lakes
 from lib.LIB_map_scale import (grouped as _grouped, km_per_mm as _km_per_mm_at,
                                scale_bars, to_km2 as _to_km2_at,
                                to_km as _to_km_at, to_mm as _to_mm_at)
-from lib.LIB_project_config import get as cfg
+from lib.LIB_project_config import get as cfg, update_local
 from lib.LIB_shape_scores import (ScoreParams, land_mm2, outline_mm,
                                   score_shapes)
 from lib.LIB_stress_points import StressParams, restress, stress_points
@@ -322,6 +330,46 @@ STRESS_SEVERITY = (0.0, 20.0, cfg("stress.report_above"), 2, 0.25)
 #: and framing it tightly would show nothing but the throat, where what makes it
 #: a neck is the land either side.
 STRESS_ZOOM_MM = 16.0
+
+#: Which entry keeps its value, and under which configuration key.
+#:
+#: Every one of these is a **setting** rather than a property of the file open
+#: at the time: what the printer can hold, how wide a causeway you build, what
+#: reduction you work at.  They were read from the config at launch and thrown
+#: away on exit, so a brush width dialled in on Monday was gone by Tuesday.
+#: Now the window writes each one back as it is turned.
+#:
+#: Written to ``project_config.local.json``, the gitignored half, because this
+#: is what *this desk* works at -- the tracked file stays the project's shipped
+#: numbers and a reviewable diff.  ``harnesses/UI_stress_points.py`` saves its
+#: own settings the same way and to the same place.
+#:
+#: Three of these keys are read by more than this window, which is the point of
+#: their being in a shared config and is worth knowing before turning them:
+#: ``thin.width_mm`` is also the province viewer's *Show thin*; ``stress.
+#: report_above`` is that window's *Min severity* floor (this one measures at
+#: zero whatever the box says, so saving it moves the viewer's default and not
+#: this window's answer); and ``bridges.width_mm`` is also the width
+#: ``LIB_stress_points`` calibrates severity against -- "what one bridge of
+#: this width is reckoned to hold" -- so building wider bridges does move every
+#: severity figure, by the same model that put the number there.
+SAVED_SETTINGS = (
+    ("island_editor.buffer_mm", "buffer_spin"),
+    ("island_editor.brush_mm", "brush_spin"),
+    ("island_editor.min_area_mm2", "area_spin"),
+    ("thin.width_mm", "width_spin"),
+    ("bridges.width_mm", "bridge_width_spin"),
+    ("bridges.max_span_mm", "bridge_span_spin"),
+    ("stress.report_above", "stress_spin"),
+    ("print.scale", "scale_spin"),
+)
+
+#: How long after the last turn of a box the settings are written, in ms.
+#: A spin box emits a value per step, so holding an arrow key down walks
+#: through a dozen of them; coalescing means one file write for the gesture
+#: rather than one per value, and the pause is short enough that the window
+#: has always saved by the time a hand reaches the next control.
+SETTINGS_WRITE_MS = 500
 
 #: Scale-bar geometry, in fractions of the axes. The bars sit in the bottom-left
 #: corner — the km bar above the mm one — and each aims to span ``SCALE_SPAN`` of
@@ -588,6 +636,13 @@ class IslandEditor(QMainWindow):
         self._thin = None
         self._thin_doc = None
         self._thin_key = None
+        #: Settings turned but not yet written, and the timer that writes
+        #: them. See SAVED_SETTINGS.
+        self._pending_settings: dict = {}
+        self._settings_timer = QTimer(self)
+        self._settings_timer.setSingleShot(True)
+        self._settings_timer.setInterval(SETTINGS_WRITE_MS)
+        self._settings_timer.timeout.connect(self._write_settings)
 
         central = QWidget()
         root = QVBoxLayout(central)
@@ -1151,6 +1206,14 @@ class IslandEditor(QMainWindow):
                       self.bridge_width_spin, self.bridge_span_spin,
                       self.brush_spin, self.scale_spin, self.perkm_box):
             entry.installEventFilter(self)
+
+        # -- …and the settings that outlive the window ------------------------
+        # Wired last, so that nothing set while the window was being built --
+        # a spin box taking its default, a control wired to another -- is
+        # mistaken for a value somebody chose.
+        for key, control in SAVED_SETTINGS:
+            getattr(self, control).valueChanged.connect(
+                lambda value, key=key: self._remember(key, value))
 
         # -- and a key for every other button --------------------------------
         self._wire_shortcuts()
@@ -2909,8 +2972,30 @@ class IslandEditor(QMainWindow):
         bits.append(f"{below} below {thr:g} mm²")
         self.status.setText(f"{prefix}{', '.join(bits)}.")
 
+    # -- settings ----------------------------------------------------------
+    def _remember(self, key: str, value) -> None:
+        """Note a setting to be written, and restart the clock on writing it.
+
+        Noted rather than written: see ``SETTINGS_WRITE_MS``.
+        """
+        self._pending_settings[key] = (int(value) if key == "print.scale"
+                                       else float(value))
+        self._settings_timer.start()
+
+    def _write_settings(self) -> None:
+        """Write what has been turned since the last write, and forget it.
+
+        ``update_local`` merges one key at a time into the local file, so this
+        cannot clobber a setting another window saved, nor the screen
+        calibration that lives in the same file.  It swallows its own write
+        errors: a read-only config costs the preference, never the session.
+        """
+        pending, self._pending_settings = self._pending_settings, {}
+        for key, value in pending.items():
+            update_local(key, value)
+
     def closeEvent(self, event) -> None:
-        """Let a measurement or a plan finish before the window goes.
+        """Let a measurement finish, and the settings land, before the window goes.
 
         Both workers are parented to this window, so closing it while one runs
         destroys the thread under the code in it -- a crash on the way out
@@ -2919,6 +3004,10 @@ class IslandEditor(QMainWindow):
         """
         self._end_stress()
         self._end_planning()
+        # A box turned in the last half second has not been written yet, and
+        # the window is going: the timer will never fire.
+        self._settings_timer.stop()
+        self._write_settings()
         super().closeEvent(event)
 
     def _update_title(self) -> None:
