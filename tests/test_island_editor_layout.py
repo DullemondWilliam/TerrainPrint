@@ -85,6 +85,26 @@ def under_the_map(editor):
     raise AssertionError("the navigation tools are in no row of the window")
 
 
+def holds(group, widget) -> bool:
+    """Whether ``group`` holds ``widget``, however many rows deep.
+
+    A group of one row holds its controls directly; one of two (Scores, Stress)
+    holds a row that holds them. The question is the same either way, so the
+    walk is recursive rather than the layout being flattened to suit the test.
+    """
+    def walk(layout):
+        for i in range(layout.count()):
+            item = layout.itemAt(i)
+            if item.widget() is widget:
+                return True
+            nested = item.layout()
+            if nested is not None and walk(nested):
+                return True
+        return False
+
+    return walk(group.layout())
+
+
 def row_layout(editor, widget):
     """The row that holds ``widget``, for reading its order left to right."""
     grid = head(editor)
@@ -112,6 +132,15 @@ class TestTheThreeRows:
     def test_the_scoreboard_runs_down_the_right_of_all_three(self, editor):
         assert cell(editor, editor.grp_scores) == (0, 1, 3, 1)
 
+    def test_the_stress_layer_sits_in_that_same_column(self, editor):
+        """The two standing measurements of the document, stacked: what the
+        editing has cost, and what the printer will make of the result."""
+        assert cell(editor, editor.grp_stress) == (0, 1, 3, 1)
+
+    def test_the_scoreboard_comes_first_in_it(self, editor):
+        column = row_layout(editor, editor.grp_scores)
+        assert column.indexOf(editor.grp_scores) < column.indexOf(editor.grp_stress)
+
     def test_the_controls_take_the_slack_and_the_scoreboard_does_not(self, editor):
         """So the panel keeps the width it needs and no more."""
         assert head(editor).columnStretch(0) > head(editor).columnStretch(1)
@@ -137,6 +166,7 @@ class TestTheGroups:
         "grp_bridges": "Bridge Merge",
         "grp_freehand": "Freehand",
         "grp_scores": "Scores",
+        "grp_stress": "Stress",
     }
 
     @pytest.mark.parametrize("name, title", sorted(TITLES.items()))
@@ -151,11 +181,11 @@ class TestTheGroups:
         ("grp_expansion", ["buffer_spin", "btn_gap", "btn_merge"]),
         ("grp_bridges", ["bridge_width_spin", "bridge_span_spin", "btn_bridge"]),
         ("grp_freehand", ["btn_draw", "btn_erase", "brush_spin"]),
+        ("grp_stress", ["btn_stress", "stress_spin", "btn_worst_neck"]),
     ])
     def test_each_group_holds_its_own(self, editor, group, members):
-        box_layout = getattr(editor, group).layout()
-        assert [m for m in members
-                if box_layout.indexOf(getattr(editor, m)) < 0] == []
+        box = getattr(editor, group)
+        assert [m for m in members if not holds(box, getattr(editor, m))] == []
 
     def test_remove_sits_with_the_selection_not_with_the_merge(self, editor):
         """It is the end of the clicking gesture, and the one edit owning no

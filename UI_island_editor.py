@@ -45,10 +45,39 @@ Workflow
    are arithmetic and follow every edit; the third rasterises both versions at
    a quarter of the nozzle width and sits behind **Recalculate**, because
    running it on every brush stroke would make the editor feel slow.
-5. **Save GeoJSON …** — write the province back out, CRS preserved.
-6. **Keyboard** — every button carries a shortcut, named at the foot of its
+5. **Stress** (under the scoreboard) — the other standing measurement: will
+   what is left survive being printed and handled?  **Show** marks every neck
+   that is *holding land up*, coloured on the **severity** ramp, where **1.0
+   means the neck is exactly as wide as its load wants** — so the colour says
+   sound, marginal or at risk rather than merely more or less.  This is not
+   *Min width* in another colour: width is a property of a place, stress is a
+   property of a place and everything it holds up, and Nova Scotia has 338
+   patches under a millimetre of which exactly one is load-bearing.
+   **Min severity** filters what is drawn without re-measuring anything (zero
+   by default, so a sound neck is never mistaken for one the measurement
+   missed), and **Worst neck** frames the one most likely to break — a 0.2 mm
+   throat being a third of a pixel at province extent.
+
+   **The layer stays live.**  After every edit, undo and redo, the necks the
+   change could reach are measured again off the UI thread — the raster is kept,
+   so only the tiles the edit touched are redone, which on Nunavut is one tile
+   of 675.  At 1:8 000 000 a full run is about a second on Nova Scotia and
+   fifteen on Nunavut, and a re-check a fifth of that, with the map panning and
+   zooming throughout.  That is what makes this the window where the loop
+   closes: the province viewer can only tell you a neck is at risk, where here
+   you widen it with *Bridge* or the brush and watch the severity come down.
+   The marks are cleared the moment the document changes rather than left to go
+   stale, because a mark over a coastline that has moved reads as a verdict on
+   the one now underneath it.
+
+   What counts as a neck comes from the shared config, so this window, the
+   province viewer and ``harnesses/UI_stress_points.py`` cannot drift into
+   disagreeing about the same coast.
+6. **Save GeoJSON …** — write the province back out, CRS preserved.
+7. **Keyboard** — every button carries a shortcut, named at the foot of its
    tooltip. Ctrl+O / Ctrl+S open and save; Ctrl+A, Ctrl+Shift+A and Ctrl+I work
-   the selection; F5 recalculates the scores; Home, Alt+Left / Alt+Right and
+   the selection; F5 recalculates the scores and F6 shows the stress, with W
+   for its worst neck; Home, Alt+Left / Alt+Right and
    P / Z move the *view*; and each edit takes the initial of the word that
    tells it apart — G, M, B, S, A, L, D, E — with Delete for *Remove*.
    The keys hang on the buttons, so a key is live exactly when its button is:
@@ -79,6 +108,7 @@ result so a merge leaves the merged landmass selected.
 Run with:  python UI_island_editor.py
 
 Reuses ``lib.LIB_shape_scores``, ``lib.LIB_thin_features``,
+``lib.LIB_stress_points``,
 ``lib.LIB_island_merging``,
 ``lib.LIB_island_bridges``,
 ``lib.LIB_island_bridging``, ``lib.LIB_island_erasing``,
@@ -89,12 +119,14 @@ main ``app`` window like the other UI_* harnesses.
 import logging
 import math
 import sys
+import time
 from pathlib import Path
 
 import geopandas as gpd
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.backends.backend_qtagg import \
     NavigationToolbar2QT as NavigationToolbar
+from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.figure import Figure
 from shapely.geometry import MultiPolygon, Point
 from shapely.ops import unary_union
@@ -122,6 +154,7 @@ from lib.LIB_map_scale import (grouped as _grouped, km_per_mm as _km_per_mm_at,
 from lib.LIB_project_config import get as cfg
 from lib.LIB_shape_scores import (ScoreParams, land_mm2, outline_mm,
                                   score_shapes)
+from lib.LIB_stress_points import StressParams, restress, stress_points
 from lib.LIB_thin_features import ThinParams, printable, thin_features
 from lib.LIB_screen_calibration import (MM_PER_INCH, load_saved_ppi,
                                         monitor_at, px_per_mm)
@@ -190,6 +223,56 @@ BRIDGE_SPAN_MM = (0.0, 200.0, cfg("bridges.max_span_mm"), 2, 0.5)
 #: bridge width is a size you build to, this is a limit you measure against.
 #: The province viewer's *Show thin* marks exactly what this value would take.
 MIN_WIDTH_MM = (0.0, 50.0, cfg("thin.width_mm"), 3, 0.05)
+
+#: The severity ramp for the stress layer, and the marks drawn on it. Severity
+#: is a **state** -- sound, marginal, at risk -- rather than a plain magnitude,
+#: so it takes the reserved good-to-critical scale, and the two middle stops sit
+#: either side of the midpoint so that, with the ramp running to twice the
+#: anchor, **severity 1.0 lands on the hue change**: anything warm is a neck
+#: thinner than its load wants.
+#:
+#: Spelled out here because none of these windows should import another for a
+#: colour -- ``UI_province_viewer`` and ``harnesses/UI_stress_points.py`` are the
+#: other two copies, and ``tests/test_island_editor_stress.py`` holds the three
+#: in step.
+SEVERITY_STOPS = ((0.00, "#0ca30c"),      # good
+                  (0.42, "#fab219"),      # warning
+                  (0.58, "#ec835a"),      # serious
+                  (1.00, "#d03b3b"))      # critical
+SEVERITY_CMAP = LinearSegmentedColormap.from_list(
+    "severity", [(at, hex_) for at, hex_ in SEVERITY_STOPS])
+
+#: Where the ramp tops out, as a multiple of the anchor. Clipped on purpose:
+#: Nunavut's worst neck is severity 4.3, and letting one province set the top of
+#: the scale would flatten every other one to the same green.
+STRESS_VMAX = 2.0
+
+#: Ink under every stress mark, so a severity colour stays legible wherever it
+#: lands -- including over an island's own selection orange.
+STRESS_CASING = "#17202A"
+
+#: The ring on a neck that is at risk, in points, and the stroke on a throat
+#: bar. Screen units, because a neck is a *place*: at the zoom a province is
+#: read at, the honest extent of the worst of them is a fraction of a pixel.
+STRESS_MARKER_PT = 9.0
+STRESS_LINEWIDTH = 1.6
+
+#: The smallest severity worth drawing, as ``(lo, hi, default, decimals, step)``.
+#: From the shared config, like the rest of the stress settings, so the floor is
+#: set once for this window, the province viewer and the harness.
+#:
+#: **Zero by default: draw every neck the measurement found.** A floor that
+#: quietly removes the evidence is worse than a busier map -- a sound neck
+#: filtered out is indistinguishable from one the measurement never found, and
+#: in a tool where the next thing you do is cut the coast about, that is the
+#: wrong doubt to leave standing.
+STRESS_SEVERITY = (0.0, 20.0, cfg("stress.report_above"), 2, 0.25)
+
+#: How much of the map to show when framing a neck, in printed millimetres. A
+#: floor rather than a share of the neck: a throat is a fraction of a millimetre
+#: and framing it tightly would show nothing but the throat, where what makes it
+#: a neck is the land either side.
+STRESS_ZOOM_MM = 16.0
 
 #: Scale-bar geometry, in fractions of the axes. The bars sit in the bottom-left
 #: corner — the km bar above the mm one — and each aims to span ``SCALE_SPAN`` of
@@ -332,6 +415,51 @@ class BridgeWorker(QObject):
         self.done.emit(plan, geom)
 
 
+class StressWorker(QObject):
+    """Measures the load-bearing necks off the UI thread.
+
+    Two jobs, not one, because they are different questions: measure this
+    province from scratch, or measure it **again** after an edit, reusing the
+    raster the last answer was worked on.  The second is why the lib hands its
+    grid back, and it is what makes a live layer affordable here.  Measured in
+    this window at 1:8,000,000: a full run is 0.7 s on Nova Scotia and 15 s on
+    Nunavut, where the edit after it re-checks **one tile of 675** and costs
+    3 s -- and the window pans and zooms throughout either.
+
+    ``restress`` is handed the *geometry* rather than a painted raster, so it
+    burns the document onto the cached transform and works out what changed by
+    XOR -- a conservative superset by construction, which is the one thing that
+    must not be got wrong here, since too small an answer is silently wrong.  It
+    falls back to a full run on its own when the grid cannot serve: a different
+    print scale, or land drawn outside the grid's margin.
+
+    **It mutates the grid it is given**, so only one of these may be in flight
+    at a time, and a failed run's grid is thrown away rather than reused.
+    """
+
+    done = Signal(object, float)           # StressReport, seconds
+    failed = Signal(str)
+
+    def __init__(self, geom, params, grid=None):
+        super().__init__()
+        self._geom = geom
+        self._params = params
+        self._grid = grid
+
+    def run(self) -> None:
+        try:
+            started = time.perf_counter()
+            if self._grid is not None:
+                report = restress(self._grid, geom=self._geom,
+                                  params=self._params)
+            else:
+                report = stress_points(self._geom, self._params)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        self.done.emit(report, time.perf_counter() - started)
+
+
 class EditCommand(QUndoCommand):
     """
     One undoable edit: swap the editor's document (and selection) between the
@@ -391,6 +519,18 @@ class IslandEditor(QMainWindow):
         self._scale_key = None             # what those were last laid out for
         self._bridge_thread: QThread | None = None
         self._bridge_worker = None         # the plan in flight, if any
+        self._stress_thread: QThread | None = None
+        self._stress_worker = None         # the measurement in flight, if any
+        #: The last report, or None when the necks would be of a document that
+        #: has since been edited. Cleared rather than kept: a mark left over an
+        #: old coastline is the one failure a layer like this must not have,
+        #: because it reads as a verdict on the coast now underneath it.
+        self._stress = None
+        #: The raster to hand back to ``restress``, kept across edits and
+        #: dropped when the layer goes off -- 51 MB on Nunavut, worth paying
+        #: while the necks are on screen and not a moment longer.
+        self._stress_grid = None
+        self._stress_again = False         # the document moved mid-measurement
 
         central = QWidget()
         root = QVBoxLayout(central)
@@ -688,6 +828,76 @@ class IslandEditor(QMainWindow):
         scores_column.addWidget(self.btn_recalc,
                                 alignment=Qt.AlignmentFlag.AlignRight)
 
+        # -- the stress layer, under the scoreboard ---------------------------
+        # The other standing measurement of the document, so it sits in the same
+        # column: Scores says what the editing has cost against the province as
+        # imported, this says whether what is left will survive being printed
+        # and handled. Neither is a running commentary and neither is an edit,
+        # which is why they are up here together rather than down with the
+        # status line or in among the verbs.
+        #
+        # This is also the window where the loop closes. The province viewer can
+        # only tell you a neck is at risk; here you widen it with Bridge or the
+        # brush and watch the severity come down -- which is why the layer
+        # re-measures itself after every edit rather than going quietly stale.
+        self.stress_spin = self._spin(*STRESS_SEVERITY,
+            "Draw only necks at or above this severity. Severity is the width "
+            "the neck wants over the width it has, so 1.0 is marginal, above "
+            "it the neck is thinner than its load wants, and below it the neck "
+            "is sound.\n\n"
+            "It filters an answer already in hand — nothing is measured again, "
+            "and the status line's count follows it. Zero draws every neck "
+            "found: a floor that hides a sound neck makes it look like the "
+            "measurement missed it.\n\n"
+            "Shared with the province viewer and the Stress Points harness.")
+        self.stress_spin.setPrefix("≥ ")
+        self.stress_spin.valueChanged.connect(self._on_stress_severity)
+        self.btn_stress = self._button("Show", self._toggle_stress,
+                                       enabled=False)
+        self.btn_stress.setCheckable(True)
+        self.btn_stress.setToolTip(
+            "Mark every neck that is holding land up, in the colour of how "
+            "badly. Finds each neck with its own throat width, weighs what "
+            "falls off if it goes, and scores that against what a neck of that "
+            "width can hold — so 1.0 means exactly as wide as its load "
+            "wants.\n\n"
+            "This is not ‘Min width’ in another colour: width is a property of "
+            "a place, stress is a property of a place and everything it holds "
+            "up. Nova Scotia has 338 patches under a millimetre and exactly "
+            "one of them is load-bearing.\n\n"
+            "It stays live while you edit: after each change only the "
+            "necks the edit could reach are measured again. Measured at "
+            "1:8,000,000, a full run is about a second on Nova Scotia and "
+            "fifteen on Nunavut, and the re-check after an edit a fifth of "
+            "that — both off the UI thread, so the map still pans and "
+            "zooms while it thinks.\n\n"
+            "What counts as a neck — the pixel, the ceiling, the band, the "
+            "tile, the smallest area worth holding up — comes from the shared "
+            "config, so it is whatever was last saved from the Stress Points "
+            "harness.")
+        self.btn_worst_neck = self._button("Worst neck", self.zoom_to_worst_neck,
+                                           enabled=False)
+        self.btn_worst_neck.setToolTip(
+            "Go to the neck most likely to break. A 0.2 mm throat is a third "
+            "of a pixel at province extent, so this is the only way to see "
+            "one — and it is where to point a bridge or the brush.")
+        self.grp_stress = QGroupBox("Stress")
+        stress_column = QVBoxLayout(self.grp_stress)
+        stress_column.setContentsMargins(8, 2, 8, 4)
+        stress_column.setSpacing(4)
+        stress_row = QHBoxLayout()
+        stress_row.setContentsMargins(0, 0, 0, 0)
+        stress_row.setSpacing(4)
+        # Two short rows rather than one long one, and the reason is the window
+        # rather than the taste: this column's width is set by the scoreboard
+        # above it, and a third control on that line would push the editor's
+        # minimum width past a 1080p desktop (test_island_editor_layout pins it).
+        for widget in (self.btn_stress, self.stress_spin):
+            stress_row.addWidget(widget)
+        stress_column.addLayout(stress_row)
+        stress_column.addWidget(self.btn_worst_neck,
+                                alignment=Qt.AlignmentFlag.AlignRight)
+
         # -- the three rows, with the scoreboard alongside all of them --------
         # A grid rather than a stack of box layouts: the scoreboard has to span
         # the rows of controls, and only a grid can say that. Column 0 takes all
@@ -700,7 +910,15 @@ class IslandEditor(QMainWindow):
         head.addLayout(top, 0, 0)
         head.addLayout(scope, 1, 0)
         head.addLayout(shaping, 2, 0)
-        head.addWidget(self.grp_scores, 0, 1, 3, 1)
+        # The right-hand column is the measurements, stacked: what the
+        # editing has cost, and what the printer will make of the result.
+        measures = QVBoxLayout()
+        measures.setContentsMargins(0, 0, 0, 0)
+        measures.setSpacing(4)
+        measures.addWidget(self.grp_scores)
+        measures.addWidget(self.grp_stress)
+        measures.addStretch(1)
+        head.addLayout(measures, 0, 1, 3, 1)
         head.setColumnStretch(0, 1)
         root.addLayout(head)
 
@@ -869,6 +1087,13 @@ class IslandEditor(QMainWindow):
                 (self.btn_lakes, "L"),
                 (self.btn_draw, "D"),
                 (self.btn_erase, "E"),
+                # The two measurements take function keys, together: F5 reads
+                # the scores, F6 reads the stress. They are what the window
+                # *reads* rather than changes, and the initial is spoken for
+                # anyway (S is Remove Small). Worst neck takes W, with nothing
+                # to collide with.
+                (self.btn_stress, "F6"),
+                (self.btn_worst_neck, "W"),
         ):
             widget.setShortcut(QKeySequence(sequence))
             self._hint(widget, widget.shortcut())
@@ -1054,6 +1279,15 @@ class IslandEditor(QMainWindow):
             self._update_status("Print scale changed — ")
         else:
             self.canvas.draw_idle()
+        # And every number in a stress report is a printed one too: the throat,
+        # the load and the width the load wants all move with the reduction, so
+        # the necks are no longer the necks of this scale. The raster goes with
+        # them -- the pixel is printed millimetres as well -- which ``restress``
+        # works out for itself and answers with a full run.
+        if self.btn_stress.isChecked():
+            self._stress = None
+            self._stress_grid = None
+            self._measure_stress()
 
     # -- real size ----------------------------------------------------------
     def _screen_calibration(self):
@@ -1201,6 +1435,7 @@ class IslandEditor(QMainWindow):
             if sel:
                 gs.iloc[sorted(sel)].plot(ax=self.ax, facecolor=SELECT_COLOUR,
                                           edgecolor=SELECT_EDGE, linewidth=1.0)
+        self._draw_stress()
         if preserve_view:
             self.ax.set_xlim(xlim)
             self.ax.set_ylim(ylim)
@@ -1464,6 +1699,14 @@ class IslandEditor(QMainWindow):
         self.btn_invert.setEnabled(has)
         self.btn_save.setEnabled(has)
         self.grp_scores.setEnabled(has)
+        self.grp_stress.setEnabled(has)
+        # The toggle stays live through a measurement, unlike the harness's Run
+        # button: this is a layer, and a layer switched off has to go off --
+        # fifteen seconds is a long time to leave it stuck on. Pressing it
+        # cannot start a second run (``_measure_stress`` guards that), and the
+        # answer the one in flight brings back is then thrown away unseen.
+        self.btn_stress.setEnabled(has)
+        self.btn_worst_neck.setEnabled(bool(self._shown_necks()))
         # Live while there is something to measure and the last reading no
         # longer describes it, so the button itself says "this is stale".
         self.btn_recalc.setEnabled(has and not self._scores_fresh())
@@ -1619,7 +1862,11 @@ class IslandEditor(QMainWindow):
         self.progress.setRange(0, 0) if busy else self.progress.setRange(0, 1)
         for widget in (self.grp_selection, self.grp_expansion, self.grp_bridges,
                        self.grp_province, self.grp_freehand, self.btn_import,
-                       self.btn_save, self.btn_undo, self.btn_redo):
+                       self.btn_save, self.btn_undo, self.btn_redo,
+                       # Not because it edits anything, but because the plan is
+                       # about to replace the document the necks would be of --
+                       # and one heavy thread at a time is kinder to the machine.
+                       self.grp_stress):
             widget.setEnabled(not busy)
         if busy:
             if self._brush_mode is not None:
@@ -1848,6 +2095,257 @@ class IslandEditor(QMainWindow):
         return (f"Agree {scores.agreement * 100:8.2f}%  @ {pixel}   "
                 f"+{scores.added_mm2:,.1f} / −{scores.lost_mm2:,.1f} mm²")
 
+    # -- stress ------------------------------------------------------------
+    def _stress_params(self) -> StressParams:
+        """What the necks are measured against, as the controls now read it.
+
+        ``report_above`` is held at zero whatever the spin box says, so that the
+        measurement is of the province and not of the filter: Min severity then
+        decides what is *drawn* from an answer already in hand, and turning it
+        costs nothing.  Everything else -- the pixel, the ceiling, the band, the
+        tile, the smallest lobe worth holding up -- comes from the shared
+        config, so this window, the province viewer and the harness cannot drift
+        into disagreeing about what a neck is.
+        """
+        return StressParams(scale=self.scale_spin.value(), report_above=0.0)
+
+    def _toggle_stress(self, checked: bool) -> None:
+        """Measure the document and mark its necks, or take the marks away."""
+        if checked:
+            self._measure_stress()
+            return
+        self._stress = None
+        self._stress_again = False
+        if self._stress_thread is None:
+            self._stress_grid = None       # 51 MB on Nunavut; see __init__
+        self._redraw(preserve_view=True)
+        self._sync_buttons()
+        self._update_status("Stress layer off — ")
+
+    def _measure_stress(self) -> None:
+        """Ask for the necks of the document as it now stands.
+
+        Called from every state change, and a no-op unless the layer is on --
+        so an edit, an undo and a redo all keep the marks true rather than
+        leaving them describing a coastline that has moved.
+
+        One measurement at a time, because the worker **mutates** the raster it
+        is handed.  An edit landing mid-run is remembered rather than raced: the
+        run in flight is measuring a document that no longer exists, so its
+        answer is dropped and the question asked again with the new one.
+        """
+        if not self.btn_stress.isChecked() or self.doc is None:
+            return
+        if self._stress_thread is not None:
+            self._stress_again = True
+            return
+        reused = self._stress_grid is not None
+        self._stress_thread = QThread(self)
+        self._stress_worker = StressWorker(self.doc, self._stress_params(),
+                                           grid=self._stress_grid)
+        self._stress_worker.moveToThread(self._stress_thread)
+        self._stress_thread.started.connect(self._stress_worker.run)
+        self._stress_worker.done.connect(self._on_stress_done)
+        self._stress_worker.failed.connect(self._on_stress_failed)
+        self._set_measuring(True)
+        self.status.setText(
+            "Re-checking the necks the edit could reach …" if reused else
+            "Measuring the width field and flooding the land …")
+        self._stress_thread.start()
+
+    def _set_measuring(self, busy: bool) -> None:
+        """Show the bar and hold the stress controls while a run is in flight.
+
+        Only those controls: the measurement does not own the document, so
+        editing stays live and an edit made over a running measurement simply
+        asks the question again.  That is the whole reason it is on a thread.
+
+        The bar is shared with the bridge planner, so it is only taken away
+        when nothing else is using it.
+        """
+        if busy or self._bridge_thread is None:
+            self.progress.setVisible(busy)
+            self.progress.setRange(0, 0 if busy else 1)
+        self._sync_buttons()
+
+    def _end_stress(self) -> None:
+        if self._stress_thread is not None:
+            self._stress_thread.quit()
+            self._stress_thread.wait()
+        self._stress_worker = self._stress_thread = None
+        self._set_measuring(False)
+
+    def _on_stress_done(self, report, seconds: float) -> None:
+        self._end_stress()
+        self._stress_grid = report.grid
+        if not self.btn_stress.isChecked():
+            # Switched off while it ran: drop the answer, and the raster with it.
+            self._stress = self._stress_grid = None
+            self._stress_again = False
+            self._sync_buttons()
+            return
+        if self._stress_again:
+            # Measured against a document that has since been edited. The grid
+            # is still worth keeping -- it is now the raster of *that* document,
+            # so the next run splices only what has moved since.
+            self._stress_again = False
+            self._measure_stress()
+            return
+        self._stress = report
+        self._redraw(preserve_view=True)
+        self._sync_buttons()
+        self.status.setText(self._stress_report_line(report, seconds))
+
+    def _on_stress_failed(self, message: str) -> None:
+        """Drop the layer and the raster, and say so.
+
+        A run that threw may have left the raster half spliced, and a
+        half-updated cache is the one thing never to reuse: a stale tile comes
+        back as a confident wrong answer rather than as a failure.  The layer
+        goes off with it, because otherwise the next edit would ask again and
+        raise the same dialog.
+        """
+        self._end_stress()
+        self._stress = self._stress_grid = None
+        self._stress_again = False
+        self.btn_stress.setChecked(False)
+        self._redraw(preserve_view=True)
+        self._sync_buttons()
+        QMessageBox.critical(self, "Stress failed", message)
+        self._update_status("Stress could not be measured — ")
+
+    def _on_stress_severity(self, _value: float) -> None:
+        """A new floor is a new picture of the same measurement: just redraw."""
+        if not self.btn_stress.isChecked():
+            return
+        self._redraw(preserve_view=True)
+        self._sync_buttons()
+        self._update_status()
+
+    def _shown_necks(self) -> list:
+        """The necks the Min severity floor lets through, worst first."""
+        if self._stress is None:
+            return []
+        floor = self.stress_spin.value()
+        return [neck for neck in self._stress.necks if neck.severity >= floor]
+
+    def _draw_stress(self) -> None:
+        """Mark each load-bearing neck, in the colour of how badly it is loaded.
+
+        Three marks, not one, because of the zoom this map is read at.  The
+        shaded blob is the neck's honest extent, and the honest extent of the
+        worst necks is sub-pixel -- Nova Scotia's 0.20 mm throat is a fiftieth
+        of a cell -- so on its own it would say nothing is wrong precisely where
+        something is.  The bar across the throat and the ring on a neck at risk
+        are drawn in screen units, so they survive any zoom, and both carry an
+        ink casing to stay legible over an island's selection orange.
+
+        Colour never carries the meaning alone: the ring says *at risk* by being
+        there at all, and the status line counts them.
+
+        The same three marks, the same ramp and the same anchor as the province
+        viewer, so a neck looks the same in the window that finds it and in the
+        window that fixes it.
+        """
+        if not self.btn_stress.isChecked() or self._stress is None:
+            return
+        for neck in self._shown_necks():
+            colour = SEVERITY_CMAP(min(neck.severity / STRESS_VMAX, 1.0))
+            if neck.region is not None and not neck.region.is_empty:
+                # Outlined, never filled: a filled blob over the island would
+                # read as one more piece of land, which is the one reading this
+                # layer must not have.
+                gpd.GeoSeries([neck.region]).plot(
+                    ax=self.ax, facecolor="none", edgecolor=colour,
+                    linewidth=STRESS_LINEWIDTH, zorder=5)
+            if neck.throat is not None and not neck.throat.is_empty:
+                xs, ys = zip(*neck.throat.coords)
+                self.ax.plot(xs, ys, color=STRESS_CASING,
+                             linewidth=STRESS_LINEWIDTH + 1.4,
+                             solid_capstyle="round", zorder=6)
+                self.ax.plot(xs, ys, color=colour,
+                             linewidth=STRESS_LINEWIDTH,
+                             solid_capstyle="round", zorder=7)
+            if neck.at_risk:
+                self.ax.plot([neck.point.x], [neck.point.y], marker="o",
+                             markersize=STRESS_MARKER_PT,
+                             markerfacecolor="none",
+                             markeredgecolor=STRESS_CASING,
+                             markeredgewidth=3.0, zorder=8)
+                self.ax.plot([neck.point.x], [neck.point.y], marker="o",
+                             markersize=STRESS_MARKER_PT,
+                             markerfacecolor="none", markeredgecolor=colour,
+                             markeredgewidth=1.8, zorder=9)
+
+    def zoom_to_worst_neck(self) -> None:
+        """Take the view to the neck most likely to break."""
+        shown = self._shown_necks()
+        if not shown:
+            self._update_status("No neck above that severity to go to — ")
+            return
+        neck = max(shown, key=lambda n: n.severity)
+        wanted = STRESS_ZOOM_MM * self._stress_params().mpm
+        (x0, x1), (y0, y1) = self.ax.get_xlim(), self.ax.get_ylim()
+        # One factor on both spans, as Real Size does it: the limits matplotlib
+        # holds have already been through apply_aspect, and scaling them
+        # together keeps that agreement where fresh limits fight it.
+        factor = wanted / max(x1 - x0, 1e-9)
+        half_x, half_y = (x1 - x0) * factor / 2.0, (y1 - y0) * factor / 2.0
+        self.ax.set_xlim(neck.point.x - half_x, neck.point.x + half_x)
+        self.ax.set_ylim(neck.point.y - half_y, neck.point.y + half_y)
+        self.canvas.draw_idle()
+        self._update_status(f"At the worst neck: {neck} — ")
+
+    def _stress_report_line(self, report, seconds: float) -> str:
+        """The verdict, and what it cost. Never a bare count.
+
+        The cost is on screen because the incremental path is invisible when it
+        works, and that is exactly when a stale overlay would go unnoticed.  The
+        same line the Stress Points harness prints, for the same reason.
+        """
+        how = ("measured from scratch" if report.rebuilt else
+               f"re-checked {report.tiles_recomputed} of "
+               f"{report.tiles_total} tiles")
+        extra = []
+        if report.repaired:
+            extra.append("geometry repaired first")
+        if report.coarsened:
+            extra.append(f"pixel coarsened to {report.pixel_mm:.3f} mm")
+        hidden = len(report.necks) - len(self._shown_necks())
+        if hidden:
+            extra.append(f"{hidden} below Min severity, not drawn")
+        unsevered = sum(1 for neck in report.necks if not neck.severed)
+        if unsevered:
+            extra.append(f"{unsevered} load(s) are undercounts — the cut did "
+                         "not part the sides")
+        tail = f" ({'; '.join(extra)})" if extra else ""
+        return f"{report.verdict()} — {how} in {seconds:.2f} s{tail}"
+
+    def _stress_fragment(self) -> str:
+        """The status line's stress segment, or empty when the layer is off."""
+        if not self.btn_stress.isChecked():
+            return ""
+        if self._stress_thread is not None:
+            return "necks being measured"
+        report = self._stress
+        if report is None:
+            return "necks not measured yet"
+        if not report.measured:
+            # Never folded into "nothing found": not measured is not sound.
+            return "necks could not be measured"
+        shown = self._shown_necks()
+        if not shown:
+            floor = self.stress_spin.value()
+            return (f"no neck at severity {floor:g} or worse" if floor
+                    else "no load-bearing neck")
+        worst = max(shown, key=lambda neck: neck.severity)
+        risky = [neck for neck in shown if neck.at_risk]
+        count = f"{len(shown)} neck(s)"
+        if risky:
+            count += f", {len(risky)} at risk"
+        return (f"{count}, worst {worst.throat_mm:.2f} mm holding "
+                f"{worst.load_mm2:.0f} mm²")
+
     def _apply(self, text: str, new_doc, ok_msg: str) -> None:
         """Validate an operation's result and push it as one undoable command."""
         if new_doc is None or new_doc.is_empty:
@@ -1884,12 +2382,18 @@ class IslandEditor(QMainWindow):
         self.doc = doc
         self.parts = _polygons(doc)
         self.selected = [i for i in selected if 0 <= i < len(self.parts)]
+        # The necks were measured on the document this one replaces, so they go
+        # before anything is drawn: a mark left over a coastline that has moved
+        # would read as a verdict on the new one. ``_measure_stress`` below asks
+        # again, off the UI thread, and only if the layer is on.
+        self._stress = None
         self._redraw(preserve_view=preserve_view)
         # Before _sync_buttons, which reads the panel's freshness to decide
         # whether Recalculate has anything to offer.
         self._update_scores()
         self._sync_buttons()
         self._update_status()
+        self._measure_stress()
 
     # -- load / save --------------------------------------------------------
     def import_geojson(self) -> None:
@@ -1928,6 +2432,9 @@ class IslandEditor(QMainWindow):
 
         self.source_path = Path(path)
         self.undo_stack.clear()
+        # A raster of the province just closed cannot serve the one being
+        # opened, whatever extent the two happen to share.
+        self._stress_grid = None
         # The baseline every score is measured against, and the only place it
         # is ever set: undo walks the document back through this value, and
         # saving does not move it, so "what have I given up?" stays a question
@@ -2036,7 +2543,22 @@ class IslandEditor(QMainWindow):
         if gap:
             bits.append(gap)
         bits.append(f"{below} below {thr:g} mm²")
+        stress = self._stress_fragment()
+        if stress:
+            bits.append(stress)
         self.status.setText(f"{prefix}{', '.join(bits)}.")
+
+    def closeEvent(self, event) -> None:
+        """Let a measurement or a plan finish before the window goes.
+
+        Both workers are parented to this window, so closing it while one runs
+        destroys the thread under the code in it -- a crash on the way out
+        rather than a cancellation.  Waiting costs at worst the rest of a run,
+        and a stress run is now in flight after every edit.
+        """
+        self._end_stress()
+        self._end_planning()
+        super().closeEvent(event)
 
     def _update_title(self) -> None:
         name = self.source_path.name if self.source_path else "(no file)"
