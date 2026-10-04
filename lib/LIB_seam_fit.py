@@ -70,12 +70,34 @@ province to the other.  It moves only land the stroke covers that *touches*
 the province growing, so it moves the border rather than creating enclaves, and
 it hands land over rather than adding or removing any -- the pair partitions
 exactly the ground it did before, so no gap can open.
+
+:func:`solve_fit` is the same fix made automatically.  Every problem gets two
+candidate repairs, both made of that same hand-over:
+
+* **cut** -- give the offending land to the other province: a locking tab, a
+  thin finger or a narrow patch simply changes hands, and the pocket it sat in
+  is filled;
+* **fill** -- give the holder the other province's land around it: the
+  undercuts beside a locking tab's neck (everything of the other side inside
+  the tab's convex hull), or a collar that widens a thin finger or narrow
+  patch to the required width.
+
+Each candidate is judged by the fit check itself, run on the land around it:
+the one that leaves the fewest problems there wins, the smaller move breaking
+a tie, and one that helps nothing is not made.  Neither may move the border
+further than ``max_move_mm`` from where it ran -- a cut of a deep tab is a big
+change to a real border, and whether that is acceptable is the caller's call,
+not the solver's.  Fixing one problem can expose the next, so it goes round
+again, up to ``max_rounds``; and if the pair as a whole has not come out with
+fewer problems than it went in with, it is handed back untouched.
 """
 
 import logging
 from dataclasses import dataclass, field
 
+from shapely import segmentize
 from shapely.geometry import MultiPolygon, Point, Polygon
+from shapely.affinity import translate
 from shapely.ops import unary_union
 
 from lib.LIB_island_bridging import brush_stroke
@@ -90,9 +112,26 @@ DEFAULT_SCALE = _cfg("print.scale")
 #: this many times further than its neck is wide.
 FINGER_ASPECT = 1.5
 
-#: Bisection steps when measuring a neck or a head. Twenty halvings of a tab a few
-#: millimetres across resolve it to a nanometre of print -- far past mattering.
-_NECK_STEPS = 20
+#: Bisection steps when measuring a neck or a head. Fourteen halvings of a
+#: 10 mm tab resolve it to well under a micrometre of print. It was twenty,
+#: which bought nothing and made the solver -- which measures tabs hundreds
+#: of times -- half as fast again.
+_NECK_STEPS = 14
+
+#: How far past a problem a repair reaches, print-mm. A tab's lid comes out of
+#: the closing a few micrometres short of the seam, so a cut of exactly the
+#: tab left a 5 um sliver across its mouth -- itself a thin finger -- and a
+#: fill left a 5 um wall that kept the tab locked. Far below anything that
+#: prints, far above the arithmetic.
+_SNAP_MM = 0.02
+
+#: The narrowest tab worth calling one, print-mm. A sliver thinner than this
+#: everywhere is not a puzzle piece: it does not print on its own side, and
+#: the slot it would leave in the other closes up, so the two pieces meet as
+#: if the seam ran straight. Without the floor the closing's own arithmetic --
+#: a few micrometres along a straight edge -- turned up 13 mm "fingers" a
+#: fiftieth of a millimetre wide.
+MIN_TAB_HEAD_MM = 0.1
 
 
 @dataclass
@@ -165,6 +204,10 @@ class Tab:
     depth_mm: float
     locks: bool = False
     too_narrow: bool = False
+    #: The line across its mouth, and the centre of its widest disc: between
+    #: them, the way the tab pulls out -- which is what a repair needs.
+    lid: object = field(default=None, repr=False, compare=False)
+    head_point: object = field(default=None, repr=False, compare=False)
 
     @property
     def lock_ratio(self) -> float:
@@ -341,7 +384,7 @@ def _measure_tab(face, side, touch, params):
     if lid.is_empty or lid.length <= 0:
         return None                       # an enclave, not a tab
     head_r, head_centre = _head(face)
-    if head_centre is None:
+    if head_centre is None or 2.0 * head_r / mpm < MIN_TAB_HEAD_MM:
         return None
     neck_r = _neck_radius(face, lid, head_centre, head_r, mpm)
     neck = min(2.0 * neck_r, lid.length)
@@ -350,7 +393,7 @@ def _measure_tab(face, side, touch, params):
 
     tab = Tab(face, side, area, mouth_mm=lid.length / mpm,
               neck_mm=neck / mpm, head_mm=2.0 * head_r / mpm,
-              depth_mm=depth / mpm)
+              depth_mm=depth / mpm, lid=lid, head_point=head_centre)
     tab.locks = tab.head_mm > tab.neck_mm * params.lock_ratio
     # Narrow only matters for a finger -- a tab that reaches further than its
     # neck is wide. A shallow wobble is as deep as it is wide, so its "neck" is
@@ -446,14 +489,29 @@ def push_border(geom_grow, geom_shrink, points, width_mm, scale=DEFAULT_SCALE):
     piece of A.  The pair still partitions the ground it did: what one loses
     the other gains, exactly.
     """
-    unchanged = (geom_grow, geom_shrink)
     stroke = brush_stroke(points, width_mm * scale / 1000.0 / 1000.0)
-    if stroke is None or geom_grow is None or geom_shrink is None:
-        return unchanged
-    if not stroke.intersects(geom_shrink):
+    grown, shrunk, _moved = transfer(stroke, geom_grow, geom_shrink, scale)
+    return grown, shrunk
+
+
+def transfer(region, geom_grow, geom_shrink, scale=DEFAULT_SCALE):
+    """
+    Hand ``geom_shrink``'s land inside ``region`` to ``geom_grow``.
+
+    The one way land changes hands here, for the brush and the solver alike.
+    Only pieces that touch the growing province move -- anything else would be
+    an enclave -- and what one side loses the other gains exactly, so the pair
+    goes on partitioning the same ground.
+
+    Returns ``(grown, shrunk, moved)``; on a no-op, **the same two objects**
+    and None, so a caller can tell by identity.
+    """
+    unchanged = (geom_grow, geom_shrink, None)
+    if region is None or region.is_empty or geom_grow is None \
+            or geom_shrink is None or not region.intersects(geom_shrink):
         return unchanged
     try:
-        taken = stroke.intersection(geom_shrink)
+        taken = region.intersection(geom_shrink)
         # Touching, with a hair of slack: the shared edge is exact in principle
         # but floating-point in practice.
         reach = geom_grow.buffer(scale / 1000.0 * 1e-4)
@@ -464,11 +522,318 @@ def push_border(geom_grow, geom_shrink, points, width_mm, scale=DEFAULT_SCALE):
         grown = unary_union([geom_grow, moved])
         shrunk = geom_shrink.difference(moved)
     except Exception as exc:
-        log.warning("push_border failed: %s", exc)
+        log.warning("transfer failed: %s", exc)
         return unchanged
     if shrunk.is_empty:
         return unchanged                  # never erase a province outright
-    return _as_polygonal(grown), _as_polygonal(shrunk)
+    return _as_polygonal(grown), _as_polygonal(shrunk), moved
+
+
+# ---------------------------------------------------------------------------
+# Solving automatically
+# ---------------------------------------------------------------------------
+
+#: Rounds of repair. Fixing one problem can expose another beside it; four
+#: rounds settles every seam in the country, and a fifth has never helped.
+MAX_ROUNDS = 4
+
+
+@dataclass
+class Fix:
+    """One repair :func:`solve_fit` made, or would have made."""
+    kind: str                       #: "lock", "finger" or "narrow"
+    side: str                       #: whose land the problem was
+    action: str = ""                #: "cut" or "fill"; empty if skipped
+    area_mm2: float = 0.0           #: land that changed hands
+    move_mm: float = 0.0            #: furthest the border moved
+    geometry: object = None         #: where -- the land that moved, or the problem
+    reason: str = ""                #: why it was skipped
+    grows: str = ""                 #: the side that gained the land
+
+
+@dataclass
+class SolveResult:
+    """Result of :func:`solve_fit`."""
+    a: object = None
+    b: object = None
+    fixed: list = field(default_factory=list)       #: Fix, made
+    skipped: list = field(default_factory=list)     #: Fix, not made
+    problems_before: int = 0
+    problems_after: int = 0
+    rounds: int = 0
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.fixed)
+
+    def summary(self) -> str:
+        if not self.problems_before:
+            return "nothing to solve -- the seam meshes cleanly"
+        if not self.fixed:
+            why = f"; {len(self.skipped)} left for a hand" \
+                if self.skipped else ""
+            return f"no repair helped{why}"
+        cuts = sum(f.action == "cut" for f in self.fixed)
+        fills = len(self.fixed) - cuts
+        text = (f"{self.problems_before} → {self.problems_after} problem(s): "
+                f"{cuts} cut, {fills} filled")
+        if self.skipped:
+            text += f", {len(self.skipped)} left for a hand"
+        return text
+
+
+def solve_fit(geom_a, geom_b, params=None, max_move_mm=None,
+              max_rounds=MAX_ROUNDS, progress=None):
+    """
+    Repair what :func:`fit_report` finds, by handing land across the seam.
+
+    Parameters
+    ----------
+    geom_a, geom_b : the pair, in the working metre CRS.
+    params         : FitParams, as for :func:`fit_report`.
+    max_move_mm    : the furthest any repair may move the border from where it
+                     ran *before solving*, print-mm.  Defaults to the config's
+                     ``seam.solve_max_move_mm``.
+    progress       : optional ``progress(round, done, total)``, called as each
+                     problem is looked at -- Labrador has eighty.
+
+    Returns
+    -------
+    SolveResult -- with ``a`` and ``b`` the very same objects passed in when
+    nothing was changed.
+    """
+    params = params or FitParams.from_config()
+    if max_move_mm is None:
+        max_move_mm = _cfg("seam.solve_max_move_mm")
+    result = SolveResult(a=geom_a, b=geom_b)
+    report = fit_report(geom_a, geom_b, params=params)
+    result.problems_before = result.problems_after = report.problems
+    if not report.problems:
+        return result
+    # Moves are measured from the border as it ran before any of them, so
+    # four rounds of small moves cannot walk it further than one may go.
+    origin = _shared_seam(geom_a, geom_b)
+
+    a, b = geom_a, geom_b
+    skipped = {}
+    for round_no in range(1, max_rounds + 1):
+        result.rounds = round_no
+        corridor = _Corridor(a, b, params)
+        touched = []                       # land moved this round
+        made = 0
+        problems = _problems(report)
+        for done, problem in enumerate(problems):
+            if progress is not None:
+                progress(round_no, done, len(problems))
+            geom = problem[2]
+            # Measured on the pair as it was at the start of the round: a
+            # problem next to land already moved is stale, and is looked at
+            # again next round on the pair as it now is.
+            if any(geom.intersects(t) for t in touched):
+                continue
+            fix = _best_fix(corridor, problem, params, max_move_mm, origin)
+            if fix.action:
+                a, b = _apply(a, b, fix, params)
+                corridor.apply(fix)
+                touched.append(fix.geometry)
+                result.fixed.append(fix)
+                skipped.pop(_where(geom), None)
+                made += 1
+            else:
+                skipped[_where(geom)] = fix
+        report = fit_report(a, b, params=params)
+        if not made or not report.problems:
+            break
+
+    result.problems_after = report.problems
+    if result.problems_after >= result.problems_before:
+        # No better overall: hand back the pair untouched rather than a set of
+        # moves that traded one problem for another.
+        result.a, result.b = geom_a, geom_b
+        for fix in result.fixed:
+            fix.action, fix.reason = "", "made things no better overall"
+        result.skipped = list(skipped.values()) + result.fixed
+        result.fixed = []
+        result.problems_after = result.problems_before
+        return result
+    result.a, result.b = a, b
+    # Only what is still wrong counts as skipped.
+    still = {_where(problem[2]) for problem in _problems(report)}
+    result.skipped = [f for key, f in skipped.items() if key in still]
+    return result
+
+
+class _Corridor:
+    """
+    Both provinces clipped to a strip along the seam, for trying repairs on.
+
+    Every candidate repair is judged by running the fit check around it, and
+    clipping the whole of Québec to a small window for each one was most of a
+    fifty-second solve. Clipping once a round to the strip every repair lies
+    in, then clipping the strip, costs a fraction of that. Repairs that are
+    made are applied here as well as to the real pair, so the strip stays
+    true for the rest of the round.
+    """
+
+    def __init__(self, a, b, params):
+        seam = _shared_seam(a, b)
+        reach = (params.tab_mm * 3.0 + params.band_mm
+                 + 2.0 * params.required_width_mm) * params.mpm
+        strip = seam.buffer(reach) if seam is not None else None
+        self.a = _as_polygonal(a.intersection(strip)) if strip else a
+        self.b = _as_polygonal(b.intersection(strip)) if strip else b
+
+    def pair(self, grow_side, grown, shrunk):
+        return (grown, shrunk) if grow_side == "a" else (shrunk, grown)
+
+    def sides(self, grow_side):
+        return (self.a, self.b) if grow_side == "a" else (self.b, self.a)
+
+    def apply(self, fix):
+        grow, shrink = self.sides(fix.grows)
+        grown, shrunk, _ = transfer(fix.geometry, grow, shrink)
+        self.a, self.b = self.pair(fix.grows, grown, shrunk)
+
+
+def _problems(report):
+    """Every problem as ``(kind, side, geometry, tab)``, worst kinds first;
+    ``tab`` is None for narrow land."""
+    out = [("lock", t.side, t.geometry, t) for t in report.locking]
+    out += [("finger", t.side, t.geometry, t) for t in report.tabs
+            if t.too_narrow and not t.locks]
+    out += [("narrow", p.side, p.geometry, None)
+            for p in sorted(report.narrow, key=lambda p: -p.area_mm2)]
+    return out
+
+
+def _where(geom):
+    """A key for a problem's place, stable across rounds to within a metre."""
+    point = geom.representative_point()
+    return round(point.x), round(point.y)
+
+
+def _best_fix(corridor, problem, params, max_move_mm, origin):
+    """Try a cut and a fill; keep the one the fit check likes better."""
+    kind, side, geom, tab = problem
+    mpm = params.mpm
+    width = params.required_width_mm * mpm
+    focus = geom.buffer(width)
+    baseline = _local_problems(corridor.a, corridor.b, focus, params)
+    # Only a tab's lid falls short of the seam; narrow land has no lid, and
+    # snapping it only cut fresh notches beside it.
+    snapped = (geom.buffer(_SNAP_MM * mpm, join_style="mitre")
+               if tab is not None else geom)
+    tried = []
+    for action, region, grow_side in (
+            ("cut", snapped, "b" if side == "a" else "a"),
+            ("fill", _fill_region(kind, snapped, tab, params), side)):
+        grow, shrink = corridor.sides(grow_side)
+        grown, shrunk, moved = transfer(region, grow, shrink, params.scale)
+        if moved is None:
+            continue
+        move = _move_mm(moved, origin, mpm)
+        if move > max_move_mm:
+            tried.append((None, action, move, moved, grow_side))
+            continue
+        new_a, new_b = corridor.pair(grow_side, grown, shrunk)
+        left = _local_problems(new_a, new_b, focus.union(moved.buffer(width)),
+                               params)
+        tried.append((left, action, move, moved, grow_side))
+
+    usable = [t for t in tried if t[0] is not None and t[0] < baseline]
+    if not usable:
+        too_far = [t for t in tried if t[0] is None]
+        if tried and len(too_far) == len(tried):
+            reason = (f"every repair moves the border "
+                      f"{min(t[2] for t in too_far):.1f} mm or more")
+        else:
+            reason = "no repair made it better"
+        return Fix(kind, side, geometry=geom, reason=reason)
+    left, action, move, moved, grow_side = min(
+        usable, key=lambda t: (t[0], t[3].area))
+    return Fix(kind, side, action=action, area_mm2=moved.area / mpm ** 2,
+               move_mm=move, geometry=moved, grows=grow_side)
+
+
+def _apply(a, b, fix, params):
+    grow, shrink = (a, b) if fix.grows == "a" else (b, a)
+    grown, shrunk, _ = transfer(fix.geometry, grow, shrink, params.scale)
+    return (grown, shrunk) if fix.grows == "a" else (shrunk, grown)
+
+
+def _fill_region(kind, geom, tab, params):
+    """The region a fill would take from the other province."""
+    if kind == "lock":
+        # The undercuts: everything of the other side the tab would sweep
+        # through if it were pulled straight out through its mouth. With them
+        # gone the tab is nowhere wider than its way out, and lifts free.
+        #
+        # Not the tab's convex hull, which was tried first: on a mushroom the
+        # hull runs diagonally from the neck to the corners of the head, so
+        # the mouth stays as narrow as it was and the tab still locks. The
+        # hull of the tab and a copy of it moved back past its own mouth does
+        # cover the corners.
+        return _swept(geom, tab, params)
+    # A thin finger or patch: a collar wide enough to bring it to the
+    # required width, measured from its own middle.
+    # A thin finger or patch: a collar wide enough to bring it to the
+    # required width, measured from its own middle.
+    return geom.buffer(params.required_width_mm * params.mpm / 2.0,
+                       join_style="mitre")
+
+
+def _swept(geom, tab, params):
+    """The tab and everything it passes through on its way out of the pocket."""
+    if tab is None or tab.lid is None or tab.head_point is None:
+        return geom.convex_hull
+    out = tab.lid.centroid
+    dx, dy = out.x - tab.head_point.x, out.y - tab.head_point.y
+    length = (dx * dx + dy * dy) ** 0.5
+    if length <= 0:
+        return geom.convex_hull
+    reach = tab.depth_mm * params.mpm + _SNAP_MM * params.mpm
+    shifted = translate(geom, dx / length * reach, dy / length * reach)
+    return unary_union([geom, shifted]).convex_hull
+
+
+def _move_mm(moved, origin, mpm):
+    """
+    How far from the original seam the moved land reaches, print-mm.
+
+    Measured along the land's edges at a tenth of a millimetre, not only at
+    its vertices: a fill's far edge is a straight hull line between two seam
+    vertices, so every vertex sits on the seam and the vertices alone report
+    a move of nothing however far the middle of that line runs.
+    """
+    if origin is None or moved is None:
+        return 0.0
+    far = 0.0
+    for part in _polygon_parts(moved):
+        ring = segmentize(part.exterior, 0.1 * mpm)
+        for coord in ring.coords:
+            far = max(far, origin.distance(_pt(coord)))
+    return far / mpm
+
+
+def _local_problems(a, b, focus, params):
+    """
+    How many problems the fit check finds around ``focus``.
+
+    Run on the corridor clipped again to a window about the problem. The clip
+    is a cut across both provinces a window's distance away, where it makes
+    nothing narrow that was not; and only problems touching the focus count.
+    """
+    # Room for the closing to see the whole pocket around the focus: its
+    # radius is half the largest tab, so three quarters of it is enough.
+    window = focus.buffer(params.tab_mm * params.mpm * 0.75)
+    try:
+        local_a = _as_polygonal(a.intersection(window))
+        local_b = _as_polygonal(b.intersection(window))
+    except Exception:
+        return float("inf")
+    report = fit_report(local_a, local_b, params=params)
+    return sum(1 for problem in _problems(report)
+               if problem[2].intersects(focus))
 
 
 # ---------------------------------------------------------------------------

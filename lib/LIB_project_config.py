@@ -141,6 +141,10 @@ DEFAULTS = {
         "lock_ratio": 1.05,
         # The Border Editor's push brush, measured across the stroke.
         "brush_mm": 2.0,
+        # The furthest the Border Editor's Auto Solve may move a border to fix
+        # a tab or a narrow patch. Twice the simplifier's drift cap: a repair
+        # is a deliberate move, not noise being smoothed away.
+        "solve_max_move_mm": 3.0,
     },
     "borders": {
         # Defining the borders between provinces, in printed millimetres

@@ -348,7 +348,7 @@ class TestPushBrush:
         assert page.push(ACROSS_THE_TAB)
         assert page.fit_before.locking == []
         assert len(page._undo) == 1
-        assert "1 push" in page.heading.text()
+        assert "1 edit" in page.heading.text()
         assert page.btn_undo.isEnabled()
         after = page.geom_a.union(page.geom_b)
         assert before.symmetric_difference(after).area / MM ** 2 < 1e-6
@@ -457,7 +457,7 @@ class TestUndoRedo:
         page.undo_push()
         page.undo_push()
         assert (page.geom_a, page.geom_b) == states[1]
-        assert "1 push" in page.heading.text()
+        assert "1 edit" in page.heading.text()
         page.redo_push()
         assert (page.geom_a, page.geom_b) == states[2]
         page.undo_push()
@@ -578,3 +578,140 @@ class TestUndoRedoKeys:
                        Qt.KeyboardModifier.ControlModifier)
         assert page.brush_spin.value() == pytest.approx(3.0)
         assert (page.geom_a, page.geom_b) == before
+
+
+class TestBoxes:
+    """Each page is grouped into titled boxes."""
+
+    def test_edit_page_sections(self, tmp_path):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        titles = {box.title() for box in page.findChildren(U.QGroupBox)}
+        assert titles >= {"Border", "Simplify", "Fit check", "Auto solve",
+                          "Push border"}
+
+    def test_harness_controls_live_in_their_boxes(self, tmp_path):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        assert page.border_box.isAncestorOf(page.btn_back)
+        assert page.border_box.isAncestorOf(page.btn_save)
+        for widget in (page.tol_spin, page.drift_spin, page.btn_run,
+                       page.btn_zoom):
+            assert page.simplify_box.isAncestorOf(widget)
+        assert page.fit_box.isAncestorOf(page.btn_worst)
+        assert page.solve_box.isAncestorOf(page.btn_solve)
+        assert page.push_box.isAncestorOf(page.btn_redo)
+
+    def test_borders_page_sections(self, tmp_path):
+        window = _window(tmp_path)
+        titles = {box.title() for box in window.findChildren(U.QGroupBox)}
+        assert {"Provinces", "Save to", "Map", "Selected border"} <= titles
+        assert window.map_box.isAncestorOf(window.canvas)
+
+
+def _solve_now(page):
+    """Run Auto Solve synchronously, as the worker would."""
+    base = ((page.result.a, page.result.b) if page.result is not None
+            else (page.geom_a, page.geom_b))
+    page._set_busy(True)
+    result = U.solve_fit(*base, page.fit_params(), page.move_spin.value())
+    page._on_solved(result)
+    return result
+
+
+class TestAutoSolve:
+
+    def test_solve_is_offered_once_there_is_a_seam(self, tmp_path):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        assert page.btn_solve.isEnabled()
+
+    def test_frees_the_locking_tab_as_one_undo_step(self, tmp_path):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        original = (page.geom_a, page.geom_b)
+        result = _solve_now(page)
+        assert result.changed
+        assert page.fit_before.locking == []
+        assert len(page._undo) == 1
+        assert "1 edit" in page.heading.text()
+        assert "→ 0 problem" in page.solve_label.text()
+        page.undo_push()
+        assert (page.geom_a, page.geom_b) == original
+        assert len(page.fit_before.locking) == 1
+        page.redo_push()
+        assert page.fit_before.locking == []
+
+    def test_what_moved_is_outlined_until_the_next_edit(self, tmp_path):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        _solve_now(page)
+        assert page._solve_marks
+        assert _fills(page.ax_before, U.SOLVED_COLOUR)
+        page.undo_push()
+        assert page._solve_marks == []
+        assert not _fills(page.ax_before, U.SOLVED_COLOUR)
+
+    def test_max_move_holds_it_back(self, tmp_path):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        page.move_spin.setValue(0.25)
+        original = (page.geom_a, page.geom_b)
+        result = _solve_now(page)
+        assert not result.changed
+        assert (page.geom_a, page.geom_b) == original
+        assert page._undo == []
+        assert "left for a hand" in page.solve_label.text()
+
+    def test_max_move_is_saved(self, tmp_path):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        page.move_spin.setValue(1.75)
+        assert U.cfg("seam.solve_max_move_mm") == pytest.approx(1.75)
+
+    def test_solves_the_simplified_pair_when_there_is_one(self, tmp_path,
+                                                          monkeypatch):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        page._on_done(simplify_shared_border(page.geom_a, page.geom_b,
+                                             page._params()))
+        seen = []
+        real = U.solve_fit
+        monkeypatch.setattr(U, "solve_fit",
+                            lambda a, b, *r, **k: seen.append((a, b))
+                            or real(a, b, *r, **k))
+        runs = []
+        monkeypatch.setattr(page, "run", lambda: runs.append(1))
+        simplified = (page.result.a, page.result.b)
+        _solve_now(page)
+        assert seen == [simplified]
+        assert runs == [1]                    # and it is simplified again
+
+    def test_locked_while_busy(self, tmp_path):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        page._set_busy(True)
+        assert not page.btn_solve.isEnabled()
+        assert not page.move_spin.isEnabled()
+        page.solve()                          # refused, no thread started
+        assert page._solve_thread is None
+        page._set_busy(False)
+        assert page.btn_solve.isEnabled()
+
+    def test_runs_on_a_worker_thread(self, tmp_path, qtbot):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        page.solve()
+        assert page._solve_thread is not None
+        assert not page.btn_solve.isEnabled()
+        qtbot.waitUntil(lambda: page._solve_thread is None, timeout=30000)
+        assert page.fit_before.locking == []
+        assert page.btn_solve.isEnabled()
+
+    def test_a_failure_is_reported_not_raised(self, tmp_path):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        page._set_busy(True)
+        page._on_solve_failed("boom")
+        assert "boom" in page.solve_label.text()
+        assert page.btn_solve.isEnabled()

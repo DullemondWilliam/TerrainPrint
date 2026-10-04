@@ -35,9 +35,10 @@ differences:
   records the border as cleaned, and returns to the list.
 * **← Borders** goes back without saving.
 
-and two rows of its own:
+Its controls are grouped in boxes: **Border** (back, the pair, Apply),
+**Simplify** (the harness's settings and Simplify Seam), and three of its own:
 
-* **Fit** -- where the printed pieces will not mesh (``lib.LIB_seam_fit``),
+* **Fit check** -- where the printed pieces will not mesh (``lib.LIB_seam_fit``),
   marked on both panels: narrow land at the seam in red, fingers too thin to
   survive in amber, and tabs whose head is wider than their neck -- which lock
   the pieces together, so they only go in from above and shrinkage piles up
@@ -46,14 +47,21 @@ and two rows of its own:
   widest tab head looked for.  The settings are saved as they are turned, and
   the list judges every border by them.  **Zoom to Worst Fit** frames the
   worst one.
+* **Auto solve** -- **Solve Tabs** repairs what the fit check found, on a
+  worker thread.  Each problem is either cut off (its land goes to the other
+  province) or filled round (the other province's undercuts, or a collar to
+  bring thin land up to width), whichever leaves fewer problems; nothing moves
+  the border further than **Max move** from where it ran, and what cannot be
+  fixed within that is left for the brush.  It works on the simplified pair if
+  there is one, outlines the land it moved in green, and is one undo step.
 * **Push border** -- a brush that moves the border.  **Grow <A>** hands the
   land under the stroke from B to A; **Grow <B>** the other way.  Only land
   touching the province growing moves, so it moves the border rather than
   making enclaves, and the pair still covers exactly the ground it did.  It
   edits the pair as imported; if the seam had been simplified, that is run
   again on the edited pair.  **Undo** (Ctrl+Z) and **Redo** (Ctrl+Shift+Z or
-  Ctrl+Y) step through the pushes; the history lasts until another border is
-  opened.  Esc leaves the brush.
+  Ctrl+Y) step through the pushes and solves; the history lasts until another
+  border is opened.  Esc leaves the brush.
 
 What "cleaned" means
 --------------------
@@ -85,7 +93,7 @@ from matplotlib.figure import Figure
 from shapely.geometry import Point
 from shapely.ops import unary_union
 
-from PySide6.QtCore import QEvent, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, QThread, Signal
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QCheckBox, QDoubleSpinBox,
                                QFileDialog, QGroupBox, QHBoxLayout, QLabel,
@@ -97,7 +105,7 @@ from harnesses.UI_shared_border import SharedBorderTester
 from lib.LIB_border_ledger import LEDGER_NAME, BorderLedger, find_borders
 from lib.LIB_project_config import get as cfg
 from lib.LIB_project_config import update_local
-from lib.LIB_seam_fit import FitParams, fit_report, push_border
+from lib.LIB_seam_fit import FitParams, fit_report, push_border, solve_fit
 
 GEOJSON_FILTER = "GeoJSON (*.geojson *.json);;All files (*)"
 GEOJSON_GLOBS = ("*.geojson", "*.json")
@@ -129,6 +137,9 @@ CLICK_SLOP_PX = 5
 NARROW_COLOUR = "#C0392B"
 LOCK_COLOUR = "#8E44AD"
 FINGER_COLOUR = "#E67E22"
+
+#: Land Auto Solve moved, outlined on the left panel until the next edit.
+SOLVED_COLOUR = "#1E8449"
 
 #: The two push modes: grow province A into B, or B into A.
 GROW_A, GROW_B = "a", "b"
@@ -219,6 +230,54 @@ def write_province(geometry, source_crs, out: Path) -> Path:
     return out
 
 
+class SolveWorker(QObject):
+    """Runs Auto Solve off the UI thread: Labrador/Québec takes ten seconds."""
+    done = Signal(object)                  # SolveResult
+    failed = Signal(str)
+    progress = Signal(int, int, int)       # round, done, total
+
+    def __init__(self, geom_a, geom_b, params, max_move_mm):
+        super().__init__()
+        self._a, self._b = geom_a, geom_b
+        self._params = params
+        self._max_move = max_move_mm
+
+    def run(self) -> None:
+        try:
+            result = solve_fit(self._a, self._b, self._params, self._max_move,
+                               progress=self.progress.emit)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        self.done.emit(result)
+
+
+def _box(title: str, *rows) -> QGroupBox:
+    """A titled box holding ``rows`` -- layouts or widgets -- one under another."""
+    box = QGroupBox(title)
+    column = QVBoxLayout(box)
+    column.setContentsMargins(8, 4, 8, 6)
+    for row in rows:
+        if isinstance(row, QWidget):
+            column.addWidget(row)
+        else:
+            column.addLayout(row)
+    return box
+
+
+def _widgets_of(layout) -> list:
+    """The widgets in a layout, in order, leaving its spacers behind."""
+    items = (layout.itemAt(i) for i in range(layout.count()))
+    return [item.widget() for item in items if item.widget() is not None]
+
+
+def _note_label(text: str = "") -> QLabel:
+    label = QLabel(text)
+    label.setStyleSheet("color:#555;")
+    label.setWordWrap(True)
+    return label
+
+
 class SeamPage(SharedBorderTester):
     """
     The second screen: the Shared Border editor, fed a pair rather than files.
@@ -227,15 +286,20 @@ class SeamPage(SharedBorderTester):
     the threaded run, the linked panels -- and stays so as the harness changes.
     The ends are different: the pair arrives from the list, and Save Both
     becomes Apply, which hands the result back instead of asking for a folder.
-    And two rows are added under the harness's own:
+    The harness's two rows are regrouped into **Border** and **Simplify**
+    boxes, and three of this page's own sit under them:
 
-    * **Fit** -- marks, on both panels, where the printed pieces will not mesh
-      (``lib.LIB_seam_fit``): narrow land at the seam, fingers too thin to
-      survive, and tabs that lock.
-    * **Push** -- a brush that moves the border by hand, handing the land it
-      covers from one province to the other. It edits the pair as imported
-      (the left panel); if the seam had been simplified, the simplification is
-      run again on the edited pair, so the right panel stays live.
+    * **Fit check** -- marks, on both panels, where the printed pieces will
+      not mesh (``lib.LIB_seam_fit``): narrow land at the seam, fingers too
+      thin to survive, and tabs that lock.
+    * **Auto solve** -- repairs what the fit check found, by handing land
+      across the seam, no further than *Max move* from where it ran.
+    * **Push border** -- a brush that moves the border by hand.
+
+    Pushes and solves edit the pair as imported (the left panel), and are
+    steps on the same undo history; if the seam had been simplified, the
+    simplification is run again on the edited pair, so the right panel stays
+    live.
     """
     back_requested = Signal()
     applied = Signal(object)              # SeamResult
@@ -264,10 +328,6 @@ class SeamPage(SharedBorderTester):
         self.btn_back.clicked.connect(self.back_requested.emit)
         self.heading = QLabel("")
         self.heading.setStyleSheet("font-weight:bold;")
-        root = self.centralWidget().layout()
-        toolbar = root.itemAt(0).layout()
-        toolbar.insertWidget(0, self.btn_back)
-        toolbar.insertWidget(1, self.heading)
 
         self.province_a = None
         self.province_b = None
@@ -280,10 +340,11 @@ class SeamPage(SharedBorderTester):
         self._stroke = None               #: points of an in-progress stroke
         self._stroke_ax = None
         self._preview = None
+        self._solve_thread = None
+        self._solve_worker = None
+        self._solve_marks: list = []      #: land the last solve moved
 
-        # Under the harness's two rows, above the map: index 2 is its toolbar.
-        root.insertLayout(2, self._build_fit_row())
-        root.insertLayout(3, self._build_push_row())
+        self._regroup()
 
         self.canvas.mpl_connect("button_press_event", self._on_press)
         self.canvas.mpl_connect("motion_notify_event", self._on_motion)
@@ -298,7 +359,8 @@ class SeamPage(SharedBorderTester):
         # …and keep the number boxes from swallowing them (see eventFilter).
         for entry in (self.tol_spin, self.seg_spin, self.angle_spin,
                       self.smooth_spin, self.nozzle_spin, self.drift_spin,
-                      self.brush_spin, *self.fit_spins.values()):
+                      self.brush_spin, self.move_spin,
+                      *self.fit_spins.values()):
             entry.installEventFilter(self)
         self._sync_fit_label()
 
@@ -337,7 +399,47 @@ class SeamPage(SharedBorderTester):
         return super().eventFilter(obj, event)
 
     # -- building ---------------------------------------------------------
-    def _build_fit_row(self) -> QHBoxLayout:
+    def _regroup(self) -> None:
+        """
+        The harness's two loose rows, and this page's three, as titled boxes.
+
+        The harness lays its toolbar and parameters out as bare rows; they are
+        taken out of its layout and their widgets moved into boxes, rather than
+        the harness being changed, so it stays the standalone tool it is.
+        """
+        root = self.centralWidget().layout()
+        toolbar = root.takeAt(0).layout()
+        params = root.takeAt(0).layout()
+        param_widgets = _widgets_of(params)
+        del toolbar                       # its widgets are re-homed below
+
+        border_row = QHBoxLayout()
+        for widget in (self.btn_back, self.heading):
+            border_row.addWidget(widget)
+        border_row.addStretch(1)
+        border_row.addWidget(self.btn_save)
+
+        simplify_row = QHBoxLayout()
+        for widget in param_widgets:
+            simplify_row.addWidget(widget)
+        simplify_row.addStretch(1)
+        simplify_row.addWidget(self.btn_run)
+        simplify_row.addWidget(self.btn_zoom)
+
+        self.border_box = _box("Border", border_row)
+        self.simplify_box = _box("Simplify", simplify_row)
+        self.fit_box = self._build_fit_box()
+        self.solve_box = self._build_solve_box()
+        self.push_box = self._build_push_box()
+        checks = QHBoxLayout()
+        checks.addWidget(self.fit_box, stretch=3)
+        checks.addWidget(self.solve_box, stretch=2)
+        root.insertWidget(0, self.border_box)
+        root.insertWidget(1, self.simplify_box)
+        root.insertLayout(2, checks)
+        root.insertWidget(3, self.push_box)
+
+    def _build_fit_box(self) -> QGroupBox:
         row = QHBoxLayout()
         self.fit_check = QCheckBox("Show fit")
         self.fit_check.setChecked(True)
@@ -367,16 +469,43 @@ class SeamPage(SharedBorderTester):
             "Frame the tightest locking tab, or else the thinnest finger, or "
             "else the largest patch of narrow land.")
         self.btn_worst.clicked.connect(self.zoom_to_worst_fit)
-        row.addWidget(self.btn_worst)
-        self.fit_label = QLabel("")
-        self.fit_label.setStyleSheet("color:#555;")
-        row.addWidget(self.fit_label)
         row.addStretch(1)
-        return row
+        row.addWidget(self.btn_worst)
+        self.fit_label = _note_label()
+        return _box("Fit check", row, self.fit_label)
 
-    def _build_push_row(self) -> QHBoxLayout:
+    def _build_solve_box(self) -> QGroupBox:
         row = QHBoxLayout()
-        row.addWidget(QLabel("Push border:"))
+        self.move_spin = QDoubleSpinBox()
+        self.move_spin.setDecimals(2)
+        self.move_spin.setRange(0.05, 20.0)
+        self.move_spin.setSingleStep(0.25)
+        self.move_spin.setSuffix(" mm")
+        self.move_spin.setValue(float(cfg("seam.solve_max_move_mm")))
+        self.move_spin.setToolTip(
+            "The furthest a repair may move the border from where it ran.\n"
+            "A deep locking tab can only be cut off by moving the border its\n"
+            "full depth; below that it is left for the brush.")
+        self.move_spin.valueChanged.connect(
+            lambda value: update_local("seam.solve_max_move_mm", value))
+        row.addWidget(QLabel("Max move:"))
+        row.addWidget(self.move_spin)
+        row.addStretch(1)
+        self.btn_solve = QPushButton("Solve Tabs")
+        self.btn_solve.setToolTip(
+            "Repair every locking tab, thin finger and patch of narrow land\n"
+            "the fit check finds -- by cutting it off, or by filling round it\n"
+            "-- whichever leaves fewer problems. Works on the simplified pair\n"
+            "if there is one. One step to undo.")
+        self.btn_solve.clicked.connect(self.solve)
+        self.btn_solve.setEnabled(False)
+        row.addWidget(self.btn_solve)
+        self.solve_label = _note_label(
+            "Cuts off or fills round what the fit check marks.")
+        return _box("Auto solve", row, self.solve_label)
+
+    def _build_push_box(self) -> QGroupBox:
+        row = QHBoxLayout()
         self.btn_grow_a = QPushButton("Grow A")
         self.btn_grow_b = QPushButton("Grow B")
         for button, mode in ((self.btn_grow_a, GROW_A),
@@ -405,16 +534,14 @@ class SeamPage(SharedBorderTester):
         self.btn_redo.setToolTip(
             "Put back the push just undone (Ctrl+Shift+Z or Ctrl+Y).")
         self.btn_redo.clicked.connect(self.redo_push)
+        row.addStretch(1)
         for button in (self.btn_undo, self.btn_redo):
             button.setEnabled(False)
             row.addWidget(button)
-        self.push_label = QLabel(
+        self.push_label = _note_label(
             "Drag across the seam to hand land from one province to the "
             "other. Esc leaves the brush.")
-        self.push_label.setStyleSheet("color:#555;")
-        row.addWidget(self.push_label)
-        row.addStretch(1)
-        return row
+        return _box("Push border", row, self.push_label)
 
     # -- the pair -----------------------------------------------------------
     def load_pair(self, province_a: Province, province_b: Province,
@@ -424,6 +551,7 @@ class SeamPage(SharedBorderTester):
         # A history belongs to one pair: undoing into another border's
         # geometry would hand this pair's land to strangers.
         self._undo, self._redo = [], []
+        self._solve_marks = []
         self.province_a, self.province_b = province_a, province_b
         self.geom_a, self.geom_b = province_a.geometry, province_b.geometry
         self.path_a, self.path_b = province_a.path, province_b.path
@@ -449,7 +577,7 @@ class SeamPage(SharedBorderTester):
         if self.province_a is None:
             return
         edits = len(self._undo)
-        edited = f", {edits} push(es) not yet saved" if edits else ""
+        edited = f", {edits} edit(s) not yet saved" if edits else ""
         self.heading.setText(
             f"{self.province_a.label} ⇄ {self.province_b.label} — "
             f"{self._status_word}{edited}")
@@ -468,11 +596,17 @@ class SeamPage(SharedBorderTester):
         super()._set_busy(busy)
         # Leaving mid-run would orphan the worker's result, and pushing would
         # edit the pair out from under it.
-        for widget in (self.btn_back, self.btn_grow_a, self.btn_grow_b):
+        for widget in (self.btn_back, self.btn_grow_a, self.btn_grow_b,
+                       self.move_spin):
             widget.setEnabled(not busy)
         if busy:
             self.set_push_mode(None)
+        self._sync_solve_button()
         self._sync_heading()
+
+    def _sync_solve_button(self) -> None:
+        if hasattr(self, "btn_solve"):            # not yet built on the first call
+            self.btn_solve.setEnabled(not self._busy and self.seam is not None)
 
     # -- fit --------------------------------------------------------------
     def fit_params(self) -> FitParams:
@@ -552,9 +686,12 @@ class SeamPage(SharedBorderTester):
         super()._draw_before()
         self._ensure_fits()
         self._draw_fit(self.ax_before, self.fit_before)
+        for moved in self._solve_marks:
+            self._fill(self.ax_before, moved, SOLVED_COLOUR, alpha=0.25,
+                       edge=SOLVED_COLOUR)
         if self._undo:
             self.ax_before.set_title(
-                f"As edited — {len(self._undo)} push(es), seam "
+                f"As edited — {len(self._undo)} edit(s), seam "
                 f"{self.seam_stats().get('vertices', 0)} vertices", fontsize=11)
         self._sync_fit_label()
         self.canvas.draw_idle()
@@ -570,6 +707,7 @@ class SeamPage(SharedBorderTester):
     def _invalidate(self) -> None:
         super()._invalidate()
         self.fit_after = None
+        self._sync_solve_button()
         if hasattr(self, "fit_label"):          # not yet built on the first call
             self._sync_fit_label()
 
@@ -703,8 +841,10 @@ class SeamPage(SharedBorderTester):
         self.push_label.setText(f"Redone: {note}.")
         self._after_edit()
 
-    def _after_edit(self) -> None:
+    def _after_edit(self, keep_marks: bool = False) -> None:
         """The pair changed: re-find the seam, re-measure, re-simplify."""
+        if not keep_marks:
+            self._solve_marks = []
         had_result = self.result is not None
         self._find_seam()
         self.fit_before = None
@@ -716,12 +856,75 @@ class SeamPage(SharedBorderTester):
         if had_result and self.seam is not None:
             self.run()
 
+    # -- auto solve ---------------------------------------------------------
+    def solve(self) -> None:
+        """
+        Repair what the fit check finds, on a worker thread.
+
+        Works on the simplified pair when there is one -- that is what will be
+        saved, and what the fit check on the right panel is judging -- and on
+        the pair as imported otherwise.
+        """
+        if (self._busy or self._thread is not None
+                or self._solve_thread is not None or self.seam is None):
+            return
+        if self.result is not None:
+            base = (self.result.a, self.result.b)
+        else:
+            base = (self.geom_a, self.geom_b)
+        self._set_busy(True)
+        self.solve_label.setText("Solving …")
+        self._solve_thread = QThread(self)
+        self._solve_worker = SolveWorker(*base, self.fit_params(),
+                                         self.move_spin.value())
+        self._solve_worker.moveToThread(self._solve_thread)
+        self._solve_thread.started.connect(self._solve_worker.run)
+        self._solve_worker.progress.connect(self._on_solve_progress)
+        self._solve_worker.done.connect(self._on_solved)
+        self._solve_worker.failed.connect(self._on_solve_failed)
+        self._solve_thread.start()
+
+    def _on_solve_progress(self, round_no: int, done: int, total: int) -> None:
+        self.progress.setRange(0, max(total, 1))
+        self.progress.setValue(done)
+        self.solve_label.setText(
+            f"Round {round_no}: problem {done + 1} of {total} …")
+
+    def _on_solved(self, result) -> None:
+        self._teardown_solve()
+        self._set_busy(False)
+        self.solve_label.setText(f"{result.summary()[0].upper()}"
+                                 f"{result.summary()[1:]}.")
+        if not result.changed:
+            return
+        note = f"auto solve, {result.summary()}"
+        self._undo.append((self.geom_a, self.geom_b, note))
+        self._redo = []
+        self.geom_a, self.geom_b = result.a, result.b
+        self._solve_marks = [fix.geometry for fix in result.fixed]
+        self.push_label.setText(
+            f"Auto solve moved land in {len(result.fixed)} place(s), outlined "
+            "in green. Ctrl+Z takes it all back.")
+        self._after_edit(keep_marks=True)
+
+    def _on_solve_failed(self, message: str) -> None:
+        self._teardown_solve()
+        self._set_busy(False)
+        self.solve_label.setText(f"Solve failed: {message}")
+
+    def _teardown_solve(self) -> None:
+        if self._solve_thread is not None:
+            self._solve_thread.quit()
+            self._solve_thread.wait()
+        self._solve_thread = None
+        self._solve_worker = None
+
 
 class BorderEditor(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.resize(1300, 780)
+        self.resize(1350, 900)
 
         # -- state ----------------------------------------------------------
         self.provinces: dict = {}           #: name -> Province
@@ -767,12 +970,14 @@ class BorderEditor(QMainWindow):
             "Where cleaned provinces are written, and where the record of "
             "which borders are cleaned is kept.")
         self.btn_save_dir.clicked.connect(self.choose_save_dir)
+        provinces_row = QHBoxLayout()
         for widget in (self.btn_folder, self.btn_files, self.btn_clear):
-            toolbar.addWidget(widget)
-        toolbar.addStretch(1)
-        toolbar.addWidget(QLabel("Save to:"))
-        toolbar.addWidget(self.save_label)
-        toolbar.addWidget(self.btn_save_dir)
+            provinces_row.addWidget(widget)
+        save_row = QHBoxLayout()
+        save_row.addWidget(self.save_label, stretch=1)
+        save_row.addWidget(self.btn_save_dir)
+        toolbar.addWidget(_box("Provinces", provinces_row))
+        toolbar.addWidget(_box("Save to", save_row), stretch=1)
         root.addLayout(toolbar)
 
         body = QHBoxLayout()
@@ -788,7 +993,9 @@ class BorderEditor(QMainWindow):
         self.canvas.mpl_connect("button_release_event", self._on_release)
         map_box.addWidget(self.mpl_toolbar)
         map_box.addWidget(self.canvas, stretch=1)
-        body.addLayout(map_box, stretch=1)
+        self.map_box = QGroupBox("Map")
+        self.map_box.setLayout(map_box)
+        body.addWidget(self.map_box, stretch=1)
 
         side = QVBoxLayout()
         self.list_todo = QListWidget()
@@ -804,12 +1011,12 @@ class BorderEditor(QMainWindow):
             side.addWidget(box, stretch=1)
         self.selection_label = QLabel()
         self.selection_label.setWordWrap(True)
-        side.addWidget(self.selection_label)
         self.btn_edit = QPushButton("Edit Border →")
         self.btn_edit.setToolTip(
             "Open the border the two selected provinces share.")
         self.btn_edit.clicked.connect(self.open_editor)
-        side.addWidget(self.btn_edit)
+        side.addWidget(_box("Selected border", self.selection_label,
+                            self.btn_edit))
         side_widget = QWidget()
         side_widget.setLayout(side)
         side_widget.setFixedWidth(340)
@@ -1228,6 +1435,7 @@ class BorderEditor(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self.seam_page._teardown_thread()
+        self.seam_page._teardown_solve()
         super().closeEvent(event)
 
 

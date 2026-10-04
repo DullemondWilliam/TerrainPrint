@@ -50,6 +50,7 @@
     "min_segment_mm": 0.4,
     "nozzle_mm": 0.4,
     "smooth_iterations": 0,
+    "solve_max_move_mm": 3.0,
     "spike_angle_deg": 20.0,
     "tolerance_mm": 0.2
   },

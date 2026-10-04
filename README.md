@@ -71,7 +71,7 @@ flowchart TD
 ├── docs/USING_DEMTO3D.md              # DEM -> STL is now done in QGIS (DEMto3D plugin)
 ├── lib/                               # Library modules (imported as lib.LIB_*)
 │   ├── LIB_border_ledger.py           # Find shared borders; record which are cleaned
-│   ├── LIB_seam_fit.py                # Where printed pieces will not mesh; push a border
+│   ├── LIB_seam_fit.py                # Where printed pieces will not mesh; push or solve
 │   ├── LIB_border_connectors.py       # Border lobes / solid extrusion / province notching
 │   ├── LIB_border_regions.py          # Province vs. state border region construction
 │   ├── LIB_border_simplification.py   # Topology-aware border simplification
@@ -218,10 +218,20 @@ mesh, and the Edit Border page marks the faults on both panels:
 *Edge loss* is what each printed edge loses per side (over-extrusion,
 elephant's foot, clearance; default 0.2 mm). Measure it once on your printer.
 
+**Auto solve:** *Solve Tabs* repairs what the fit check marks, either by
+cutting the offending land off (it goes to the other province) or by filling
+round it (the other province's undercuts beside a locking tab, or a collar
+that brings thin land up to width), whichever leaves fewer problems. It never
+moves the border further than *Max move* (default 3 mm) from where it ran, and
+leaves anything that would need more for the brush. Moved land is outlined in
+green, and the whole solve is one undo step. On Labrador/Québec, simplified,
+it takes 33 problems to 6 in about 12 s.
+
 **Push border:** *Grow A* / *Grow B* turn the map into a brush that hands the
 land under the stroke to that province, so a locking tab or thin finger can be
 pushed back by hand. *Undo* (Ctrl+Z) and *Redo* (Ctrl+Shift+Z or Ctrl+Y)
-step through the pushes until another border is opened; Esc leaves the brush.
+step through the pushes and solves until another border is opened; Esc leaves
+the brush.
 
 ## Recommended Workflow
 

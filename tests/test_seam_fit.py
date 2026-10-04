@@ -10,7 +10,7 @@ Run with:  python -m pytest tests/test_seam_fit.py -v
 import pytest
 from shapely.geometry import Polygon, box
 
-from lib.LIB_seam_fit import (FitParams, fit_report, push_border)
+from lib.LIB_seam_fit import FitParams, fit_report, push_border, solve_fit
 
 SCALE = 8_000_000.0
 MM = SCALE / 1000.0                    # one print-mm, in metres
@@ -185,3 +185,93 @@ class TestPushBorder:
         grown_east, shrunk_west = push_border(east, west, stroke, 12.0, SCALE)
         report = fit_report(shrunk_west, grown_east, params=_params())
         assert report.locking == []
+
+
+class TestSolveFit:
+    """The auto-solver: repairs by handing land over, never by opening gaps."""
+
+    @staticmethod
+    def _partition_kept(a0, b0, res):
+        before = a0.union(b0)
+        after = res.a.union(res.b)
+        assert before.symmetric_difference(after).area / MM ** 2 < 1e-6
+        assert res.a.intersection(res.b).area / MM ** 2 < 1e-6
+
+    def test_frees_a_locking_mushroom_by_filling_its_undercuts(self):
+        a, b = _pair(MUSHROOM)
+        res = solve_fit(a, b, _params(), max_move_mm=3.0)
+        assert res.problems_before == 1 and res.problems_after == 0
+        assert [(f.kind, f.action, f.grows) for f in res.fixed] == \
+            [("lock", "fill", "a")]
+        # The two undercuts beside the 2 mm neck: 2 x 2 and 2 x 6 mm.
+        assert res.fixed[0].area_mm2 == pytest.approx(16.0, rel=0.1)
+        assert fit_report(res.a, res.b, params=_params()).locking == []
+        self._partition_kept(a, b, res)
+
+    def test_cuts_a_thin_finger_off(self):
+        a, b = _pair(FINGER)
+        res = solve_fit(a, b, _params(), max_move_mm=3.0)
+        assert res.problems_after == 0
+        assert res.fixed and res.fixed[0].kind == "finger"
+        self._partition_kept(a, b, res)
+
+    def test_a_clean_seam_is_handed_back_untouched(self):
+        a, b = _pair(STRAIGHT)
+        res = solve_fit(a, b, _params())
+        assert res.a is a and res.b is b
+        assert not res.changed
+        assert "meshes cleanly" in res.summary()
+
+    def test_never_moves_the_border_further_than_allowed(self):
+        a, b = _pair(MUSHROOM)
+        res = solve_fit(a, b, _params(), max_move_mm=0.5)
+        assert not res.changed
+        assert res.a is a and res.b is b
+        assert len(res.skipped) == 1
+        assert "mm or more" in res.skipped[0].reason
+        assert "left for a hand" in res.summary()
+
+    def test_every_move_made_is_within_the_cap(self):
+        a, b = _pair(MUSHROOM)
+        res = solve_fit(a, b, _params(), max_move_mm=1.2)
+        assert all(f.move_mm <= 1.2 for f in res.fixed)
+
+    def test_reports_progress(self):
+        a, b = _pair(MUSHROOM)
+        calls = []
+        solve_fit(a, b, _params(), max_move_mm=3.0,
+                  progress=lambda *args: calls.append(args))
+        assert calls and calls[0] == (1, 0, 1)
+
+    def test_move_is_measured_along_edges_not_only_at_vertices(self):
+        """A triangle with both base corners on the seam and its apex 2 mm out
+        is a 2 mm move -- and a long thin one with no vertex out there at all
+        must still read as one."""
+        from shapely.geometry import LineString
+        from lib.LIB_seam_fit import _move_mm
+        seam = LineString([(O, O), (O + 10 * MM, O)])
+        # A box hanging off the seam, 2 mm deep, drawn with its far side as a
+        # single edge between two corners.
+        moved = box(O + 2 * MM, O, O + 8 * MM, O + 2 * MM)
+        assert _move_mm(moved, seam, MM) == pytest.approx(2.0, abs=0.01)
+        # The same depth reached only in the middle of an edge.
+        bow = Polygon([(O, O), (O + 10 * MM, O), (O + 10 * MM, O + 1e-3),
+                       (O, O + 4 * MM)])
+        assert _move_mm(bow, seam, MM) == pytest.approx(4.0, abs=0.01)
+
+
+class TestTransfer:
+
+    def test_moves_only_land_touching_the_growing_side(self):
+        from lib.LIB_seam_fit import transfer
+        west, east = _pair(STRAIGHT)
+        region = box(O + 30 * MM, O + 10 * MM, O + 32 * MM, O + 12 * MM)
+        grown, shrunk, moved = transfer(region, west, east, SCALE)
+        assert grown is west and shrunk is east and moved is None
+
+    def test_slivers_thinner_than_a_tenth_of_a_mm_are_not_tabs(self):
+        """A 0.02 mm sliver neither prints nor stops the pieces meeting."""
+        sliver = [(20, 0), (20, 10), (24, 10), (24, 10.02), (20, 10.02),
+                  (20, 40)]
+        report = fit_report(*_pair(sliver), params=_params())
+        assert not any(t.head_mm < 0.1 for t in report.tabs)
