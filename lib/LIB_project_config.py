@@ -125,6 +125,25 @@ DEFAULTS = {
         # where it really runs.
         "max_deviation_mm": 1.5,
     },
+    "borders": {
+        # Defining the borders between provinces, in printed millimetres
+        # (converted through print.scale where a lib wants metres). Read by the
+        # terrain editor's Borders stage.
+        # Douglas-Peucker tolerance for arcs one region holds alone -- coasts and
+        # frontiers with nothing printed beyond them. 0.3 mm is the 2.4 km the
+        # main app shipped with.
+        "coast_tol_mm": 0.3,
+        # The same for arcs two regions share. Looser than the coast (0.5 mm,
+        # the app's 4.0 km): a shared seam is hidden under the border bar, so
+        # its detail is never seen. Seam clean-up (seam.min_segment_mm,
+        # seam.min_angle_deg) runs over these arcs after this pass.
+        "internal_tol_mm": 0.5,
+        # Total corridor width carved between regions; the border bar is this
+        # wide. 2 mm is 16 km at 1:8,000,000.
+        "width_mm": 2.0,
+        # Gap between dovetail keys along the corridor.
+        "lobe_spacing_mm": 14.0,
+    },
     "paths": {
         # Where the province pipeline reads and writes, relative to the repo.
         "provinces_in": "Data/JSon-Provinces-Orig",

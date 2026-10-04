@@ -282,6 +282,16 @@ class TestTwoStageInvalidation:
         assert window.stl_result is None
         assert window.result is crop
 
+    def test_a_second_crop_after_a_change_does_not_crash(self, tmp_path):
+        """A changed setting clears the after panel; the colorbar on it must
+        go first, or the next crop's redraw dies inside matplotlib."""
+        window = _loaded(tmp_path)
+        _run_clip(window)
+        window.buf_spin.setValue(100.0)
+        _run_clip(window)
+        assert window._colorbar is not None
+        assert len(window.figure.axes) == 3       # two panels + one colorbar
+
     def test_busy_restores_both_stages_preconditions(self, tmp_path):
         window = _loaded(tmp_path, target_crs=DEM_CRS)
         _run_clip(window)

@@ -9,8 +9,11 @@ provinces, and prints them:
 3. **STL** — the province terrain solids, pocketed, and the border bar, split
    to the bed.
 
-> **Status: plan.** Nothing below is built. Lib behaviour quoted here is read
-> from the source; numbers marked *unmeasured* still need a run on `Data/`.
+> **Status: built.** `UI_terrain_editor` implements this plan, with the three
+> decisions taken as recommended: grow the editor (1), seam clean-up inside the
+> topology lib (2, option c), tolerances in print-mm (4). Decision 3, the
+> connector-aware split, is still open. §8 records where the build differed
+> from the plan, and what the real data showed.
 
 ---
 
@@ -264,3 +267,60 @@ them).
    test first, then add the assembly view.
 8. **Decisions 2 and 3.** The arc conditioner and the split keep-out, as lib
    changes with lib tests.
+
+---
+
+## 8. What the build changed
+
+Measured on all 13 provinces and territories as targets, with the 14 US states
+in `Data/` as surrounding, at the shipped defaults.
+
+**Timings.** Defining the borders took 3.0 s, for 106,762 → 16,024 vertices
+and 296 connectors. The border bar took 0.9 s, giving 586 x 509 mm in 21 bed
+pieces. Crop plus a pocketed solid took 0.8 s for New Brunswick (5 pockets),
+2.3 s for Alberta (30), and 5.2 s for Québec (35, 595k triangles). Every solid
+was watertight.
+
+**One button, not three.** The plan gave §4.1 to §4.3 a button each, so a
+cheap preview of one step would not re-run the others. Measured, nothing is
+expensive enough to need that, so **Define Borders** runs all three passes and
+any change on the Borders tab stales the whole definition.
+
+**Simplification can make two provinces overlap, and does.** The topology keeps
+a shared arc identical for both sides. It does not stop that arc crossing a
+*different* arc once it has been straightened: 3.44 mm² of Northwest
+Territories/Nunavut, where the seam runs through the archipelago, and 0.82 mm²
+of Newfoundland and Labrador/Québec. The internal tolerance causes it (0.0017
+mm² at internal 0), and so does the coastal tolerance set to 0, so seam
+clean-up is not the cause. `define_borders` now hands each overlap back to
+whichever province held more of it before simplification, so the corridor is
+carved from disjoint provinces. The report gives the area handed back.
+
+**`notch_province` broke watertightness on real terrain.** It used
+`trimesh.boolean.difference`, and trimesh 4.0 has no manifold3d engine. The
+pocketed New Brunswick and Newfoundland solids came back open. The lib now cuts
+the pockets in manifold3d, which is the rule `LIB_terrain_trim` already
+follows. The same cut removes the same volume (40 mm³ on New Brunswick, 172
+mm³ on Newfoundland) and stays closed. A fixture DEM never showed the fault, so
+the regression is recorded here, and the editor's tests check what the pockets
+remove rather than only that they cut.
+
+**A second crop crashed the editor, before any of this.** Clearing the after
+panel orphaned its colourbar, and the next redraw died in `colorbar.remove()`.
+That happened whenever you cropped, changed any raster setting, and cropped
+again. Switching provinces makes that sequence routine, so the fix
+(`_drop_colorbar`) shipped with this work.
+
+**The plain bar uses `build_border_mesh` with no lobes**, not
+`build_border_stl`. The plan named the latter for a bar without connectors.
+`build_border_mesh` gives the bar the same known local origin either way, and
+the Assembly view needs that origin.
+
+**FR-3.11 is reported, not enforced.** With the Canada bar split to a 256 mm
+bed, 5 of the 296 connectors are cut by a split, and the status line says so.
+Decision 3 (a `keepout` in `LIB_border_split`) is what removes them.
+
+**What a province with no seam gets.** Prince Edward Island touches nothing
+and gets no corridor. Nova Scotia's only seam, with New Brunswick, is shorter
+than the 14 mm lobe spacing, so it gets a corridor but no connectors. Both are
+correct, and the second is worth knowing before printing Nova Scotia.

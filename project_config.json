@@ -1,4 +1,10 @@
 {
+  "borders": {
+    "coast_tol_mm": 0.3,
+    "internal_tol_mm": 0.5,
+    "lobe_spacing_mm": 14.0,
+    "width_mm": 2.0
+  },
   "bridges": {
     "anchor_penalty_mm": 2.0,
     "angle_penalty_mm": 2.0,
