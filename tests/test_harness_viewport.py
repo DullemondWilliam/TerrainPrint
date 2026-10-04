@@ -29,7 +29,8 @@ putting ``sharex`` back.
 import matplotlib
 import pytest
 
-from harnesses import UI_border_regions, UI_border_stl, UI_dovetail_fitter
+from harnesses import UI_border_regions, UI_border_stl, UI_butterfly_keys
+from harnesses import UI_dovetail_fitter
 from harnesses import UI_island_bridges, UI_island_merge, UI_island_removal
 from harnesses import UI_lake_removal, UI_shared_border, UI_terrain_stl
 from harnesses import UI_terrain_trim
@@ -43,6 +44,7 @@ pytestmark = pytest.mark.usefixtures("qapp")
 HARNESSES = [
     (UI_border_regions, "BorderRegionsTester"),
     (UI_border_stl, "BorderStlTester"),
+    (UI_butterfly_keys, "ButterflyKeysTester"),
     (UI_dovetail_fitter, "DovetailFitterTester"),
     (UI_island_bridges, "IslandBridgesTester"),
     (UI_island_merge, "IslandMergeTester"),
