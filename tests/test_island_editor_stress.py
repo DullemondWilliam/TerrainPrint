@@ -177,6 +177,24 @@ class TestShowingTheLayer:
         assert editor._stress is None
         assert editor._stress_grid is None      # and the raster goes with it
 
+    def test_the_panel_counts_the_necks(self, editor):
+        """The question the group is there to answer, in its own box: how many
+        places hold this province together, and how bad the worst is."""
+        _show(editor)
+        said = editor.lbl_stress.text()
+        assert "1 neck(s) found, 1 at risk" in said
+        assert "worst 0.20 mm holding" in said
+
+    def test_the_panel_says_so_before_it_is_measured(self, editor):
+        """A layer that has not run must not read as one that found nothing."""
+        assert "press Show" in editor.lbl_stress.text()
+
+    def test_the_panel_says_so_while_it_runs(self, editor):
+        editor.btn_stress.setChecked(True)
+        editor._toggle_stress(True)
+        assert "Measuring" in editor.lbl_stress.text()
+        _measure(editor)
+
     def test_the_status_line_says_the_verdict_and_what_it_cost(self, editor):
         """Never a bare count — and the cost is what makes a stale incremental
         answer noticeable at all."""
@@ -314,10 +332,14 @@ class TestMinSeverity:
         _show(editor)
         assert len(editor._shown_necks()) == len(editor._stress.necks)
 
-    def test_the_count_in_the_status_line_follows_it(self, editor):
+    def test_the_panel_says_what_the_floor_is_hiding(self, editor):
+        """The count is of what was *found*, so a filtered map can never read
+        as a measurement that found nothing."""
         _show(editor)
         editor.stress_spin.setValue(10.0)
-        assert "no neck at severity 10 or worse" in editor.status.text()
+        said = editor.lbl_stress.text()
+        assert "1 neck(s) found" in said
+        assert "1 not drawn, under severity 10" in said
 
 
 class TestWorstNeck:

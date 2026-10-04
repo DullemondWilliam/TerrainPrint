@@ -126,10 +126,35 @@ class TestShowingTheLayer:
         editor._toggle_thin(False)
         assert len(editor.ax.collections) < with_marks
 
-    def test_the_status_line_counts_the_patches(self, editor):
+    def test_the_panel_says_how_much_will_not_print(self, editor):
+        """The question the group is there to answer, in its own box rather
+        than along the status line: how much of this will not come out."""
         _show(editor)
-        assert "1 thin patch(es)" in editor.status.text()
-        assert "under 1 mm" in editor.status.text()
+        said = editor.lbl_thin.text()
+        assert "mm² under 1 mm" in said
+        assert "1 patch(es)" in said
+        assert "% of the land" in said
+
+    def test_the_figure_is_the_measured_area(self, editor):
+        _show(editor)
+        assert editor._area(editor._thin.thin_area_mm2) in editor.lbl_thin.text()
+
+    @pytest.mark.parametrize("area, shown", [
+        (0.003, "0.003"),          # Nova Scotia at a 0.05 mm width
+        (0.09, "0.090"),
+        (3.04, "3.04"),
+        (29.637, "29.6"),
+        (1_422_083.0, "1,422,083.0"),
+    ])
+    def test_a_sliver_is_not_rounded_away_to_nothing(self, editor, area, shown):
+        """At a fine width the thin land comes to hundredths of a millimetre
+        square, and one decimal would print "0.0 mm²" beside a count of the
+        patches it is the area of."""
+        assert editor._area(area) == shown
+
+    def test_the_panel_says_so_before_it_is_measured(self, editor):
+        """A layer that has not run must not read as one that found nothing."""
+        assert "press Show" in editor.lbl_thin.text()
 
     def test_a_clean_province_says_so(self, qtbot):
         """'Nothing under the width' is an answer, and not the same answer as
@@ -138,7 +163,7 @@ class TestShowingTheLayer:
         window.width_spin.setValue(1.0)
         _show(window)
         assert window._thin.clean
-        assert "nothing under 1 mm" in window.status.text()
+        assert "Nothing under 1 mm" in window.lbl_thin.text()
 
     def test_an_islet_under_the_width_is_counted_apart(self, qtbot):
         """A part with nothing printable in it wants removing, where a neck
@@ -149,7 +174,7 @@ class TestShowingTheLayer:
         window.width_spin.setValue(1.0)
         _show(window)
         assert window._thin.whole_parts == 1
-        assert "1 island(s) too thin end to end" in window.status.text()
+        assert "1 island(s) too thin end to end" in window.lbl_thin.text()
 
 
 class TestItIsThePreviewOfAmputate:

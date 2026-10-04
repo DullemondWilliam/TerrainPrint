@@ -929,10 +929,16 @@ class IslandEditor(QMainWindow):
             "Go to the largest patch of land under the width. A "
             "one-millimetre fault is a few pixels on a map of a whole "
             "province, so it has to be gone to rather than looked for.")
+        self.lbl_thin = self._readout()
+        self.lbl_thin.setToolTip(
+            "How much of the province will not print at *Min width*: the area "
+            "under it, how many separate patches that is, and what share of "
+            "the land. ‘Amputate’ takes exactly this away.")
         self.grp_thin = QGroupBox("Printability")
         thin_column = QVBoxLayout(self.grp_thin)
         thin_column.setContentsMargins(8, 2, 8, 4)
         thin_column.setSpacing(4)
+        thin_column.addWidget(self.lbl_thin)
         thin_column.addWidget(self.btn_thin)
         thin_column.addWidget(self.btn_worst_patch,
                               alignment=Qt.AlignmentFlag.AlignRight)
@@ -990,10 +996,16 @@ class IslandEditor(QMainWindow):
             "Go to the neck most likely to break. A 0.2 mm throat is a third "
             "of a pixel at province extent, so this is the only way to see "
             "one — and it is where to point a bridge or the brush.")
+        self.lbl_stress = self._readout()
+        self.lbl_stress.setToolTip(
+            "How many load-bearing necks the measurement found, how many of "
+            "them are at risk, and the worst of them — the one a lift would "
+            "break first.")
         self.grp_stress = QGroupBox("Stress")
         stress_column = QVBoxLayout(self.grp_stress)
         stress_column.setContentsMargins(8, 2, 8, 4)
         stress_column.setSpacing(4)
+        stress_column.addWidget(self.lbl_stress)
         stress_row = QHBoxLayout()
         stress_row.setContentsMargins(0, 0, 0, 0)
         stress_row.setSpacing(4)
@@ -1143,6 +1155,7 @@ class IslandEditor(QMainWindow):
         # -- and a key for every other button --------------------------------
         self._wire_shortcuts()
         self._update_scores()     # …and the scoreboard saying there is nothing yet
+        self._update_panel()      # …and both layers saying they have not run
         self._sync_buttons()      # start with the groups greyed and the count set
         self._update_title()
 
@@ -1320,6 +1333,21 @@ class IslandEditor(QMainWindow):
         for item in contents:
             row.addWidget(QLabel(item) if isinstance(item, str) else item)
         return box
+
+    def _readout(self) -> QLabel:
+        """A panel group's standing figure: what the layer currently says.
+
+        Three lines of room held open whether or not they are used, so that
+        toggling a layer or an edit turning up an islet does not slide the
+        buttons under the pointer -- the panel has the height to spare, which
+        is half the reason these live beside the map rather than above it.
+        """
+        label = QLabel()
+        label.setWordWrap(True)
+        label.setAlignment(Qt.AlignmentFlag.AlignLeft
+                           | Qt.AlignmentFlag.AlignTop)
+        label.setMinimumHeight(label.fontMetrics().lineSpacing() * 3)
+        return label
 
     def _button(self, text, slot, enabled=True):
         b = QPushButton(text)
@@ -2362,24 +2390,34 @@ class IslandEditor(QMainWindow):
             f"At the worst patch: {worst.area / params.mpm ** 2:.2f} mm² of "
             f"land under {params.width_mm:g} mm — ")
 
-    def _thin_fragment(self) -> str:
-        """The status line's printability segment, or empty when not showing."""
+    def _thin_readout(self) -> str:
+        """The Printability panel's figure: how much of this will not print.
+
+        In the panel rather than along the status line, as the Scores figures
+        are and for their reason: this is where the province has got to, not a
+        note on what just happened, and it is read beside the map it is about.
+        """
+        if self.doc is None:
+            return "Nothing imported."
+        if not self.btn_thin.isChecked():
+            return "Not measured — press Show."
         report = self._thin_report()
-        if report is None:
-            return ""
         width = self.width_spin.value()
-        if not report.measured:
+        if report is None or not report.measured:
             # Never folded into "nothing found": not measured is not clean.
-            return "thin land could not be measured"
+            return "Could not be measured."
         if report.clean:
-            return f"nothing under {width:g} mm"
-        bits = [f"{report.patches} thin patch(es), "
-                f"{report.thin_area_mm2:.1f} mm² under {width:g} mm"]
+            return f"Nothing under {width:g} mm."
+        share = report.fraction * 100
+        lines = [f"{self._area(report.thin_area_mm2)} mm² under {width:g} mm",
+                 f"{report.patches} patch(es), "
+                 + ("<0.1" if 0 < share < 0.1 else f"{share:.1f}")
+                 + "% of the land"]
         if report.whole_parts:
             # A different problem with a different fix, so it is said
             # separately: these want removing, not widening.
-            bits.append(f"{report.whole_parts} island(s) too thin end to end")
-        return "; ".join(bits)
+            lines.append(f"{report.whole_parts} island(s) too thin end to end")
+        return "\n".join(lines)
 
     # -- stress ------------------------------------------------------------
     def _stress_params(self) -> StressParams:
@@ -2434,6 +2472,7 @@ class IslandEditor(QMainWindow):
         self._stress_worker.done.connect(self._on_stress_done)
         self._stress_worker.failed.connect(self._on_stress_failed)
         self._set_measuring(True)
+        self._update_panel()           # …so the panel says it is working
         self.status.setText(
             "Re-checking the necks the edit could reach …" if reused else
             "Measuring the width field and flooding the land …")
@@ -2480,6 +2519,7 @@ class IslandEditor(QMainWindow):
         self._stress = report
         self._redraw(preserve_view=True)
         self._sync_buttons()
+        self._update_panel()
         self.status.setText(self._stress_report_line(report, seconds))
 
     def _on_stress_failed(self, message: str) -> None:
@@ -2609,30 +2649,45 @@ class IslandEditor(QMainWindow):
         tail = f" ({'; '.join(extra)})" if extra else ""
         return f"{report.verdict()} — {how} in {seconds:.2f} s{tail}"
 
-    def _stress_fragment(self) -> str:
-        """The status line's stress segment, or empty when the layer is off."""
-        if not self.btn_stress.isChecked():
-            return ""
+    def _stress_readout(self) -> str:
+        """The Stress panel's figure: how many necks, and how bad the worst is.
+
+        The count is of what was **found**, not of what the severity floor
+        lets through, because that is the question the panel is answering --
+        how many places hold this province together. What is drawn is said
+        under it when the two differ, so a filtered map can never read as a
+        measurement that found nothing.
+        """
+        if self.doc is None:
+            return "Nothing imported."
         if self._stress_thread is not None:
-            return "necks being measured"
+            return "Measuring …"
+        if not self.btn_stress.isChecked():
+            return "Not measured — press Show."
         report = self._stress
         if report is None:
-            return "necks not measured yet"
+            return "Not measured — press Show."
         if not report.measured:
             # Never folded into "nothing found": not measured is not sound.
-            return "necks could not be measured"
-        shown = self._shown_necks()
-        if not shown:
-            floor = self.stress_spin.value()
-            return (f"no neck at severity {floor:g} or worse" if floor
-                    else "no load-bearing neck")
-        worst = max(shown, key=lambda neck: neck.severity)
-        risky = [neck for neck in shown if neck.at_risk]
-        count = f"{len(shown)} neck(s)"
-        if risky:
-            count += f", {len(risky)} at risk"
-        return (f"{count}, worst {worst.throat_mm:.2f} mm holding "
-                f"{worst.load_mm2:.0f} mm²")
+            return "Could not be measured."
+        if not report.necks:
+            return "No load-bearing neck."
+        risky = [neck for neck in report.necks if neck.at_risk]
+        lines = [f"{len(report.necks)} neck(s) found"
+                 + (f", {len(risky)} at risk" if risky else ", none at risk")]
+        hidden = len(report.necks) - len(self._shown_necks())
+        if hidden:
+            lines.append(f"{hidden} not drawn, under severity "
+                         f"{self.stress_spin.value():g}")
+        worst = report.necks[0]        # the report is sorted worst first
+        lines.append(f"worst {worst.throat_mm:.2f} mm holding "
+                     f"{self._area(worst.load_mm2)} mm²")
+        return "\n".join(lines)
+
+    def _update_panel(self) -> None:
+        """Restate both layers' figures. Cheap: it reads answers in hand."""
+        self.lbl_thin.setText(self._thin_readout())
+        self.lbl_stress.setText(self._stress_readout())
 
     def _apply(self, text: str, new_doc, ok_msg: str) -> None:
         """Validate an operation's result and push it as one undoable command."""
@@ -2769,6 +2824,21 @@ class IslandEditor(QMainWindow):
             self._redraw(preserve_view=True)
             self._update_status("Threshold changed — ")
 
+    @staticmethod
+    def _area(mm2: float) -> str:
+        """A printed area at a readable precision (bare number).
+
+        The same reasoning as ``_mm`` below: at a fine width the thin land
+        comes to a few hundredths of a millimetre square, and one decimal
+        renders that as ``0.0`` -- "no area at all" sitting beside a count of
+        the patches it is the area of.
+        """
+        if mm2 < 0.1:
+            return f"{mm2:.3f}"
+        if mm2 < 10:
+            return f"{mm2:.2f}"
+        return f"{mm2:,.1f}"
+
     def _mm(self, distance_km: float) -> str:
         """
         A ground distance as a printed one, at a readable precision (bare number).
@@ -2819,6 +2889,12 @@ class IslandEditor(QMainWindow):
         return f"gaps {self._mm(closest)}–{self._mm(widest)} mm"
 
     def _update_status(self, prefix: str = "") -> None:
+        # The panel carries both layers' standing figures, so the status line
+        # no longer repeats them: it is the running commentary, and a line
+        # reading "1 landmass(es), 0 selected, 0 below 0.02 mm2, 327 thin
+        # patch(es), 29.6 mm2 under 1 mm, 2 neck(s), 1 at risk, worst 0.20 mm
+        # holding 54 mm2" was answering a question nobody had just asked.
+        self._update_panel()
         if not self.parts:
             self.status.setText("No file loaded.")
             return
@@ -2831,12 +2907,6 @@ class IslandEditor(QMainWindow):
         if gap:
             bits.append(gap)
         bits.append(f"{below} below {thr:g} mm²")
-        thin = self._thin_fragment()
-        if thin:
-            bits.append(thin)
-        stress = self._stress_fragment()
-        if stress:
-            bits.append(stress)
         self.status.setText(f"{prefix}{', '.join(bits)}.")
 
     def closeEvent(self, event) -> None:
