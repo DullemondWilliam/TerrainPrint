@@ -97,9 +97,11 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QDoubleSpinBox,
 from lib.LIB_island_merging import _polygons
 from lib.LIB_map_scale import (grouped, km_per_mm, printed_size_mm, scale_bars,
                                to_km)
-from lib.LIB_project_config import get as cfg
-from lib.LIB_stress_points import StressParams, stress_points
-from lib.LIB_thin_features import ThinParams, thin_features
+from lib.LIB_project_config import get as cfg, load_files, settings_files
+from lib.LIB_project_config import shipped
+from lib.LIB_stress_points import (StressParams, load_stress_params,
+                                   stress_points)
+from lib.LIB_thin_features import ThinParams, load_thin_params, thin_features
 from lib.LIB_screen_calibration import (MM_PER_INCH, load_saved_ppi,
                                         monitor_at, px_per_mm)
 
@@ -146,7 +148,7 @@ THIN_LINEWIDTH = 0.9
 #: The minimum width to measure against, printed mm, as ``(lo, hi, default,
 #: decimals, step)``. Printed sizes converted through the print scale at the
 #: moment of use, as everywhere else here.
-THIN_WIDTH_MM = (0.0, 50.0, cfg("thin.width_mm"), 3, 0.05)
+THIN_WIDTH_MM = (0.0, 50.0, shipped("thin.width_mm"), 3, 0.05)
 
 #: What share of the view the worst patch takes up once framed. Small enough to
 #: keep its surroundings on screen -- a neck means nothing without the two
@@ -199,7 +201,7 @@ STRESS_LINEWIDTH = 1.6
 #: quietly removes the evidence is worse than a busier map -- and the map is not
 #: in fact busy: 29 marks across the eight cleaned provinces, 6 of them at risk,
 #: each coloured by how bad it is.
-STRESS_SEVERITY = (0.0, 20.0, cfg("stress.report_above"), 2, 0.25)
+STRESS_SEVERITY = (0.0, 20.0, shipped("stress.report_above"), 2, 0.25)
 
 #: How much of the map to show when framing a neck, in printed millimetres. A
 #: floor rather than a share of the neck: a throat is a fraction of a millimetre
@@ -207,7 +209,7 @@ STRESS_SEVERITY = (0.0, 20.0, cfg("stress.report_above"), 2, 0.25)
 #: a neck is the land either side.
 STRESS_ZOOM_MM = 16.0
 
-DEFAULT_PRINT_SCALE = cfg("print.scale")
+DEFAULT_PRINT_SCALE = shipped("print.scale")
 PRINT_SCALE_MIN, PRINT_SCALE_MAX = 1_000, 500_000_000
 PRINT_SCALE_STEP = 500_000
 
@@ -593,8 +595,25 @@ class ProvinceViewer(QMainWindow):
 
         self.scale_spin.installEventFilter(self)
         self.perkm_box.installEventFilter(self)
+        self._apply_saved_settings()
         self._sync_buttons()
         self._update_title()
+
+    def _apply_saved_settings(self) -> None:
+        """
+        Start the controls from the settings files, not the shipped values.
+
+        Read when the window is built, through ``settings_files()``: the
+        module's constants are the shipped values, so this is what makes the
+        viewer open on the width, floor and scale the other windows saved.
+        """
+        config = load_files(*settings_files())
+        for key, spin in (("print.scale", self.scale_spin),
+                          ("thin.width_mm", self.thin_spin),
+                          ("stress.report_above", self.stress_spin)):
+            value = cfg(key, config=config)
+            if value is not None:
+                spin.setValue(value)
 
     def eventFilter(self, obj, event):
         """
@@ -1094,8 +1113,9 @@ class ProvinceViewer(QMainWindow):
     # -- printability -------------------------------------------------------
     def _thin_params(self) -> ThinParams:
         """What counts as too thin, as the controls now read it."""
-        return ThinParams(scale=self.scale_spin.value(),
-                          width_mm=self.thin_spin.value())
+        return load_thin_params(*settings_files(),
+                                scale=self.scale_spin.value(),
+                                width_mm=self.thin_spin.value())
 
     def _toggle_thin(self, checked: bool) -> None:
         """Measure the layer and mark it, or take the marks away."""
@@ -1197,7 +1217,9 @@ class ProvinceViewer(QMainWindow):
         measurement is of the province and not of the filter: Min severity then
         decides what is *drawn* from an answer already in hand.
         """
-        return StressParams(scale=self.scale_spin.value(), report_above=0.0)
+        return load_stress_params(*settings_files(),
+                                  scale=self.scale_spin.value(),
+                                  report_above=0.0)
 
     def _toggle_stress(self, checked: bool) -> None:
         """Measure the layer and mark it, or take the marks away.

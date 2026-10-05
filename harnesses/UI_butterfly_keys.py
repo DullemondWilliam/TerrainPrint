@@ -67,7 +67,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib.LIB_butterfly_keys import (KeyParams, assembly, auto_place,
                                     check_keys, export, find_seam, fit_loaded,
-                                    load_province, snap)
+                                    load_key_params, load_province, snap)
+from lib.LIB_project_config import settings_files
 
 GEOJSON_FILTER = "GeoJSON (*.geojson *.json);;All files (*)"
 STL_FILTER = "STL (*.stl);;All files (*)"
@@ -163,7 +164,7 @@ class ButterflyKeysTester(QMainWindow):
         root.addLayout(toolbar)
 
         # -- second row: the key --------------------------------------------
-        defaults = KeyParams()
+        defaults = load_key_params(*settings_files())
         self.depth_spin = self._mm_spin(
             defaults.depth_mm, 0.2, 10.0,
             "Slot depth into each piece's underside (print.dovetail_mm).\n"
@@ -284,12 +285,13 @@ class ButterflyKeysTester(QMainWindow):
         self.canvas.draw_idle()
 
     def params(self) -> KeyParams:
-        return KeyParams(depth_mm=self.depth_spin.value(),
-                         neck_mm=self.neck_spin.value(),
-                         mouth_mm=self.mouth_spin.value(),
-                         reach_mm=self.reach_spin.value(),
-                         clearance_mm=self.clear_spin.value(),
-                         spacing_mm=self.spacing_spin.value())
+        return load_key_params(*settings_files(),
+                               depth_mm=self.depth_spin.value(),
+                               neck_mm=self.neck_spin.value(),
+                               mouth_mm=self.mouth_spin.value(),
+                               reach_mm=self.reach_spin.value(),
+                               clearance_mm=self.clear_spin.value(),
+                               spacing_mm=self.spacing_spin.value())
 
     # -- import -------------------------------------------------------------
     def import_province(self, side: str) -> None:

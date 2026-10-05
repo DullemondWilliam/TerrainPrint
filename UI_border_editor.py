@@ -109,9 +109,9 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QDoubleSpinBox,
 from harnesses.UI_shared_border import SharedBorderTester
 from lib.LIB_border_ledger import LEDGER_NAME, BorderLedger, find_borders
 from lib.LIB_project_config import get as cfg
-from lib.LIB_project_config import update_local
-from lib.LIB_seam_fit import (FitParams, fit_report, move_seam_vertex,
-                              push_border, solve_fit)
+from lib.LIB_project_config import settings_files, update_local
+from lib.LIB_seam_fit import (FitParams, fit_report, load_fit_params,
+                              move_seam_vertex, push_border, solve_fit)
 from lib.LIB_shared_border import _shared_seam
 
 GEOJSON_FILTER = "GeoJSON (*.geojson *.json);;All files (*)"
@@ -640,7 +640,10 @@ class SeamPage(SharedBorderTester):
     # -- fit --------------------------------------------------------------
     def fit_params(self) -> FitParams:
         spins = self.fit_spins
-        return FitParams(
+        # The controls set three; the band and the lock ratio come from the
+        # saved settings, as they do for the list on the first page.
+        return load_fit_params(
+            *settings_files(),
             scale=self._params().scale,
             edge_loss_mm=spins["seam.edge_loss_mm"].value(),
             min_width_mm=spins["thin.width_mm"].value(),
@@ -1219,11 +1222,11 @@ class BorderEditor(QMainWindow):
 
     def fit_of(self, border):
         """
-        Will this border's pieces mesh? Measured with the fit settings in the
-        config -- the ones the edit page saves as they are turned -- and kept
-        until a province or a setting changes.
+        Will this border's pieces mesh? Measured with the saved fit settings
+        -- the ones the edit page saves as they are turned, read through
+        ``load_fit_params`` -- and kept until a province or a setting changes.
         """
-        params = FitParams.from_config()
+        params = load_fit_params(*settings_files())
         geom_a = self.provinces[border.a].geometry
         geom_b = self.provinces[border.b].geometry
         settings = (params.edge_loss_mm, params.min_width_mm,

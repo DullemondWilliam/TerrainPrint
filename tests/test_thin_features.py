@@ -81,8 +81,9 @@ class TestWhatCountsAsThin(ThinTestCase):
 
     def test_the_threshold_is_the_width_it_says(self):
         # At a 1 mm setting: just under is caught, just over is left alone.
-        self.assertFalse(thin_features(self.necked(0.95)).clean)
-        self.assertTrue(thin_features(self.necked(1.05)).clean)
+        at_1mm = ThinParams(width_mm=1.0)
+        self.assertFalse(thin_features(self.necked(0.95), at_1mm).clean)
+        self.assertTrue(thin_features(self.necked(1.05), at_1mm).clean)
 
     def test_the_measured_area_is_the_neck(self):
         # A 0.4 mm neck 2 mm long is 0.8 mm² of land, and that is what the
@@ -272,10 +273,10 @@ class TestPrintable(ThinTestCase):
         # A 0.9 mm neck is thin at 1:8M and comfortable at 1:4M.
         from lib.LIB_island_merging import _polygons
         land = self.necked(0.9)
-        self.assertEqual(
-            len(_polygons(printable(land, ThinParams(scale=8_000_000)))), 2)
-        self.assertEqual(
-            len(_polygons(printable(land, ThinParams(scale=4_000_000)))), 1)
+        self.assertEqual(len(_polygons(printable(
+            land, ThinParams(scale=8_000_000, width_mm=1.0)))), 2)
+        self.assertEqual(len(_polygons(printable(
+            land, ThinParams(scale=4_000_000, width_mm=1.0)))), 1)
 
 
 class TestPrintScale(ThinTestCase):
@@ -292,20 +293,21 @@ class TestPrintScale(ThinTestCase):
         # A neck 8 km across is 1 mm at 1:8M (right at the limit) and 2 mm at
         # 1:4M (comfortable). Same ground, different verdict.
         land = self.necked(0.9)         # 7.2 km, below 1 mm at 1:8M
-        self.assertFalse(
-            thin_features(land, ThinParams(scale=8_000_000)).clean)
-        self.assertTrue(
-            thin_features(land, ThinParams(scale=4_000_000)).clean)
+        self.assertFalse(thin_features(
+            land, ThinParams(scale=8_000_000, width_mm=1.0)).clean)
+        self.assertTrue(thin_features(
+            land, ThinParams(scale=4_000_000, width_mm=1.0)).clean)
 
     def test_areas_are_reported_in_printed_millimetres(self):
         land = self.square(0.0, 0.0, size_mm=4.0)
         report = thin_features(land, ThinParams(scale=8_000_000))
         self.assertAlmostEqual(report.land_area_mm2, 16.0, places=6)
 
-    def test_the_default_comes_from_the_project_config(self):
-        from lib.LIB_project_config import get
-        self.assertAlmostEqual(ThinParams().width_mm, get("thin.width_mm"))
-        self.assertAlmostEqual(ThinParams().scale, get("print.scale"))
+    def test_the_defaults_are_the_shipped_settings(self):
+        """Built directly, the block reads no file: it is the same everywhere."""
+        from lib.LIB_project_config import shipped
+        self.assertAlmostEqual(ThinParams().width_mm, shipped("thin.width_mm"))
+        self.assertAlmostEqual(ThinParams().scale, shipped("print.scale"))
 
 
 if __name__ == "__main__":

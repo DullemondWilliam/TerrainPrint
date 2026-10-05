@@ -51,9 +51,11 @@ from PySide6.QtWidgets import (QApplication, QDoubleSpinBox, QFileDialog,
 # project root on sys.path before importing lib.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lib.LIB_border_connectors import ConnectorParams, EPSG_METRIC, _load_union_m
+from lib.LIB_border_connectors import (ConnectorParams, EPSG_METRIC,
+                                       _load_union_m, load_connector_params)
 from lib.LIB_dovetail_fitter import fit_dovetails, _base_footprint, _safe_name
 from lib.LIB_project_config import get as _cfg
+from lib.LIB_project_config import settings_files
 
 GEOJSON_FILTER = "GeoJSON (*.geojson *.json);;All files (*)"
 STL_FILTER = "STL (*.stl);;All files (*)"
@@ -348,8 +350,9 @@ class DovetailFitterTester(QMainWindow):
 
     # -- parameters ---------------------------------------------------------
     def _params(self) -> ConnectorParams:
-        return ConnectorParams(scale=self.scale_spin.value(),
-                               dovetail_mm=self.dove_spin.value())
+        return load_connector_params(*settings_files(),
+                                     scale=self.scale_spin.value(),
+                                     dovetail_mm=self.dove_spin.value())
 
     def _invalidate(self, *_) -> None:
         """Any input/parameter change invalidates the last fit."""

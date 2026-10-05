@@ -32,11 +32,12 @@ from shapely.ops import unary_union
 from shapely.validation import make_valid
 import trimesh
 
-from lib.LIB_project_config import get as _cfg
+from lib.LIB_project_config import build_params, settings_files
+from lib.LIB_project_config import shipped as _shipped
 
-EPSG_SRC      = _cfg("crs.source")
-EPSG_METRIC   = _cfg("crs.working")
-DEFAULT_SCALE = _cfg("print.scale")          # 1 print-mm : scale/1e6 km
+EPSG_SRC      = _shipped("crs.source")
+EPSG_METRIC   = _shipped("crs.working")
+DEFAULT_SCALE = _shipped("print.scale")          # 1 print-mm : scale/1e6 km
 
 # Border parts smaller than this triangulate into non-manifold slivers and are
 # too small to print anyway (matches the island filter in LIB_terrain_stl).
@@ -53,8 +54,8 @@ _LAYER_OVERLAP_MM = 0.01
 @dataclass
 class ConnectorParams:
     scale:        float = DEFAULT_SCALE   # map scale denominator (1 : scale)
-    thickness_mm: float = _cfg("print.border_thickness_mm")   # total border height
-    dovetail_mm:  float = _cfg("print.dovetail_mm")  # dovetail layer height / pocket depth (Z)
+    thickness_mm: float = _shipped("print.border_thickness_mm")   # total border height
+    dovetail_mm:  float = _shipped("print.dovetail_mm")  # dovetail layer height / pocket depth (Z)
     spacing_mm:   float = 14.0            # gap between keys along the seam
     neck_mm:      float = 1.6             # dovetail width at the corridor edge (throat)
     mouth_mm:     float = 3.2             # dovetail width at the far end (wide -> locks)
@@ -71,6 +72,29 @@ class ConnectorParams:
 # ---------------------------------------------------------------------------
 # Geometry helpers
 # ---------------------------------------------------------------------------
+
+#: The config key behind each field of :class:`ConnectorParams`, for
+#: :func:`load_connector_params`.
+_CONNECTORPARAMS_KEYS = {
+    "thickness_mm": "print.border_thickness_mm",
+    "dovetail_mm": "print.dovetail_mm",
+    "scale": "print.scale",
+}
+
+
+def load_connector_params(*config_files, **overrides):
+    """
+    A :class:`ConnectorParams` filled from config files.
+
+    ``config_files`` are read in order, later ones winning -- a window passes
+    ``LIB_project_config.settings_files()``, the project file then this desk's
+    local one.  A setting no file mentions keeps its built-in default, and
+    ``overrides`` win over everything.  :class:`ConnectorParams` built directly never
+    reads a file: its defaults are the shipped connector settings, the same on
+    every desk.
+    """
+    return build_params(ConnectorParams, _CONNECTORPARAMS_KEYS, *config_files, **overrides)
+
 def _polys(geom):
     """Polygon parts of a geometry (drops non-polygonal bits / empties)."""
     if geom is None or geom.is_empty:
@@ -376,9 +400,12 @@ def main():
                     help="Folder containing borders.geojson (+ name_*.geojson)")
     ap.add_argument("-o", "--out", default=None,
                     help="Output STL path (default: <border_dir>/border_connectors.stl)")
-    ap.add_argument("--scale",     type=float, default=DEFAULT_SCALE)
-    ap.add_argument("--thickness", type=float, default=2.0, help="border height mm")
-    ap.add_argument("--dovetail",  type=float, default=1.0, help="dovetail/pocket mm")
+    saved = load_connector_params(*settings_files())
+    ap.add_argument("--scale",     type=float, default=saved.scale)
+    ap.add_argument("--thickness", type=float, default=saved.thickness_mm,
+                    help="border height mm")
+    ap.add_argument("--dovetail",  type=float, default=saved.dovetail_mm,
+                    help="dovetail/pocket mm")
     ap.add_argument("--spacing",   type=float, default=14.0)
     ap.add_argument("--neck",      type=float, default=1.6)
     ap.add_argument("--mouth",     type=float, default=3.2)

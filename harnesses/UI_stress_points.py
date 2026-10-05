@@ -82,10 +82,11 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox,
 # the project root on sys.path before importing lib.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lib.LIB_project_config import LOCAL_CONFIG_PATH, update_local
+from lib.LIB_project_config import (LOCAL_CONFIG_PATH, settings_files,
+                                    update_local)
 from lib.LIB_stress_points import (EPSG_METRIC, StressParams, branch_mask,
-                                   restress, severity_field, stress_points,
-                                   width_field)
+                                   load_stress_params, restress,
+                                   severity_field, stress_points, width_field)
 
 GEOJSON_FILTER = "GeoJSON (*.geojson *.json);;All files (*)"
 
@@ -282,7 +283,7 @@ class StressPointsTester(QMainWindow):
         toolbar.addStretch(1)
         root.addLayout(toolbar)
 
-        defaults = StressParams()
+        defaults = load_stress_params(*settings_files())
 
         # -- second row: what counts as a neck ------------------------------
         counts_bar = QHBoxLayout()
@@ -526,7 +527,7 @@ class StressPointsTester(QMainWindow):
 
     def reload_settings(self) -> None:
         """Put the controls back to the saved defaults."""
-        defaults = StressParams()
+        defaults = load_stress_params(*settings_files())
         for key, control in SAVED_SETTINGS:
             getattr(self, control).setValue(getattr(defaults,
                                                     _FIELD_OF[key]))
@@ -536,7 +537,8 @@ class StressPointsTester(QMainWindow):
     # -- parameters ---------------------------------------------------------
     def params(self) -> StressParams:
         """The parameter block exactly as the controls now read it."""
-        return StressParams(
+        return load_stress_params(
+            *settings_files(),
             scale=self.scale_spin.value(),
             pixel_mm=self.pixel_spin.value(),
             ceiling_mm=self.ceiling_spin.value(),

@@ -89,21 +89,24 @@ import trimesh
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import unary_union
 
-from lib.LIB_project_config import get as _cfg
+from lib.LIB_project_config import DEFAULTS as _DEFAULTS
+from lib.LIB_project_config import build_params, load_files, settings_files
+from lib.LIB_project_config import get as _get
+from lib.LIB_project_config import shipped as _shipped
 from lib.LIB_terrain_trim import _clip
 
 log = logging.getLogger(__name__)
 
-EPSG_METRIC = _cfg("crs.working")
-DEFAULT_SCALE = _cfg("print.scale")
+EPSG_METRIC = _shipped("crs.working")
+DEFAULT_SCALE = _shipped("print.scale")
 
 #: Defaults come from ``project_config.json``'s ``terrain`` section, so every
 #: piece of a map is meshed the same way without anyone passing arguments.
 #: See "Vertical exaggeration is not optional".
-DEFAULT_EXAGGERATION = _cfg("terrain.exaggeration")
-DEFAULT_BASE_MM = _cfg("terrain.base_mm")
-DEFAULT_FLOOR_M = _cfg("terrain.floor_m")
-DEFAULT_MAX_TRIANGLES = _cfg("terrain.max_triangles")
+DEFAULT_EXAGGERATION = _shipped("terrain.exaggeration")
+DEFAULT_BASE_MM = _shipped("terrain.base_mm")
+DEFAULT_FLOOR_M = _shipped("terrain.floor_m")
+DEFAULT_MAX_TRIANGLES = _shipped("terrain.max_triangles")
 
 
 @dataclass
@@ -117,9 +120,9 @@ class TerrainParams:
     buffer_mm: float = 0.0                  #: outward lip on the coastline cut
     max_triangles: int = DEFAULT_MAX_TRIANGLES   #: refuse before meshing beyond this
     expect_crs: str = EPSG_METRIC           #: raster CRS guard; None to skip
-    dovetail_mm: float = _cfg("print.dovetail_mm")   #: base must clear this
-    bed_mm: float = _cfg("print.bed_mm")
-    bed_margin_mm: float = _cfg("print.bed_margin_mm")
+    dovetail_mm: float = _shipped("print.dovetail_mm")   #: base must clear this
+    bed_mm: float = _shipped("print.bed_mm")
+    bed_margin_mm: float = _shipped("print.bed_margin_mm")
     validate: bool = True                   #: watertight + positive volume gate
     band: int = 1
 
@@ -128,6 +131,35 @@ class TerrainParams:
         """Metres per print-mm."""
         return self.scale / 1000.0
 
+
+
+#: The config key behind each field of :class:`TerrainParams`, for
+#: :func:`load_terrain_params`.
+_TERRAINPARAMS_KEYS = {
+    "dovetail_mm": "print.dovetail_mm",
+    "bed_mm": "print.bed_mm",
+    "bed_margin_mm": "print.bed_margin_mm",
+    "scale": "print.scale",
+    "z_exaggeration": "terrain.exaggeration",
+    "base_height_mm": "terrain.base_mm",
+    "floor_m": "terrain.floor_m",
+    "max_triangles": "terrain.max_triangles",
+    "expect_crs": "crs.working",
+}
+
+
+def load_terrain_params(*config_files, **overrides):
+    """
+    A :class:`TerrainParams` filled from config files.
+
+    ``config_files`` are read in order, later ones winning -- a window passes
+    ``LIB_project_config.settings_files()``, the project file then this desk's
+    local one.  A setting no file mentions keeps its built-in default, and
+    ``overrides`` win over everything.  :class:`TerrainParams` built directly never
+    reads a file: its defaults are the shipped terrain settings, the same on
+    every desk.
+    """
+    return build_params(TerrainParams, _TERRAINPARAMS_KEYS, *config_files, **overrides)
 
 @dataclass
 class TerrainResult:
@@ -154,6 +186,10 @@ class TerrainResult:
     zmin_m: float = None                #: elevation range of the sampled terrain
     zmax_m: float = None
     cut_to_boundary: bool = False
+    #: Fingerprint of the map-wide settings the piece was built under -- see
+    #: :func:`settings_id`.  Set by :func:`terrain_to_stl` from the config it
+    #: was handed, so the sidecar says what the piece *was* built with.
+    settings_id: str = ""
 
     @property
     def frame(self) -> dict:
@@ -172,19 +208,22 @@ class TerrainResult:
         """
         return {
             "origin_m": list(self.origin_m),
-            "settings_id": settings_id(),
+            "settings_id": self.settings_id or settings_id(),
         }
 
 
 def shared_settings(config=None) -> dict:
     """
-    The map-wide terrain settings, from ``project_config.json``.
+    The map-wide terrain settings, from ``config``.
 
     One reader for the values every piece must agree on, so there is one place
-    to change them and no per-piece copies to drift.
+    to change them and no per-piece copies to drift.  ``config`` is a merged
+    configuration, as ``LIB_project_config.load_files`` returns it; without
+    one, the shipped settings -- this never reads a file of its own accord.
     """
-    get = (lambda key: _cfg(key)) if config is None else \
-        (lambda key: _cfg(key, config=config))
+    source = _DEFAULTS if config is None else config
+    def get(key):
+        return _get(key, config=source)
     return {
         "scale": get("print.scale"),
         "crs": get("crs.working"),
@@ -229,7 +268,8 @@ def read_frame(stl_path):
         return None
 
 
-def terrain_to_stl(raster, boundary=None, out_path=None, params=None):
+def terrain_to_stl(raster, boundary=None, out_path=None, params=None,
+                   config=None):
     """
     Build a terrain solid from a prepared DEM.
 
@@ -244,6 +284,12 @@ def terrain_to_stl(raster, boundary=None, out_path=None, params=None):
     out_path : str | pathlib.Path, optional
         Write the STL here, plus a ``.frame.json`` sidecar beside it.
     params : TerrainParams, optional
+    config : dict, optional
+        The merged configuration the piece is built under, as
+        ``LIB_project_config.load_files`` returns it.  Only its map-wide
+        settings are used, fingerprinted into the sidecar's ``settings_id`` so
+        a piece can later be told from one built under different settings.
+        Defaults to the shipped settings.
 
     Returns
     -------
@@ -272,7 +318,8 @@ def terrain_to_stl(raster, boundary=None, out_path=None, params=None):
         res_m=(abs(transform.a), abs(transform.e)),
         spacing_mm=abs(transform.a) / params.mpm,
         grid=(elev.shape[1], elev.shape[0]),
-        cut_to_boundary=boundary is not None)
+        cut_to_boundary=boundary is not None,
+        settings_id=settings_id(config))
 
     mesh = _build_slab(elev, transform, nodata, params, result)
     if boundary is not None:
@@ -504,22 +551,24 @@ def _load_union_crs(boundary, crs):
 def main(argv=None):
     ap = argparse.ArgumentParser(
         description="Build a printable terrain STL from a prepared DEM GeoTIFF.")
+    # The saved settings are the defaults here, as in a window.
+    saved = load_terrain_params(*settings_files())
     ap.add_argument("raster", help="DEM, already clipped/reprojected/coarsened")
     ap.add_argument("out", help="output STL")
     ap.add_argument("-b", "--boundary",
                     help="cut the solid to this coastline GeoJSON")
-    ap.add_argument("--scale", type=float, default=DEFAULT_SCALE,
+    ap.add_argument("--scale", type=float, default=saved.scale,
                     help="map scale denominator")
-    ap.add_argument("--exaggeration", type=float, default=DEFAULT_EXAGGERATION,
+    ap.add_argument("--exaggeration", type=float, default=saved.z_exaggeration,
                     help="vertical exaggeration (x1 is invisibly flat at 1:8M)")
-    ap.add_argument("--base", type=float, default=DEFAULT_BASE_MM,
+    ap.add_argument("--base", type=float, default=saved.base_height_mm,
                     metavar="MM", help="solid base under the terrain")
-    ap.add_argument("--floor", type=float, default=DEFAULT_FLOOR_M, metavar="M",
+    ap.add_argument("--floor", type=float, default=saved.floor_m, metavar="M",
                     help="elevation the base measures from (default sea level)")
     ap.add_argument("--buffer", type=float, default=0.0, metavar="MM",
                     help="outward lip on the coastline cut")
     ap.add_argument("--max-triangles", type=int,
-                    default=DEFAULT_MAX_TRIANGLES)
+                    default=saved.max_triangles)
     ap.add_argument("--any-crs", action="store_true",
                     help="skip the print-CRS guard")
     args = ap.parse_args(argv)
@@ -527,10 +576,13 @@ def main(argv=None):
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     res = terrain_to_stl(
         args.raster, args.boundary, args.out,
-        TerrainParams(scale=args.scale, z_exaggeration=args.exaggeration,
-                      base_height_mm=args.base, floor_m=args.floor,
-                      buffer_mm=args.buffer, max_triangles=args.max_triangles,
-                      expect_crs=None if args.any_crs else EPSG_METRIC))
+        load_terrain_params(
+            *settings_files(), scale=args.scale,
+            z_exaggeration=args.exaggeration, base_height_mm=args.base,
+            floor_m=args.floor, buffer_mm=args.buffer,
+            max_triangles=args.max_triangles,
+            expect_crs=None if args.any_crs else EPSG_METRIC),
+        config=load_files(*settings_files()))
     print(f"{res.triangles:,} triangles  "
           f"{res.extent_mm[0]:.0f} x {res.extent_mm[1]:.0f} x "
           f"{res.extent_mm[2]:.1f} mm  "

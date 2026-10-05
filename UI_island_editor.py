@@ -172,6 +172,7 @@ from PySide6.QtWidgets import (QApplication, QDoubleSpinBox, QFileDialog,
                                QSlider, QSpinBox, QVBoxLayout, QWidget)
 
 from lib.LIB_island_bridges import (BridgeParams, apply_bridges,
+                                    load_bridge_params,
                                     plan_bridges)
 from lib.LIB_island_bridging import draw_bridge
 from lib.LIB_island_erasing import erase_stroke
@@ -183,11 +184,15 @@ from lib.LIB_lake_removal import remove_lakes
 from lib.LIB_map_scale import (grouped as _grouped, km_per_mm as _km_per_mm_at,
                                scale_bars, to_km2 as _to_km2_at,
                                to_km as _to_km_at, to_mm as _to_mm_at)
-from lib.LIB_project_config import get as cfg, update_local
-from lib.LIB_shape_scores import (ScoreParams, land_mm2, outline_mm,
+from lib.LIB_project_config import get as cfg, load_files, settings_files
+from lib.LIB_project_config import shipped, update_local
+from lib.LIB_shape_scores import (ScoreParams, land_mm2, load_score_params,
+                                  outline_mm,
                                   score_shapes)
-from lib.LIB_stress_points import StressParams, restress, stress_points
-from lib.LIB_thin_features import (ThinParams, ThinReport, printable,
+from lib.LIB_stress_points import (StressParams, load_stress_params,
+                                   restress, stress_points)
+from lib.LIB_thin_features import (ThinParams, ThinReport, load_thin_params,
+                                   printable,
                                    thin_features)
 from lib.LIB_screen_calibration import (MM_PER_INCH, load_saved_ppi,
                                         monitor_at, px_per_mm)
@@ -218,7 +223,7 @@ SCALE_COLOUR = "#2C3E50"      # the map's scale bars, darker than any island
 #: what it comes out as on paper once the province is printed at the reduction
 #: below. 1:8 000 000 fits a whole province on a desk-sized sheet, which is the
 #: project's working figure; the toolbar's spin box moves it.
-DEFAULT_PRINT_SCALE = cfg("print.scale")
+DEFAULT_PRINT_SCALE = shipped("print.scale")
 PRINT_SCALE_MIN, PRINT_SCALE_MAX = 1_000, 500_000_000
 PRINT_SCALE_STEP = 500_000
 
@@ -235,9 +240,9 @@ PRINT_SCALE_STEP = 500_000
 #: a 0.25 mm buffer is 2 km there and a 0.125 mm brush is 1 km.  Three decimals
 #: resolve 0.001 mm, which at that scale is 8 m — finer than the 10 m the old km
 #: boxes could state; area gets a fourth because a squared unit needs it.
-BUFFER_MM = (0.0, 50.0, cfg("island_editor.buffer_mm"), 3, 0.05)
-BRUSH_MM = (0.001, 25.0, cfg("island_editor.brush_mm"), 3, 0.05)
-AREA_MM2 = (0.0, 10_000.0, cfg("island_editor.min_area_mm2"), 4, 0.01)
+BUFFER_MM = (0.0, 50.0, shipped("island_editor.buffer_mm"), 3, 0.05)
+BRUSH_MM = (0.001, 25.0, shipped("island_editor.brush_mm"), 3, 0.05)
+AREA_MM2 = (0.0, 10_000.0, shipped("island_editor.min_area_mm2"), 4, 0.01)
 
 #: The bridge parameters, same shape and same reasoning: printed sizes, worth
 #: whatever the print scale makes them worth. Only the two that decide the
@@ -248,14 +253,14 @@ AREA_MM2 = (0.0, 10_000.0, cfg("island_editor.min_area_mm2"), 4, 0.01)
 #: ``bridges.*`` defaults, and ``harnesses/UI_island_bridges.py`` is where they
 #: are turned. The width also settles the shape of the ends: each is a
 #: semicircle of half that radius, centred on the landing.
-BRIDGE_WIDTH_MM = (0.0, 50.0, cfg("bridges.width_mm"), 3, 0.05)
-BRIDGE_SPAN_MM = (0.0, 200.0, cfg("bridges.max_span_mm"), 2, 0.5)
+BRIDGE_WIDTH_MM = (0.0, 50.0, shipped("bridges.width_mm"), 3, 0.05)
+BRIDGE_SPAN_MM = (0.0, 200.0, shipped("bridges.max_span_mm"), 2, 0.5)
 
 #: The narrowest land worth printing, for **Amputate**. Its own knob rather
 #: than the bridge width, because the two are different kinds of number: the
 #: bridge width is a size you build to, this is a limit you measure against.
 #: The province viewer's *Show thin* marks exactly what this value would take.
-MIN_WIDTH_MM = (0.0, 50.0, cfg("thin.width_mm"), 3, 0.05)
+MIN_WIDTH_MM = (0.0, 50.0, shipped("thin.width_mm"), 3, 0.05)
 
 #: What the side panel is made wide enough for, measured in the scoreboard's
 #: own monospace font rather than guessed at in pixels.
@@ -282,7 +287,7 @@ ORIGINAL_EDGE = "#4A235A"
 #: How strongly it is drawn, as ``(lo, hi, default)`` in percent. Kept in the
 #: config like the rest of the window's settings, because how hard you want to
 #: be looking at it is a preference and not a property of the file.
-ORIGINAL_OPACITY = (0, 100, cfg("island_editor.original_opacity"))
+ORIGINAL_OPACITY = (0, 100, shipped("island_editor.original_opacity"))
 
 #: Land too thin to print. A saturated red rather than the palette's softer
 #: ``REMOVE_COLOUR``, because a patch can be a printed millimetre across: what
@@ -343,7 +348,7 @@ STRESS_LINEWIDTH = 1.6
 #: filtered out is indistinguishable from one the measurement never found, and
 #: in a tool where the next thing you do is cut the coast about, that is the
 #: wrong doubt to leave standing.
-STRESS_SEVERITY = (0.0, 20.0, cfg("stress.report_above"), 2, 0.25)
+STRESS_SEVERITY = (0.0, 20.0, shipped("stress.report_above"), 2, 0.25)
 
 #: How much of the map to show when framing a neck, in printed millimetres. A
 #: floor rather than a share of the neck: a throat is a fraction of a millimetre
@@ -1274,9 +1279,11 @@ class IslandEditor(QMainWindow):
             entry.installEventFilter(self)
 
         # -- …and the settings that outlive the window ------------------------
+        # The controls were built on the shipped values; now the saved ones.
+        self._apply_saved_settings()
         # Wired last, so that nothing set while the window was being built --
-        # a spin box taking its default, a control wired to another -- is
-        # mistaken for a value somebody chose.
+        # a spin box taking its default, a control wired to another, or the
+        # saved values just applied -- is mistaken for a value somebody chose.
         for key, control in SAVED_SETTINGS:
             getattr(self, control).valueChanged.connect(
                 lambda value, key=key: self._remember(key, value))
@@ -2117,9 +2124,10 @@ class IslandEditor(QMainWindow):
         ``BridgeParams`` keeps its ``bridges.*`` default, so the editor and the
         harness plan the same bridges from the same numbers.
         """
-        return BridgeParams(scale=self.scale_spin.value(),
-                            width_mm=self.bridge_width_spin.value(),
-                            max_span_mm=self.bridge_span_spin.value())
+        return load_bridge_params(*settings_files(),
+                                  scale=self.scale_spin.value(),
+                                  width_mm=self.bridge_width_spin.value(),
+                                  max_span_mm=self.bridge_span_spin.value())
 
     def bridge_selected(self) -> None:
         """
@@ -2267,7 +2275,9 @@ class IslandEditor(QMainWindow):
         if self.doc is None:
             return
         width_mm = self.width_spin.value()
-        params = ThinParams(scale=self.scale_spin.value(), width_mm=width_mm)
+        params = load_thin_params(*settings_files(),
+                                  scale=self.scale_spin.value(),
+                                  width_mm=width_mm)
         # A second or less on the worst province, so no thread and no progress
         # bar -- but long enough on Nunavut to be worth saying the cursor.
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
@@ -2306,7 +2316,7 @@ class IslandEditor(QMainWindow):
     def _amputate_note(self, new_doc, width_mm: float,
                        params: ThinParams) -> str:
         """What the cut cost, in the terms the decision was made in."""
-        scores = ScoreParams(scale=self.scale_spin.value())
+        scores = self._score_params()
         coast_before = outline_mm(self.doc, scores)
         coast_after = outline_mm(new_doc, scores)
         land_before = land_mm2(self.doc, scores)
@@ -2344,7 +2354,8 @@ class IslandEditor(QMainWindow):
     # -- scores -------------------------------------------------------------
     def _score_params(self) -> ScoreParams:
         """How the comparison is measured, at the print scale on the toolbar."""
-        return ScoreParams(scale=self.scale_spin.value())
+        return load_score_params(*settings_files(),
+                                 scale=self.scale_spin.value())
 
     def _scores_fresh(self) -> bool:
         """Whether the held comparison still describes what is on screen.
@@ -2465,8 +2476,9 @@ class IslandEditor(QMainWindow):
         the preview of that cut, and two knobs would let the preview and the
         edit disagree.
         """
-        return ThinParams(scale=self.scale_spin.value(),
-                          width_mm=self.width_spin.value())
+        return load_thin_params(*settings_files(),
+                                scale=self.scale_spin.value(),
+                                width_mm=self.width_spin.value())
 
     def _thin_report(self):
         """The thin land, measured once and kept, or None when not showing.
@@ -2605,7 +2617,9 @@ class IslandEditor(QMainWindow):
         config, so this window, the province viewer and the harness cannot drift
         into disagreeing about what a neck is.
         """
-        return StressParams(scale=self.scale_spin.value(), report_above=0.0)
+        return load_stress_params(*settings_files(),
+                                  scale=self.scale_spin.value(),
+                                  report_above=0.0)
 
     def _toggle_stress(self, checked: bool) -> None:
         """Measure the document and mark its necks, or take the marks away."""
@@ -3084,6 +3098,21 @@ class IslandEditor(QMainWindow):
         self.status.setText(f"{prefix}{', '.join(bits)}.")
 
     # -- settings ----------------------------------------------------------
+    def _apply_saved_settings(self) -> None:
+        """
+        Set every saved control to what the settings files say.
+
+        Read when the window is built, through ``settings_files()``, rather
+        than when the module is imported: the module's constants are the
+        shipped values, so the window opens on whatever the files hold at the
+        time -- the files a test points it at included.
+        """
+        config = load_files(*settings_files())
+        for key, control in SAVED_SETTINGS:
+            value = cfg(key, config=config)
+            if value is not None:
+                getattr(self, control).setValue(value)
+
     def _remember(self, key: str, value) -> None:
         """Note a setting to be written, and restart the clock on writing it.
 

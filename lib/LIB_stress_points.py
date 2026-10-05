@@ -207,12 +207,13 @@ from scipy import ndimage, sparse
 from scipy.sparse import csgraph
 from shapely.geometry import LineString, Point, shape as _shape
 
-from lib.LIB_project_config import get as _cfg
+from lib.LIB_project_config import build_params
+from lib.LIB_project_config import shipped as _shipped
 
 log = logging.getLogger(__name__)
 
-EPSG_METRIC = _cfg("crs.working")
-DEFAULT_SCALE = _cfg("print.scale")
+EPSG_METRIC = _shipped("crs.working")
+DEFAULT_SCALE = _shipped("print.scale")
 
 #: Four-connectivity. Land that meets only at a corner is not land you can
 #: print across, so a diagonal touch must not count as a join.
@@ -244,59 +245,47 @@ COMPACT_SLENDERNESS = 1.0 / math.sqrt(math.pi)
 
 # -- parameters -------------------------------------------------------------
 
-def _from_config(dotted):
-    """A field default read when the block is built, not when it is imported.
-
-    So that a value saved from one tool is picked up by the next without either
-    of them having to reach for the file: the config is re-read on every lookup
-    (``LIB_project_config.load`` does not cache), and a ``StressParams()`` built
-    after a save carries the saved number.  With a plain default the value would
-    be frozen at import and a saved setting would need a restart -- and the two
-    windows would quietly measure differently in the meantime.
-    """
-    return field(default_factory=lambda: _cfg(dotted))
-
-
 @dataclass
 class StressParams:
     """What counts as a neck, and what one can hold. All lengths are print-mm.
 
-    Every default is read from the configuration **as the block is built**, so
-    ``lib.LIB_project_config.update_local`` is all it takes for a setting to
-    reach every tool that measures.  See :func:`_from_config`.
+    The defaults are the shipped settings and never come from a file, so
+    ``StressParams()`` measures the same on every desk.  A window that wants
+    the saved settings asks :func:`load_stress_params` for them -- which is how
+    a value tuned in the Stress Points harness reaches the province viewer.
     """
-    scale: float = _from_config("print.scale")
+    scale: float = _shipped("print.scale")
     #: The width resolution. Everything narrower than two pixels is invisible to
     #: the field, so this is the floor on any throat that can be reported.
-    pixel_mm: float = _from_config("stress.pixel_mm")
+    pixel_mm: float = _shipped("stress.pixel_mm")
     #: Above this width, a join is not a stress point -- and clamping here is
     #: what makes an edit local (see the module docstring).
-    ceiling_mm: float = _from_config("stress.ceiling_mm")
+    ceiling_mm: float = _shipped("stress.ceiling_mm")
     #: Throat resolution, and an accuracy knob rather than only a speed one:
     #: two joins landing in the same band are simultaneous, so one neck's load
     #: can be split across two events. At 0.05 mm British Columbia reports
     #: three necks where the pixel-by-pixel flood finds four.
-    band_mm: float = _from_config("stress.band_mm")
+    band_mm: float = _shipped("stress.band_mm")
     #: The reuse unit -- and, until the tile summary is exact, a little bit of
     #: an accuracy knob too. The answer settles as tiles grow and a single tile
     #: has no boundaries at all, so the default is the smallest tile at which
     #: all four test provinces have already settled. See the module docstring.
-    tile_px: int = _from_config("stress.tile_px")
+    tile_px: int = _shipped("stress.tile_px")
     #: How much land has to hang on each side before a join is a neck at all.
     #: This is "two *larger* areas" in numbers.
-    min_lobe_mm2: float = _from_config("stress.min_lobe_mm2")
+    min_lobe_mm2: float = _shipped("stress.min_lobe_mm2")
     #: Room around the land in the grid, so that growing the coast a little does
     #: not throw the cached raster away.
-    margin_mm: float = _from_config("stress.margin_mm")
-    thickness_mm: float = _from_config("print.border_thickness_mm")
+    margin_mm: float = _shipped("stress.margin_mm")
+    thickness_mm: float = _shipped("print.border_thickness_mm")
     #: The calibration, borrowed rather than invented: what one bridge of
     #: ``capacity_at_mm`` is reckoned to hold.
-    capacity_mm2: float = _from_config("bridges.mass_per_bridge_mm2")
-    capacity_at_mm: float = _from_config("bridges.width_mm")
+    capacity_mm2: float = _shipped("bridges.mass_per_bridge_mm2")
+    capacity_at_mm: float = _shipped("bridges.width_mm")
     #: 0 weighs a load by its mass alone; 1 also by how far out it sits.
-    lever_power: float = _from_config("stress.lever_power")
+    lever_power: float = _shipped("stress.lever_power")
     #: Necks below this severity are measured but not reported.
-    report_above: float = _from_config("stress.report_above")
+    report_above: float = _shipped("stress.report_above")
     #: Recompute from scratch and check the incremental answer. For tests, and
     #: for anyone who suspects a stale overlay.
     verify: bool = False
@@ -318,6 +307,39 @@ class StressParams:
 
 
 # -- the cached raster ------------------------------------------------------
+
+
+#: The config key behind each field of :class:`StressParams`, for
+#: :func:`load_stress_params`.
+_STRESSPARAMS_KEYS = {
+    "scale": "print.scale",
+    "pixel_mm": "stress.pixel_mm",
+    "ceiling_mm": "stress.ceiling_mm",
+    "band_mm": "stress.band_mm",
+    "tile_px": "stress.tile_px",
+    "min_lobe_mm2": "stress.min_lobe_mm2",
+    "margin_mm": "stress.margin_mm",
+    "thickness_mm": "print.border_thickness_mm",
+    "capacity_mm2": "bridges.mass_per_bridge_mm2",
+    "capacity_at_mm": "bridges.width_mm",
+    "lever_power": "stress.lever_power",
+    "report_above": "stress.report_above",
+    "work_crs": "crs.working",
+}
+
+
+def load_stress_params(*config_files, **overrides):
+    """
+    A :class:`StressParams` filled from config files.
+
+    ``config_files`` are read in order, later ones winning -- a window passes
+    ``LIB_project_config.settings_files()``, the project file then this desk's
+    local one.  A setting no file mentions keeps its built-in default, and
+    ``overrides`` win over everything.  :class:`StressParams` built directly never
+    reads a file: its defaults are the shipped stress settings, the same on
+    every desk.
+    """
+    return build_params(StressParams, _STRESSPARAMS_KEYS, *config_files, **overrides)
 
 @dataclass
 class TileSummary:

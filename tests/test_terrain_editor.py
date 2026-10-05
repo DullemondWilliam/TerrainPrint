@@ -34,6 +34,7 @@ from shapely.geometry import box
 import geopandas as gpd
 
 import UI_terrain_editor as U
+from lib.LIB_project_config import update_local
 
 pytestmark = pytest.mark.usefixtures("qapp")
 
@@ -171,7 +172,9 @@ class TestMeshStage:
         a mutation sweep proved it. Move the configured spacing and the seed has
         to move with it.
         """
-        monkeypatch.setattr(U, "DEFAULT_SPACING_MM", 0.8)
+        # The window reads the setting when it is built, through the
+        # settings files -- so it is the saved setting that has to move.
+        update_local("terrain.spacing_mm", 0.8)
         fresh = U.TerrainEditorTester()
         assert fresh.res_spin.value() == pytest.approx(6400.0)
 

@@ -101,29 +101,30 @@ from shapely.geometry import LineString, MultiLineString
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import linemerge, polygonize, unary_union
 
-from lib.LIB_project_config import get as _cfg
+from lib.LIB_project_config import build_params, settings_files
+from lib.LIB_project_config import shipped as _shipped
 
 log = logging.getLogger(__name__)
 
-EPSG_METRIC = _cfg("crs.working")
-DEFAULT_SCALE = _cfg("print.scale")
+EPSG_METRIC = _shipped("crs.working")
+DEFAULT_SCALE = _shipped("print.scale")
 
 
 @dataclass
 class SeamParams:
     """How the shared seam is conditioned.  All lengths are **print-mm**."""
     scale: float = DEFAULT_SCALE                #: map scale denominator
-    tolerance_mm: float = _cfg("seam.tolerance_mm")       #: Douglas-Peucker tolerance
+    tolerance_mm: float = _shipped("seam.tolerance_mm")       #: Douglas-Peucker tolerance
     #: Printer limits.  These describe the machine and drive the *report*, so a
     #: seam is measured against what can be printed rather than against how hard
     #: the filters below were told to push.
-    nozzle_mm: float = _cfg("seam.nozzle_mm")             #: shortest printable run
-    spike_angle_deg: float = _cfg("seam.spike_angle_deg")  #: sharpest printable corner
+    nozzle_mm: float = _shipped("seam.nozzle_mm")             #: shortest printable run
+    spike_angle_deg: float = _shipped("seam.spike_angle_deg")  #: sharpest printable corner
     #: Filter strengths.  Default to the limits above; 0 skips the pass.
-    min_segment_mm: float = _cfg("seam.min_segment_mm")   #: collapse shorter runs
-    min_angle_deg: float = _cfg("seam.min_angle_deg")     #: despike below this angle
-    smooth_iterations: int = _cfg("seam.smooth_iterations")  #: Chaikin passes
-    max_deviation_mm: float = _cfg("seam.max_deviation_mm")  #: refuse a bigger drift
+    min_segment_mm: float = _shipped("seam.min_segment_mm")   #: collapse shorter runs
+    min_angle_deg: float = _shipped("seam.min_angle_deg")     #: despike below this angle
+    smooth_iterations: int = _shipped("seam.smooth_iterations")  #: Chaikin passes
+    max_deviation_mm: float = _shipped("seam.max_deviation_mm")  #: refuse a bigger drift
     work_crs: str = EPSG_METRIC                 #: metric CRS the work is done in
 
     @property
@@ -131,6 +132,35 @@ class SeamParams:
         """Metres per print-mm."""
         return self.scale / 1000.0
 
+
+
+#: The config key behind each field of :class:`SeamParams`, for
+#: :func:`load_seam_params`.
+_SEAMPARAMS_KEYS = {
+    "tolerance_mm": "seam.tolerance_mm",
+    "nozzle_mm": "seam.nozzle_mm",
+    "spike_angle_deg": "seam.spike_angle_deg",
+    "min_segment_mm": "seam.min_segment_mm",
+    "min_angle_deg": "seam.min_angle_deg",
+    "smooth_iterations": "seam.smooth_iterations",
+    "max_deviation_mm": "seam.max_deviation_mm",
+    "scale": "print.scale",
+    "work_crs": "crs.working",
+}
+
+
+def load_seam_params(*config_files, **overrides):
+    """
+    A :class:`SeamParams` filled from config files.
+
+    ``config_files`` are read in order, later ones winning -- a window passes
+    ``LIB_project_config.settings_files()``, the project file then this desk's
+    local one.  A setting no file mentions keeps its built-in default, and
+    ``overrides`` win over everything.  :class:`SeamParams` built directly never
+    reads a file: its defaults are the shipped seam settings, the same on
+    every desk.
+    """
+    return build_params(SeamParams, _SEAMPARAMS_KEYS, *config_files, **overrides)
 
 @dataclass
 class SeamResult:
@@ -498,13 +528,15 @@ def main(argv=None):
                     help="remove seam corners sharper than this")
     ap.add_argument("--smooth", type=int, default=None, metavar="N",
                     help="Chaikin smoothing passes")
-    ap.add_argument("--scale", type=float, default=DEFAULT_SCALE)
+    ap.add_argument("--scale", type=float, default=None)
     args = ap.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    defaults = SeamParams()
+    # The command line is a front end like any window: the saved settings
+    # are its defaults, and a flag overrides one.
+    defaults = load_seam_params(*settings_files())
     params = SeamParams(
-        scale=args.scale,
+        scale=_pick(args.scale, defaults.scale),
         tolerance_mm=_pick(args.tolerance, defaults.tolerance_mm),
         min_segment_mm=_pick(args.min_segment, defaults.min_segment_mm),
         min_angle_deg=_pick(args.min_angle, defaults.min_angle_deg),

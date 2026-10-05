@@ -105,12 +105,13 @@ from shapely.affinity import translate
 from shapely.ops import polygonize, unary_union
 
 from lib.LIB_island_bridging import brush_stroke
-from lib.LIB_project_config import get as _cfg
+from lib.LIB_project_config import build_params
+from lib.LIB_project_config import shipped as _shipped
 from lib.LIB_shared_border import _shared_seam
 
 log = logging.getLogger(__name__)
 
-DEFAULT_SCALE = _cfg("print.scale")
+DEFAULT_SCALE = _shipped("print.scale")
 
 #: A tab counts as a finger -- something that can snap off -- once it reaches
 #: this many times further than its neck is wide.
@@ -143,39 +144,20 @@ class FitParams:
     """How the seam is checked.  All lengths are **print-mm**."""
     scale: float = DEFAULT_SCALE
     #: Narrowest land that survives as a solid -- the same figure Show thin uses.
-    min_width_mm: float = _cfg("thin.width_mm")
+    min_width_mm: float = _shipped("thin.width_mm")
     #: What each printed edge loses or gains: over-extrusion, elephant's foot,
     #: slicer clearance. Per side, so a feature loses twice this across.
-    edge_loss_mm: float = _cfg("seam.edge_loss_mm")
+    edge_loss_mm: float = _shipped("seam.edge_loss_mm")
     #: How far from the seam narrow land counts as the seam's problem.
-    band_mm: float = _cfg("seam.fit_band_mm")
+    band_mm: float = _shipped("seam.fit_band_mm")
     #: The widest tab head looked for. Pockets narrower than this are closed
     #: over, and what fills them is a tab; a bulge wider than it is just the
     #: border going somewhere.
-    tab_mm: float = _cfg("seam.fit_tab_mm")
+    tab_mm: float = _shipped("seam.fit_tab_mm")
     #: Head wider than neck by more than this factor captures the tab.
-    lock_ratio: float = _cfg("seam.lock_ratio")
+    lock_ratio: float = _shipped("seam.lock_ratio")
     #: Tabs smaller than this are noise, not puzzle pieces.
     min_tab_area_mm2: float = 0.01
-
-    @classmethod
-    def from_config(cls, **overrides):
-        """
-        The settings as the config says *now*.
-
-        The field defaults above are read once, when this module is imported,
-        so a value a window saves afterwards never reaches ``FitParams()``.
-        Anything that has to agree with a setting turned in the same session
-        builds its params here.
-        """
-        values = dict(scale=_cfg("print.scale"),
-                      min_width_mm=_cfg("thin.width_mm"),
-                      edge_loss_mm=_cfg("seam.edge_loss_mm"),
-                      band_mm=_cfg("seam.fit_band_mm"),
-                      tab_mm=_cfg("seam.fit_tab_mm"),
-                      lock_ratio=_cfg("seam.lock_ratio"))
-        values.update(overrides)
-        return cls(**values)
 
     @property
     def mpm(self) -> float:
@@ -187,6 +169,32 @@ class FitParams:
         """The width a feature needs at the seam to still print and mesh."""
         return self.min_width_mm + 2.0 * self.edge_loss_mm
 
+
+
+#: The config key behind each field of :class:`FitParams`, for
+#: :func:`load_fit_params`.
+_FITPARAMS_KEYS = {
+    "min_width_mm": "thin.width_mm",
+    "edge_loss_mm": "seam.edge_loss_mm",
+    "band_mm": "seam.fit_band_mm",
+    "tab_mm": "seam.fit_tab_mm",
+    "lock_ratio": "seam.lock_ratio",
+    "scale": "print.scale",
+}
+
+
+def load_fit_params(*config_files, **overrides):
+    """
+    A :class:`FitParams` filled from config files.
+
+    ``config_files`` are read in order, later ones winning -- a window passes
+    ``LIB_project_config.settings_files()``, the project file then this desk's
+    local one.  A setting no file mentions keeps its built-in default, and
+    ``overrides`` win over everything.  :class:`FitParams` built directly never
+    reads a file: its defaults are the shipped seam-fit settings, the same on
+    every desk.
+    """
+    return build_params(FitParams, _FITPARAMS_KEYS, *config_files, **overrides)
 
 @dataclass
 class NarrowPatch:
@@ -661,9 +669,10 @@ def solve_fit(geom_a, geom_b, params=None, max_move_mm=None,
     Parameters
     ----------
     geom_a, geom_b : the pair, in the working metre CRS.
-    params         : FitParams, as for :func:`fit_report`.
+    params         : FitParams, as for :func:`fit_report` (a window builds it
+                     with :func:`load_fit_params`).
     max_move_mm    : the furthest any repair may move the border from where it
-                     ran *before solving*, print-mm.  Defaults to the config's
+                     ran *before solving*, print-mm.  Defaults to the shipped
                      ``seam.solve_max_move_mm``.
     progress       : optional ``progress(round, done, total)``, called as each
                      problem is looked at -- Labrador has eighty.
@@ -673,9 +682,9 @@ def solve_fit(geom_a, geom_b, params=None, max_move_mm=None,
     SolveResult -- with ``a`` and ``b`` the very same objects passed in when
     nothing was changed.
     """
-    params = params or FitParams.from_config()
+    params = params or FitParams()
     if max_move_mm is None:
-        max_move_mm = _cfg("seam.solve_max_move_mm")
+        max_move_mm = _shipped("seam.solve_max_move_mm")
     result = SolveResult(a=geom_a, b=geom_b)
     report = fit_report(geom_a, geom_b, params=params)
     result.problems_before = result.problems_after = report.problems

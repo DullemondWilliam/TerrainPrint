@@ -74,7 +74,8 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QDoubleSpinBox,
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib.LIB_island_bridges import (EPSG_METRIC, BridgeParams, apply_bridges,
-                                    plan_bridges)
+                                    load_bridge_params, plan_bridges)
+from lib.LIB_project_config import settings_files
 from lib.LIB_island_merging import _polygons
 
 GEOJSON_FILTER = "GeoJSON (*.geojson *.json);;All files (*)"
@@ -210,7 +211,7 @@ class IslandBridgesTester(QMainWindow):
         toolbar.addStretch(1)
         root.addLayout(toolbar)
 
-        defaults = BridgeParams()
+        defaults = load_bridge_params(*settings_files())
 
         # -- second row: the bridge itself ----------------------------------
         bridge_bar = QHBoxLayout()
@@ -385,7 +386,8 @@ class IslandBridgesTester(QMainWindow):
     # -- parameters ---------------------------------------------------------
     def params(self) -> BridgeParams:
         """The parameter block exactly as the controls now read it."""
-        return BridgeParams(
+        return load_bridge_params(
+            *settings_files(),
             scale=self.scale_spin.value(),
             width_mm=self.width_spin.value(),
             max_span_mm=self.span_spin.value(),

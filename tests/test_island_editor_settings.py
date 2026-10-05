@@ -13,9 +13,10 @@ These are pytest-style (not unittest) because they need pytest-qt's ``qapp`` /
 
 Run with:  ./.venv/Scripts/python.exe -m pytest tests/test_island_editor_settings.py -v
 
-The local config is redirected to a throwaway copy for every test in the suite
-(see conftest.py), which is what makes it safe for a test to turn a box at all.
-``test_the_sandbox_is_in_place`` is the canary on that: if the redirection ever
+Both config files are redirected to fixed, throwaway ones for every test in
+the suite (see conftest.py), which is what makes it safe for a test to turn a
+box at all, and what makes the window open on the same settings for everyone.
+``TestTheSandboxIsInPlace`` is the canary on that: if the redirection ever
 stops working, this suite starts rewriting the config of whoever ran it.
 """
 
@@ -45,14 +46,19 @@ def saved(key):
 class TestTheSandboxIsInPlace:
     """The guard that lets every other test here turn a box."""
 
-    def test_the_local_config_is_a_copy(self, _local_config):
-        assert config.LOCAL_CONFIG_PATH == str(_local_config)
+    def test_the_fixed_config_is_a_copy(self, _fixed_config):
+        assert config.LOCAL_CONFIG_PATH == str(_fixed_config)
         assert "Temp" in config.LOCAL_CONFIG_PATH or "tmp" in config.LOCAL_CONFIG_PATH
 
-    def test_it_still_reads_what_the_real_one_says(self, _local_config):
-        """A copy, not an empty file: the suite must measure with the same
-        numbers as the windows it is testing."""
-        assert saved("stress.min_lobe_mm2") == config.get("stress.min_lobe_mm2")
+    def test_the_project_file_is_a_fixed_copy_too(self):
+        assert "Temp" in config.CONFIG_PATH or "tmp" in config.CONFIG_PATH
+
+    def test_the_settings_are_the_shipped_ones(self):
+        """Fixed, whatever this desk has saved: the suite's answer must not
+        depend on who runs it."""
+        for key in ("thin.width_mm", "stress.min_lobe_mm2", "bridges.width_mm",
+                    "print.scale"):
+            assert saved(key) == config.shipped(key)
 
 
 class TestEachBoxIsKept:
@@ -98,13 +104,13 @@ class TestEachBoxIsKept:
         editor._write_settings()
         assert isinstance(saved("print.scale"), int)
 
-    def test_a_fresh_window_writes_nothing(self, editor, _local_config):
+    def test_a_fresh_window_writes_nothing(self, editor, _fixed_config):
         """Building the window sets every box to its default; none of that is
         a value anybody chose."""
-        before = _local_config.read_text(encoding="utf-8")
+        before = _fixed_config.read_text(encoding="utf-8")
         other = M.IslandEditor()
         other._write_settings()
-        assert _local_config.read_text(encoding="utf-8") == before
+        assert _fixed_config.read_text(encoding="utf-8") == before
 
 
 class TestWhatItWritesInto:
@@ -119,13 +125,13 @@ class TestWhatItWritesInto:
         assert saved("island_editor.buffer_mm") == 0.4
 
     def test_it_writes_the_local_file_not_the_tracked_one(self, editor,
-                                                          _local_config):
+                                                          _fixed_config):
         """The tracked file is the project's shipped numbers and a reviewable
         diff; this is what one desk works at."""
         editor.buffer_spin.setValue(0.4)
         editor._write_settings()
         assert "island_editor" in json.loads(
-            _local_config.read_text(encoding="utf-8"))
+            _fixed_config.read_text(encoding="utf-8"))
         tracked = json.loads(
             open(config.CONFIG_PATH, encoding="utf-8").read())
         assert tracked["island_editor"]["buffer_mm"] != 0.4
@@ -168,7 +174,36 @@ class TestWhenItWrites:
 
 class TestTheKeysAreTheOnesTheWindowStartsFrom:
     """Writing a key nothing reads back would be a setting that still forgets
-    itself. Each entry's default is built from the key it saves to."""
+    itself. The window opens on what the settings files say for each key it
+    saves to -- read when it is built, not when the module is imported."""
+
+    @pytest.mark.parametrize("key, control, value", [
+        ("island_editor.buffer_mm", "buffer_spin", 0.37),
+        ("island_editor.brush_mm", "brush_spin", 0.41),
+        ("island_editor.min_area_mm2", "area_spin", 0.29),
+        ("thin.width_mm", "width_spin", 0.8),
+        ("bridges.width_mm", "bridge_width_spin", 0.6),
+        ("bridges.max_span_mm", "bridge_span_spin", 7.5),
+        ("stress.report_above", "stress_spin", 1.25),
+        ("print.scale", "scale_spin", 4000000),
+        ("island_editor.original_opacity", "opacity_slider", 65),
+    ])
+    def test_a_new_window_opens_on_the_saved_value(self, qtbot, key, control,
+                                                   value):
+        config.update_local(key, value)
+        window = M.IslandEditor()
+        qtbot.addWidget(window)
+        assert getattr(window, control).value() == pytest.approx(value)
+
+    def test_opening_on_saved_values_writes_nothing(self, qtbot,
+                                                    _fixed_config):
+        """Applying the saved values must not be mistaken for a turn."""
+        config.update_local("thin.width_mm", 0.8)
+        before = _fixed_config.read_text(encoding="utf-8")
+        window = M.IslandEditor()
+        qtbot.addWidget(window)
+        assert not window._pending_settings
+        assert _fixed_config.read_text(encoding="utf-8") == before
 
     @pytest.mark.parametrize("key, constant, position", [
         ("island_editor.original_opacity", "ORIGINAL_OPACITY", 2),
@@ -180,12 +215,13 @@ class TestTheKeysAreTheOnesTheWindowStartsFrom:
         ("bridges.max_span_mm", "BRIDGE_SPAN_MM", 2),
         ("stress.report_above", "STRESS_SEVERITY", 2),
     ])
-    def test_the_default_comes_from_the_key_it_saves_to(self, key, constant,
-                                                        position):
-        assert getattr(M, constant)[position] == saved(key)
+    def test_the_built_in_default_is_the_shipped_value(self, key, constant,
+                                                       position):
+        """The module's constants are the fallback, fixed in code."""
+        assert getattr(M, constant)[position] == config.shipped(key)
 
     def test_the_print_scale_too(self):
-        assert M.DEFAULT_PRINT_SCALE == saved("print.scale")
+        assert M.DEFAULT_PRINT_SCALE == config.shipped("print.scale")
 
 
 if __name__ == "__main__":

@@ -631,8 +631,8 @@ class TestIO:
 
 class TestConfig:
 
-    def test_defaults_come_from_the_config(self):
-        from lib.LIB_project_config import get as cfg
+    def test_defaults_are_the_shipped_settings(self):
+        from lib.LIB_project_config import shipped as cfg
         params = SeamParams()
         assert params.nozzle_mm == pytest.approx(cfg("seam.nozzle_mm"))
         assert params.spike_angle_deg == pytest.approx(cfg("seam.spike_angle_deg"))

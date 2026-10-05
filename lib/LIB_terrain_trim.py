@@ -53,7 +53,9 @@ from shapely.ops import unary_union
 
 from lib.LIB_border_connectors import (ConnectorParams, DEFAULT_SCALE,
                                        EPSG_METRIC, _extrude_man,
-                                       _man_to_trimesh, _safe_union)
+                                       _man_to_trimesh, _safe_union,
+                                       load_connector_params)
+from lib.LIB_project_config import settings_files
 from lib.LIB_dovetail_fitter import _load_mesh, _safe_name
 from lib.LIB_stl_reconcile import reconcile
 
@@ -262,7 +264,8 @@ def main():
     ap.add_argument("province_geojson", help="Province boundary GeoJSON (WGS84)")
     ap.add_argument("-o", "--out", default=None,
                     help="Output STL path (default: <dem_stl>_trimmed.stl)")
-    ap.add_argument("--scale", type=float, default=DEFAULT_SCALE,
+    ap.add_argument("--scale", type=float,
+                    default=load_connector_params(*settings_files()).scale,
                     help="map scale the slab was printed at (1 : scale)")
     ap.add_argument("--build-crs", default=EPSG_METRIC,
                     help="projected CRS the DEMto3D model was built in")

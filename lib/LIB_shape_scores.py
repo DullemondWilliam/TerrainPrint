@@ -80,12 +80,13 @@ import numpy as np
 import rasterio.features
 from affine import Affine
 
-from lib.LIB_project_config import get as _cfg
+from lib.LIB_project_config import build_params
+from lib.LIB_project_config import shipped as _shipped
 
 log = logging.getLogger(__name__)
 
-EPSG_METRIC = _cfg("crs.working")
-DEFAULT_SCALE = _cfg("print.scale")
+EPSG_METRIC = _shipped("crs.working")
+DEFAULT_SCALE = _shipped("print.scale")
 
 #: Most cells the comparison will rasterise. 64 million is about 128 MB across
 #: the two boolean grids and a few hundred milliseconds -- past that the pixel
@@ -101,7 +102,7 @@ class ScoreParams:
     #: The printer's resolution, and how finely to sample against it. A quarter
     #: of the nozzle resolves what the nozzle can just lay down; sampling at
     #: the nozzle itself would miss exactly that.
-    nozzle_mm: float = _cfg("seam.nozzle_mm")
+    nozzle_mm: float = _shipped("seam.nozzle_mm")
     pixels_per_nozzle: int = 4
     work_crs: str = EPSG_METRIC                 #: metric CRS the work is done in
 
@@ -121,6 +122,29 @@ class ScoreParams:
     def pixel_m(self) -> float:
         return self.pixel_mm * self.mpm
 
+
+
+#: The config key behind each field of :class:`ScoreParams`, for
+#: :func:`load_score_params`.
+_SCOREPARAMS_KEYS = {
+    "nozzle_mm": "seam.nozzle_mm",
+    "scale": "print.scale",
+    "work_crs": "crs.working",
+}
+
+
+def load_score_params(*config_files, **overrides):
+    """
+    A :class:`ScoreParams` filled from config files.
+
+    ``config_files`` are read in order, later ones winning -- a window passes
+    ``LIB_project_config.settings_files()``, the project file then this desk's
+    local one.  A setting no file mentions keeps its built-in default, and
+    ``overrides`` win over everything.  :class:`ScoreParams` built directly never
+    reads a file: its defaults are the shipped shape-score settings, the same on
+    every desk.
+    """
+    return build_params(ScoreParams, _SCOREPARAMS_KEYS, *config_files, **overrides)
 
 @dataclass
 class ShapeScores:

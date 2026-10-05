@@ -266,7 +266,7 @@ class TestTheSettingsComeFromTheSharedConfig:
     provinces starts from the ones that will break.
     """
 
-    def _local_config(self, tmp_path, values):
+    def _fixed_config(self, tmp_path, values):
         import json
         path = tmp_path / "local.json"
         path.write_text(json.dumps(values), encoding="utf-8")
@@ -276,7 +276,7 @@ class TestTheSettingsComeFromTheSharedConfig:
                                                              tmp_path,
                                                              monkeypatch):
         from lib import LIB_project_config as config
-        path = self._local_config(tmp_path, {"stress": {"pixel_mm": 0.25,
+        path = self._fixed_config(tmp_path, {"stress": {"pixel_mm": 0.25,
                                                         "ceiling_mm": 4.5,
                                                         "min_lobe_mm2": 60.0}})
         monkeypatch.setattr(config, "LOCAL_CONFIG_PATH", path)
@@ -297,7 +297,7 @@ class TestTheSettingsComeFromTheSharedConfig:
         measurement is of the province, not of the filter, so turning Min
         severity re-draws instead of spending fifteen seconds again."""
         from lib import LIB_project_config as config
-        path = self._local_config(tmp_path, {"stress": {"report_above": 3.0}})
+        path = self._fixed_config(tmp_path, {"stress": {"report_above": 3.0}})
         monkeypatch.setattr(config, "LOCAL_CONFIG_PATH", path)
         assert mixed._stress_params().report_above == 0.0
 

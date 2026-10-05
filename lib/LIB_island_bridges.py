@@ -167,12 +167,13 @@ from shapely.geometry import LineString, Point, Polygon, box
 from shapely.ops import nearest_points, unary_union
 
 from lib.LIB_island_merging import _fill_new_holes, _polygons
-from lib.LIB_project_config import get as _cfg
+from lib.LIB_project_config import build_params
+from lib.LIB_project_config import shipped as _shipped
 
 log = logging.getLogger(__name__)
 
-EPSG_METRIC = _cfg("crs.working")
-DEFAULT_SCALE = _cfg("print.scale")
+EPSG_METRIC = _shipped("crs.working")
+DEFAULT_SCALE = _shipped("print.scale")
 
 #: Landings scored per pair, shortest crossing first.  The band below is already
 #: a proof-backed bound; this is the guard for the case it cannot help with --
@@ -195,33 +196,33 @@ class BridgeParams:
     #: is ``width_mm`` wide, and ends in a semicircle of half that radius
     #: centred on each landing.  There is no separate embedment knob, because
     #: with the cap tangent to the sides there is nothing left to choose.
-    width_mm: float = _cfg("bridges.width_mm")
+    width_mm: float = _shipped("bridges.width_mm")
     #: Refuse to span further than this.  Also the cap that turns the spanning
     #: tree into a forest, so it decides which islands stay separate.
-    max_span_mm: float = _cfg("bridges.max_span_mm")
+    max_span_mm: float = _shipped("bridges.max_span_mm")
     #: Coastline sampling pitch for candidate landings.  Finer finds better
     #: landings and costs linearly more.
-    sample_mm: float = _cfg("bridges.sample_mm")
+    sample_mm: float = _shipped("bridges.sample_mm")
     #: Scoring, in mm so both trade directly against span.  See the module
     #: docstring for the cost expression.
-    angle_penalty_mm: float = _cfg("bridges.angle_penalty_mm")
-    anchor_penalty_mm: float = _cfg("bridges.anchor_penalty_mm")
+    angle_penalty_mm: float = _shipped("bridges.angle_penalty_mm")
+    anchor_penalty_mm: float = _shipped("bridges.anchor_penalty_mm")
     #: Reject a landing whose overlap with the land is below this fraction of
     #: the end cap a straight shore would bury whole (0..1).
-    min_anchor: float = _cfg("bridges.min_anchor")
+    min_anchor: float = _shipped("bridges.min_anchor")
     #: Printed area one bridge is reckoned to hold, in mm^2 -- the branch mass
     #: per bridge.  A join carrying more than this gets another, up to
     #: ``max_per_pair``.  Zero puts every join back on a single bridge.
-    mass_per_bridge_mm2: float = _cfg("bridges.mass_per_bridge_mm2")
+    mass_per_bridge_mm2: float = _shipped("bridges.mass_per_bridge_mm2")
     #: Slenderness limit, as span/width.  Past it a bridge is a matchstick.
-    max_aspect: float = _cfg("bridges.max_aspect")
+    max_aspect: float = _shipped("bridges.max_aspect")
     #: Report slender bridges (default) or refuse them.  Refusing disconnects
     #: whatever they were holding on, which is why it is not the default.
     drop_slender: bool = False
     #: The cap on what the mass rule may ask for, and how far apart the extra
     #: bridges of a join have to be placed to be worth placing at all.
-    max_per_pair: int = _cfg("bridges.max_per_pair")
-    hinge_ratio: float = _cfg("bridges.hinge_ratio")
+    max_per_pair: int = _shipped("bridges.max_per_pair")
+    hinge_ratio: float = _shipped("bridges.hinge_ratio")
     work_crs: str = EPSG_METRIC                 #: metric CRS the work is done in
 
     @property
@@ -259,6 +260,38 @@ class BridgeParams:
     def sample_m(self) -> float:
         return self.sample_mm * self.mpm
 
+
+
+#: The config key behind each field of :class:`BridgeParams`, for
+#: :func:`load_bridge_params`.
+_BRIDGEPARAMS_KEYS = {
+    "width_mm": "bridges.width_mm",
+    "max_span_mm": "bridges.max_span_mm",
+    "sample_mm": "bridges.sample_mm",
+    "angle_penalty_mm": "bridges.angle_penalty_mm",
+    "anchor_penalty_mm": "bridges.anchor_penalty_mm",
+    "min_anchor": "bridges.min_anchor",
+    "mass_per_bridge_mm2": "bridges.mass_per_bridge_mm2",
+    "max_aspect": "bridges.max_aspect",
+    "max_per_pair": "bridges.max_per_pair",
+    "hinge_ratio": "bridges.hinge_ratio",
+    "scale": "print.scale",
+    "work_crs": "crs.working",
+}
+
+
+def load_bridge_params(*config_files, **overrides):
+    """
+    A :class:`BridgeParams` filled from config files.
+
+    ``config_files`` are read in order, later ones winning -- a window passes
+    ``LIB_project_config.settings_files()``, the project file then this desk's
+    local one.  A setting no file mentions keeps its built-in default, and
+    ``overrides`` win over everything.  :class:`BridgeParams` built directly never
+    reads a file: its defaults are the shipped bridge settings, the same on
+    every desk.
+    """
+    return build_params(BridgeParams, _BRIDGEPARAMS_KEYS, *config_files, **overrides)
 
 @dataclass
 class Bridge:

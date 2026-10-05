@@ -304,3 +304,28 @@ class TestBlinkingIsUndisturbed:
         before = window.ax.get_xlim(), window.ax.get_ylim()
         window.next_layer()
         assert (window.ax.get_xlim(), window.ax.get_ylim()) == before
+
+
+class TestItOpensOnTheSavedSettings:
+    """The viewer reads the settings files when it is built -- the module's
+    constants are only the shipped fallbacks."""
+
+    @pytest.mark.parametrize("key, control, value", [
+        ("thin.width_mm", "thin_spin", 0.7),
+        ("stress.report_above", "stress_spin", 0.5),
+        ("print.scale", "scale_spin", 4000000),
+    ])
+    def test_a_new_viewer_starts_from_the_saved_value(self, qtbot, key,
+                                                      control, value):
+        from lib.LIB_project_config import update_local
+        update_local(key, value)
+        viewer = V.ProvinceViewer()
+        qtbot.addWidget(viewer)
+        assert getattr(viewer, control).value() == pytest.approx(value)
+
+    def test_and_measures_with_it(self, qtbot):
+        from lib.LIB_project_config import update_local
+        update_local("thin.width_mm", 0.7)
+        viewer = V.ProvinceViewer()
+        qtbot.addWidget(viewer)
+        assert viewer._thin_params().width_mm == pytest.approx(0.7)

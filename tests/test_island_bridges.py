@@ -180,7 +180,7 @@ class TestWhereTheBridgeGoes(BridgeTestCase):
                         (4 * self.MM, 4 * self.MM), (0, 4 * self.MM)])
         neighbour = self.square(8.0, 0.0)
         # Sampled finely enough that the tip is genuinely on offer.
-        params = BridgeParams(sample_mm=0.02)
+        params = BridgeParams(sample_mm=0.02, width_mm=1.0)
         bridge = plan_bridges([spit, neighbour], params).bridges[0]
         self.assertAlmostEqual(bridge.span_mm, 4.0, places=2)
         self.assertGreaterEqual(bridge.anchor, params.min_anchor)
@@ -794,7 +794,8 @@ class TestSlenderness(BridgeTestCase):
         return [self.square(0.0, 0.0), self.square(16.0, 0.0)]   # 12 mm apart
 
     def test_a_long_thin_bridge_is_flagged(self):
-        params = BridgeParams(max_span_mm=20.0, max_aspect=10.0)
+        # 12 mm over a 1 mm bridge: the aspect is span over width.
+        params = BridgeParams(max_span_mm=20.0, max_aspect=10.0, width_mm=1.0)
         bridge = plan_bridges(self.pair(), params).bridges[0]
         self.assertTrue(bridge.slender)
         self.assertAlmostEqual(bridge.aspect, 12.0, places=4)
@@ -935,9 +936,12 @@ class TestParams(BridgeTestCase):
         self.assertAlmostEqual(wide.span_mm * 8000.0,
                                narrow.span_mm * 4000.0, places=3)
 
-    def test_defaults_come_from_the_project_config(self):
-        # The knobs are project truths, not literals hidden in the module.
+    def test_defaults_are_the_shipped_settings(self):
+        # The knobs are project truths, not literals hidden in the module --
+        # and built directly, the block reads no file.
+        from lib.LIB_project_config import shipped
         params = BridgeParams()
+        self.assertEqual(params.width_mm, shipped("bridges.width_mm"))
         self.assertGreater(params.width_mm, 0.0)
         self.assertGreater(params.max_span_mm, params.width_mm)
         self.assertGreaterEqual(params.max_per_pair, 1)

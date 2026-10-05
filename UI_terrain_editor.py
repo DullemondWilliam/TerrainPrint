@@ -165,7 +165,8 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox,
 
 from lib.LIB_border_connectors import (ConnectorParams, _polys, _repair,
                                        _safe_union, build_border_mesh,
-                                       generate_lobes, notch_province)
+                                       generate_lobes, load_connector_params,
+                                       notch_province)
 from lib.LIB_border_regions import build_border_regions
 from lib.LIB_border_simplification import topo_simplify_two_tolerances
 from lib.LIB_border_split import split_to_bed
@@ -178,11 +179,12 @@ from lib.LIB_geotiff_clip import _read_window
 from lib.LIB_raster_reproject import (ReprojectParams, bounds_for,
                                       reproject_geotiff)
 from lib.LIB_raster_reproject import _output_grid as _warp_grid
-from lib.LIB_terrain_stl import (DEFAULT_BASE_MM, DEFAULT_EXAGGERATION,
-                                 DEFAULT_FLOOR_M, EPSG_METRIC, TerrainParams,
-                                 _finish, _triangle_count, _validate, _write,
-                                 terrain_to_stl)
+from lib.LIB_terrain_stl import (EPSG_METRIC, TerrainParams, _finish,
+                                 _triangle_count, _validate, _write,
+                                 load_terrain_params, terrain_to_stl)
 from lib.LIB_project_config import get as _cfg
+from lib.LIB_project_config import build_params, load_files, settings_files
+from lib.LIB_project_config import shipped as _shipped
 
 GEOJSON_FILTER = "GeoJSON (*.geojson *.json);;All files (*)"
 GEOTIFF_FILTER = "GeoTIFF (*.tif *.tiff);;All files (*)"
@@ -206,8 +208,8 @@ OVERVIEW_PX = 1100
 MAX_DISPLAY_PX = 2_000_000
 BG_COLOUR = "#FDFEFE"       # near-white 3D scene background
 #: Sampling pitch on paper; the Res control is seeded from it via the scale.
-DEFAULT_SPACING_MM = _cfg("terrain.spacing_mm")
-DEFAULT_RESAMPLING = _cfg("terrain.resampling")
+DEFAULT_SPACING_MM = _shipped("terrain.spacing_mm")
+DEFAULT_RESAMPLING = _shipped("terrain.resampling")
 
 # -- the Borders stage ------------------------------------------------------
 EPSG_WORKING = _cfg("crs.working")
@@ -267,14 +269,14 @@ def load_region(path):
 @dataclass
 class BorderSettings:
     """What the Borders stage is asked for.  Lengths are **print-mm**."""
-    coast_tol_mm: float = _cfg("borders.coast_tol_mm")
-    internal_tol_mm: float = _cfg("borders.internal_tol_mm")
-    min_segment_mm: float = _cfg("seam.min_segment_mm")
-    min_angle_deg: float = _cfg("seam.min_angle_deg")
-    width_mm: float = _cfg("borders.width_mm")
+    coast_tol_mm: float = _shipped("borders.coast_tol_mm")
+    internal_tol_mm: float = _shipped("borders.internal_tol_mm")
+    min_segment_mm: float = _shipped("seam.min_segment_mm")
+    min_angle_deg: float = _shipped("seam.min_angle_deg")
+    width_mm: float = _shipped("borders.width_mm")
     connectors: bool = True
-    lobe_spacing_mm: float = _cfg("borders.lobe_spacing_mm")
-    scale: float = _cfg("print.scale")
+    lobe_spacing_mm: float = _shipped("borders.lobe_spacing_mm")
+    scale: float = _shipped("print.scale")
 
     @property
     def mpm(self) -> float:
@@ -282,9 +284,31 @@ class BorderSettings:
         return self.scale / 1000.0
 
     def connector_params(self) -> ConnectorParams:
-        return ConnectorParams(scale=self.scale,
-                               spacing_mm=self.lobe_spacing_mm)
+        return load_connector_params(*settings_files(), scale=self.scale,
+                                     spacing_mm=self.lobe_spacing_mm)
 
+
+
+#: The config key behind each field of :class:`BorderSettings`.
+_BORDER_SETTINGS_KEYS = {
+    "coast_tol_mm": "borders.coast_tol_mm",
+    "internal_tol_mm": "borders.internal_tol_mm",
+    "min_segment_mm": "seam.min_segment_mm",
+    "min_angle_deg": "seam.min_angle_deg",
+    "width_mm": "borders.width_mm",
+    "lobe_spacing_mm": "borders.lobe_spacing_mm",
+    "scale": "print.scale",
+}
+
+
+def load_border_settings(*config_files, **overrides):
+    """
+    A :class:`BorderSettings` filled from config files, later files winning,
+    as the libraries' ``load_*_params`` do.  ``BorderSettings()`` itself is
+    the shipped settings and reads no file.
+    """
+    return build_params(BorderSettings, _BORDER_SETTINGS_KEYS, *config_files,
+                        **overrides)
 
 @dataclass
 class BorderDefinition:
@@ -505,15 +529,19 @@ def build_terrain(raster, boundary, out_path, params, lobes=None,
     go straight in with ``notch_province`` -- no reconciliation.  That only
     holds when the solid was built in the CRS the lobes were (EPSG:3347).
     """
+    # The sidecar fingerprints the settings the piece is built under: the
+    # ones this desk has saved, not merely the shipped ones.
+    config = load_files(*settings_files())
     if not lobes:
-        return terrain_to_stl(raster, boundary, out_path, params)
-    result = terrain_to_stl(raster, boundary, None, params)
+        return terrain_to_stl(raster, boundary, out_path, params, config)
+    result = terrain_to_stl(raster, boundary, None, params, config)
     if CRS.from_user_input(result.crs) != CRS.from_user_input(EPSG_WORKING):
         raise ValueError(
             f"Pockets need the terrain built in {EPSG_WORKING}, where the "
             f"connectors are; this crop is in {result.crs}. Set CRS to "
             f"{EPSG_WORKING} and re-run the crop.")
-    connector = connector or ConnectorParams(scale=params.scale)
+    connector = connector or load_connector_params(*settings_files(),
+                                                   scale=params.scale)
     mesh = notch_province(result.mesh, lobes, *result.origin_m, connector)
     _finish(mesh, result, params)
     _validate(result, raster)          # FR-4.7 again: the boolean can break it
@@ -679,7 +707,7 @@ class TerrainEditorTester(QMainWindow):
         import_layout.addWidget(self.region_list)
 
         # -- stage 2: borders ------------------------------------------------
-        defaults = BorderSettings()
+        defaults = load_border_settings(*settings_files())
         self.coast_spin = self._mm_spin(
             defaults.coast_tol_mm, 0.0, 20.0,
             "Simplification tolerance for arcs one region holds alone --\n"
@@ -771,7 +799,8 @@ class TerrainEditorTester(QMainWindow):
         # 3200 m, so the default Res is the configured print pitch, not a magic
         # number that could drift from the meshing stage's idea of spacing.
         self.res_spin = self._spin(
-            0.0, 100_000.0, DEFAULT_SPACING_MM * _cfg("print.scale") / 1000.0, 0,
+            0.0, 100_000.0,
+            _cfg("terrain.spacing_mm") * _cfg("print.scale") / 1000.0, 0,
                                    "Metres per pixel; 0 = the DEM's native "
                                    "resolution.\n1:8,000,000 with a 0.4 mm "
                                    "nozzle wants ~3200 m.")
@@ -789,7 +818,7 @@ class TerrainEditorTester(QMainWindow):
 
         self.resample_combo = QComboBox()
         self.resample_combo.addItems(RESAMPLING_CHOICES)
-        self.resample_combo.setCurrentText(DEFAULT_RESAMPLING)
+        self.resample_combo.setCurrentText(_cfg("terrain.resampling"))
         self.resample_combo.setToolTip(
             "How the warp resamples.\n"
             "Warping straight to print resolution is a big downsample, so the "
@@ -851,8 +880,9 @@ class TerrainEditorTester(QMainWindow):
         # different stage with a different invalidation rule, and putting them
         # beside the raster controls would imply they re-warp the DEM.
         mesh_bar = QHBoxLayout()
+        saved = load_terrain_params(*settings_files())
         self.exag_spin = self._spin(
-            1.0, 200.0, DEFAULT_EXAGGERATION, 1,
+            1.0, 200.0, saved.z_exaggeration, 1,
             "Vertical exaggeration (terrain.exaggeration).\n"
             "At 1:8,000,000 true scale (x1) is 0.20 mm of relief on\n"
             "Newfoundland — invisible. Share one value across a whole map.")
@@ -860,7 +890,7 @@ class TerrainEditorTester(QMainWindow):
         self.exag_spin.valueChanged.connect(self._invalidate_mesh)
 
         self.base_spin = self._spin(
-            0.1, 50.0, DEFAULT_BASE_MM, 2,
+            0.1, 50.0, saved.base_height_mm, 2,
             "Solid base under the terrain (terrain.base_mm).\n"
             "Must exceed the dovetail pocket depth, or the pocket cuts\n"
             "through the bottom of the piece.")
@@ -869,7 +899,7 @@ class TerrainEditorTester(QMainWindow):
         self.base_spin.valueChanged.connect(self._invalidate_mesh)
 
         self.floor_spin = self._spin(
-            -1000.0, 9000.0, DEFAULT_FLOOR_M, 0,
+            -1000.0, 9000.0, saved.floor_m, 0,
             "Elevation the base measures from (terrain.floor_m).\n"
             "Share one value across a map, or neighbouring pieces step\n"
             "at the seam.")
@@ -1133,15 +1163,15 @@ class TerrainEditorTester(QMainWindow):
 
     # -- stage 2: borders ---------------------------------------------------
     def border_settings(self) -> BorderSettings:
-        return BorderSettings(
+        return load_border_settings(
+            *settings_files(),
             coast_tol_mm=self.coast_spin.value(),
             internal_tol_mm=self.internal_spin.value(),
             min_segment_mm=self.min_seg_spin.value(),
             min_angle_deg=self.min_angle_spin.value(),
             width_mm=self.width_spin.value(),
             connectors=self.chk_connectors.isChecked(),
-            lobe_spacing_mm=self.spacing_spin.value(),
-            scale=_cfg("print.scale"))
+            lobe_spacing_mm=self.spacing_spin.value())
 
     def define(self) -> None:
         """Run the Borders stage off the UI thread."""
@@ -1685,8 +1715,8 @@ class TerrainEditorTester(QMainWindow):
 
     # -- mesh stage ---------------------------------------------------------
     def _terrain_params(self) -> TerrainParams:
-        return TerrainParams(
-            scale=_cfg("print.scale"),
+        return load_terrain_params(
+            *settings_files(),
             z_exaggeration=self.exag_spin.value(),
             base_height_mm=self.base_spin.value(),
             floor_m=self.floor_spin.value(),

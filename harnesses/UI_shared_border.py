@@ -79,9 +79,10 @@ from PySide6.QtWidgets import (QApplication, QDoubleSpinBox, QFileDialog,
 # project root on sys.path before importing lib.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lib.LIB_shared_border import (DEFAULT_SCALE, EPSG_METRIC, SeamParams,
-                                   _count_short, _count_spikes, _shared_seam,
-                                   simplify_shared_border)
+from lib.LIB_project_config import settings_files
+from lib.LIB_shared_border import (EPSG_METRIC, SeamParams, _count_short,
+                                   _count_spikes, _shared_seam,
+                                   load_seam_params, simplify_shared_border)
 
 GEOJSON_FILTER = "GeoJSON (*.geojson *.json);;All files (*)"
 
@@ -168,7 +169,7 @@ class SharedBorderTester(QMainWindow):
 
         # -- second row: the conditioning parameters ------------------------
         params_bar = QHBoxLayout()
-        defaults = SeamParams()
+        defaults = load_seam_params(*settings_files())
         self.tol_spin = self._spin(
             0.0, 20.0, defaults.tolerance_mm, 2,
             "Douglas-Peucker tolerance.\nDetail finer than this says nothing at "
@@ -432,8 +433,10 @@ class SharedBorderTester(QMainWindow):
 
     # -- parameters and the live report -------------------------------------
     def _params(self) -> SeamParams:
-        return SeamParams(
-            scale=DEFAULT_SCALE,
+        # Everything the controls do not set -- the scale, the spike limit
+        # the report measures against -- comes from the saved settings.
+        return load_seam_params(
+            *settings_files(),
             tolerance_mm=self.tol_spin.value(),
             nozzle_mm=self.nozzle_spin.value(),
             min_segment_mm=self.seg_spin.value(),

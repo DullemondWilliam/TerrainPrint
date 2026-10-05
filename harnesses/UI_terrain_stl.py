@@ -74,9 +74,9 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QDoubleSpinBox,
 # project root on sys.path before importing lib.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lib.LIB_terrain_stl import (DEFAULT_EXAGGERATION, DEFAULT_SCALE,
-                                 EPSG_METRIC, TerrainParams, _triangle_count,
-                                 terrain_to_stl)
+from lib.LIB_project_config import load_files, settings_files
+from lib.LIB_terrain_stl import (EPSG_METRIC, TerrainParams, _triangle_count,
+                                 load_terrain_params, terrain_to_stl)
 
 GEOJSON_FILTER = "GeoJSON (*.geojson *.json);;All files (*)"
 GEOTIFF_FILTER = "GeoTIFF (*.tif *.tiff);;All files (*)"
@@ -113,7 +113,8 @@ class BuildWorker(QObject):
     def run(self) -> None:
         try:
             result = terrain_to_stl(self._raster, self._boundary,
-                                    self._out_path, self._params)
+                                    self._out_path, self._params,
+                                    load_files(*settings_files()))
         except Exception as exc:      # any raster/geometry/mesh failure
             self.failed.emit(str(exc))
             return
@@ -152,14 +153,15 @@ class TerrainStlTester(QMainWindow):
         self.btn_boundary = QPushButton("Import Boundary …")
         self.btn_boundary.clicked.connect(self.import_boundary)
 
-        self.scale_spin = self._spin(1.0, 100_000_000.0, float(DEFAULT_SCALE), 0,
+        saved = load_terrain_params(*settings_files())
+        self.scale_spin = self._spin(1.0, 100_000_000.0, float(saved.scale), 0,
                                      "Map-scale denominator. Must match the "
                                      "scale the border corridor was built at,\n"
                                      "or the dovetails will not fit.")
         self.scale_spin.setSingleStep(500_000.0)
         self.scale_spin.valueChanged.connect(self._invalidate)
 
-        self.exag_spin = self._spin(1.0, 200.0, DEFAULT_EXAGGERATION, 1,
+        self.exag_spin = self._spin(1.0, 200.0, saved.z_exaggeration, 1,
                                     "Vertical exaggeration.\nAt 1:8,000,000 true "
                                     "scale (x1) is 0.2 mm of relief on "
                                     "Newfoundland — invisible.")
@@ -368,7 +370,8 @@ class TerrainStlTester(QMainWindow):
 
     # -- parameters and the live cost --------------------------------------
     def _params(self) -> TerrainParams:
-        return TerrainParams(
+        return load_terrain_params(
+            *settings_files(),
             scale=self.scale_spin.value(),
             z_exaggeration=self.exag_spin.value(),
             base_height_mm=self.base_spin.value(),

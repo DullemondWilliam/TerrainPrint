@@ -111,7 +111,7 @@ class TestWritingCalibrations:
         assert entry["label"] == "Dell U2515H"
         assert entry["size_px"] == [2560, 1440]
 
-    def test_it_lands_in_the_local_config_not_the_tracked_one(self, config):
+    def test_it_lands_in_the_fixed_config_not_the_tracked_one(self, config):
         """
         A calibration is true of one desk, so it must never reach the file that
         goes into git — committing it would push these monitors' measurements

@@ -241,6 +241,34 @@ simplified border that will be saved. The two end vertices are pinned (they
 sit on the coast or a third province), a vertex can't be dropped in the sea,
 and a move that would make the border cross itself is refused.
 
+## Settings
+
+Settings live in two files, merged, local winning:
+
+- `project_config.json` (tracked) holds the project's shipped settings.
+- `project_config.local.json` (not tracked) holds what this desk has changed.
+  The windows write to it as you turn their controls.
+
+**The libraries never read these files themselves.** Each takes its settings
+through its API as a structure (`ThinParams`, `StressParams`, `SeamParams`,
+`BridgeParams`, `FitParams`, …) whose defaults are the shipped values, so a
+library behaves the same everywhere. Each library also has a
+`load_*_params(*config_files, **overrides)` that fills its structure from
+config files, later files winning:
+
+```python
+from lib.LIB_project_config import settings_files
+from lib.LIB_thin_features import load_thin_params, thin_features
+
+params = load_thin_params(*settings_files(), width_mm=0.8)
+report = thin_features(province, params)
+```
+
+The windows and the command-line tools load their settings this way when they
+start, so what you save is what they measure with. The tests use fixed
+settings (the shipped ones) rather than whatever this desk has saved; see
+`tests/conftest.py`.
+
 ## Recommended Workflow
 
 ```

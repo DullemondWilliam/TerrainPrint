@@ -68,14 +68,15 @@ from shapely.ops import linemerge, unary_union
 from lib.LIB_border_connectors import (ConnectorParams, _extrude_man,
                                        _man_to_trimesh, _repair,
                                        _trimesh_to_man)
-from lib.LIB_project_config import get as _cfg
+from lib.LIB_project_config import build_params
+from lib.LIB_project_config import shipped as _shipped
 from lib.LIB_shared_border import _shared_seam
 from lib.LIB_stl_reconcile import _iou, base_footprint, reconcile
 from lib.LIB_terrain_stl import read_frame
 
 log = logging.getLogger(__name__)
 
-EPSG_METRIC = _cfg("crs.working")
+EPSG_METRIC = _shipped("crs.working")
 #: The border connectors' dovetail profile: one opinion about what locks.
 _CP = ConnectorParams()
 #: A pocket cutter starts this far below the base, so the boolean sees an
@@ -88,8 +89,8 @@ _LAYOUT_GAP_MM = 2.0
 @dataclass
 class KeyParams:
     """Butterfly key geometry.  All lengths are **print-mm**."""
-    scale: float = _cfg("print.scale")            #: map scale denominator
-    depth_mm: float = _cfg("print.dovetail_mm")   #: slot depth into each piece
+    scale: float = _shipped("print.scale")            #: map scale denominator
+    depth_mm: float = _shipped("print.dovetail_mm")   #: slot depth into each piece
     neck_mm: float = _CP.neck_mm                  #: key width at the seam
     mouth_mm: float = _CP.mouth_mm                #: key width at each end
     reach_mm: float = _CP.reach_mm                #: seam to each end
@@ -135,6 +136,28 @@ class KeyParams:
 # ---------------------------------------------------------------------------
 # Provinces and their frames
 # ---------------------------------------------------------------------------
+
+#: The config key behind each field of :class:`KeyParams`, for
+#: :func:`load_key_params`.
+_KEYPARAMS_KEYS = {
+    "scale": "print.scale",
+    "depth_mm": "print.dovetail_mm",
+}
+
+
+def load_key_params(*config_files, **overrides):
+    """
+    A :class:`KeyParams` filled from config files.
+
+    ``config_files`` are read in order, later ones winning -- a window passes
+    ``LIB_project_config.settings_files()``, the project file then this desk's
+    local one.  A setting no file mentions keeps its built-in default, and
+    ``overrides`` win over everything.  :class:`KeyParams` built directly never
+    reads a file: its defaults are the shipped butterfly-key settings, the same on
+    every desk.
+    """
+    return build_params(KeyParams, _KEYPARAMS_KEYS, *config_files, **overrides)
+
 @dataclass
 class Province:
     """One piece: its footprint in metres, its mesh, and how the two align."""
@@ -373,8 +396,8 @@ def key_layout(count, params=None, bed_mm=None, margin_mm=None):
     if count <= 0:
         return None
     params = params or KeyParams()
-    bed = (_cfg("print.bed_mm") if bed_mm is None else bed_mm) \
-        - 2 * (_cfg("print.bed_margin_mm") if margin_mm is None else margin_mm)
+    bed = (_shipped("print.bed_mm") if bed_mm is None else bed_mm) \
+        - 2 * (_shipped("print.bed_margin_mm") if margin_mm is None else margin_mm)
     solid = key_solid(params)
     pitch_x = params.mouth_mm + _LAYOUT_GAP_MM
     pitch_y = 2 * params.reach_mm + _LAYOUT_GAP_MM
@@ -537,7 +560,7 @@ def _load_geom(source):
     if frame.empty:
         return None, frame.crs
     if frame.crs is None:
-        frame = frame.set_crs(_cfg("crs.source"))
+        frame = frame.set_crs(_shipped("crs.source"))
     source_crs = frame.crs
     return _repair(unary_union(frame.to_crs(EPSG_METRIC).geometry.values)), \
         source_crs

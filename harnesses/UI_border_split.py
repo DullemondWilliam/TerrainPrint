@@ -45,8 +45,8 @@ from PySide6.QtWidgets import (QApplication, QDoubleSpinBox, QFileDialog,
 # project root on sys.path before importing lib.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lib.LIB_border_split import (DEFAULT_BED_MM, DEFAULT_MARGIN_MM,
-                                  split_to_bed)
+from lib.LIB_border_split import load_bed_params, split_to_bed
+from lib.LIB_project_config import settings_files
 
 STL_FILTER = "STL (*.stl);;All files (*)"
 
@@ -109,9 +109,10 @@ class BorderSplitTester(QMainWindow):
         self.btn_import = QPushButton("Import STL …")
         self.btn_import.clicked.connect(self.import_stl)
 
-        self.bed_w_spin = self._mm_spin(DEFAULT_BED_MM, "Usable bed width")
-        self.bed_d_spin = self._mm_spin(DEFAULT_BED_MM, "Usable bed depth")
-        self.margin_spin = self._mm_spin(DEFAULT_MARGIN_MM, "Keep-clear margin per side")
+        saved = load_bed_params(*settings_files())
+        self.bed_w_spin = self._mm_spin(saved.bed_mm, "Usable bed width")
+        self.bed_d_spin = self._mm_spin(saved.bed_mm, "Usable bed depth")
+        self.margin_spin = self._mm_spin(saved.margin_mm, "Keep-clear margin per side")
         self.margin_spin.setRange(0.0, 1000.0)
         for spin in (self.bed_w_spin, self.bed_d_spin, self.margin_spin):
             spin.valueChanged.connect(self._invalidate)

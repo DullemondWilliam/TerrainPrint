@@ -82,12 +82,13 @@ from dataclasses import dataclass, field
 import shapely
 
 from lib.LIB_island_merging import _polygons
-from lib.LIB_project_config import get as _cfg
+from lib.LIB_project_config import build_params
+from lib.LIB_project_config import shipped as _shipped
 
 log = logging.getLogger(__name__)
 
-EPSG_METRIC = _cfg("crs.working")
-DEFAULT_SCALE = _cfg("print.scale")
+EPSG_METRIC = _shipped("crs.working")
+DEFAULT_SCALE = _shipped("print.scale")
 
 #: Segments per quarter circle in the buffers.  Only the curved stretches of
 #: the offset use it -- the corners are mitred -- but a coarse disc would
@@ -114,7 +115,7 @@ class ThinParams:
     #: ``LIB_island_bridges`` builds its bridges at, and for the same reason:
     #: a neck you already have and a bridge you would add need the same width
     #: to survive being handled.
-    width_mm: float = _cfg("thin.width_mm")
+    width_mm: float = _shipped("thin.width_mm")
     work_crs: str = EPSG_METRIC                 #: metric CRS the work is done in
 
     @property
@@ -131,6 +132,29 @@ class ThinParams:
         """Half the width: the radius of the disc that has to fit."""
         return self.width_m / 2.0
 
+
+
+#: The config key behind each field of :class:`ThinParams`, for
+#: :func:`load_thin_params`.
+_THINPARAMS_KEYS = {
+    "width_mm": "thin.width_mm",
+    "scale": "print.scale",
+    "work_crs": "crs.working",
+}
+
+
+def load_thin_params(*config_files, **overrides):
+    """
+    A :class:`ThinParams` filled from config files.
+
+    ``config_files`` are read in order, later ones winning -- a window passes
+    ``LIB_project_config.settings_files()``, the project file then this desk's
+    local one.  A setting no file mentions keeps its built-in default, and
+    ``overrides`` win over everything.  :class:`ThinParams` built directly never
+    reads a file: its defaults are the shipped thin-land settings, the same on
+    every desk.
+    """
+    return build_params(ThinParams, _THINPARAMS_KEYS, *config_files, **overrides)
 
 @dataclass
 class ThinReport:

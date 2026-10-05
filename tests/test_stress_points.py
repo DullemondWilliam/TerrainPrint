@@ -50,7 +50,8 @@ from shapely.geometry import LineString, Polygon, box
 from lib.LIB_stress_points import (COMPACT_SLENDERNESS, StressGrid,
                                    StressParams, StressReport, _needed_mm,
                                    branch_mask, restress, severity_field,
-                                   stress_points, width_field)
+                                   stress_points, width_field,
+                                   load_stress_params)
 
 
 class StressTestCase(unittest.TestCase):
@@ -295,16 +296,18 @@ class TestTheTilingIsNotInTheAnswer(StressTestCase):
 
 
 class TestTheSettingsAreShared(StressTestCase):
-    """A parameter block reads the config as it is *built*, not at import.
+    """Saved settings reach a block through ``load_stress_params``, and only
+    through it.
 
-    That is what lets a value tuned in one window be what the next one measures
-    with, without either reaching for a file: ``LIB_project_config`` re-reads on
-    every lookup, so a block built after a save carries the saved number. Frozen
-    at import instead, a saved setting would need a restart -- and in the
-    meantime the harness and the viewer would quietly measure differently.
+    That is what lets a value tuned in one window be what the next one
+    measures with: each window loads the block from the settings files when
+    it measures, so a block loaded after a save carries the saved number. A
+    ``StressParams()`` built directly reads no file at all -- its defaults are
+    the shipped settings, the same on every desk -- which is what keeps the
+    library's own tests from depending on whoever runs them.
     """
 
-    def _with_local_config(self, values):
+    def _with_fixed_config(self, values):
         from lib import LIB_project_config as config
         handle, path = tempfile.mkstemp(suffix=".json")
         os.close(handle)
@@ -312,26 +315,51 @@ class TestTheSettingsAreShared(StressTestCase):
             json.dump(values, stream)
         return config, path
 
-    def test_a_saved_setting_reaches_the_next_block(self):
-        config, path = self._with_local_config(
+    def test_a_saved_setting_reaches_a_loaded_block(self):
+        _config, path = self._with_fixed_config(
             {"stress": {"pixel_mm": 0.33, "tile_px": 64, "min_lobe_mm2": 7.5}})
         try:
-            with mock.patch.object(config, "LOCAL_CONFIG_PATH", path):
-                saved = StressParams()
+            saved = load_stress_params(path)
             self.assertAlmostEqual(saved.pixel_mm, 0.33)
             self.assertEqual(saved.tile_px, 64)
             self.assertAlmostEqual(saved.min_lobe_mm2, 7.5)
+            # A setting the file does not mention keeps the shipped value.
+            self.assertAlmostEqual(saved.ceiling_mm, StressParams().ceiling_mm)
         finally:
             os.unlink(path)
-        # And the project's own numbers are back the moment it is gone.
-        self.assertNotAlmostEqual(StressParams().pixel_mm, 0.33)
+
+    def test_a_block_built_directly_reads_no_file(self):
+        """Even with the local file saying otherwise, ``StressParams()`` is
+        the shipped settings."""
+        config, path = self._with_fixed_config({"stress": {"pixel_mm": 0.33}})
+        try:
+            with mock.patch.object(config, "LOCAL_CONFIG_PATH", path):
+                self.assertNotAlmostEqual(StressParams().pixel_mm, 0.33)
+                self.assertAlmostEqual(
+                    load_stress_params(*config.settings_files()).pixel_mm,
+                    0.33)
+        finally:
+            os.unlink(path)
+
+    def test_later_files_win(self):
+        _config, first = self._with_fixed_config({"stress": {"pixel_mm": 0.2}})
+        _config, second = self._with_fixed_config({"stress": {"pixel_mm": 0.3}})
+        try:
+            self.assertAlmostEqual(load_stress_params(first, second).pixel_mm,
+                                   0.3)
+            self.assertAlmostEqual(load_stress_params(second, first).pixel_mm,
+                                   0.2)
+        finally:
+            os.unlink(first)
+            os.unlink(second)
 
     def test_what_is_passed_in_still_wins(self):
         """Saving a default must not take an argument away from a caller."""
-        config, path = self._with_local_config({"stress": {"pixel_mm": 0.33}})
+        _config, path = self._with_fixed_config({"stress": {"pixel_mm": 0.33}})
         try:
-            with mock.patch.object(config, "LOCAL_CONFIG_PATH", path):
-                self.assertAlmostEqual(StressParams(pixel_mm=0.05).pixel_mm, 0.05)
+            self.assertAlmostEqual(
+                load_stress_params(path, pixel_mm=0.05).pixel_mm, 0.05)
+            self.assertAlmostEqual(StressParams(pixel_mm=0.05).pixel_mm, 0.05)
         finally:
             os.unlink(path)
 

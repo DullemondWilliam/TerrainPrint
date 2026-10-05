@@ -418,8 +418,8 @@ class TestFrame:
 class TestSharedSettings:
     """One reader for the values every piece must agree on."""
 
-    def test_settings_come_from_the_config(self):
-        from lib.LIB_project_config import get as cfg
+    def test_without_a_config_they_are_the_shipped_settings(self):
+        from lib.LIB_project_config import shipped as cfg
         from lib.LIB_terrain_stl import shared_settings
         settings = shared_settings()
         assert settings["exaggeration"] == pytest.approx(cfg("terrain.exaggeration"))
@@ -427,6 +427,17 @@ class TestSharedSettings:
         assert settings["floor_m"] == pytest.approx(cfg("terrain.floor_m"))
         assert settings["scale"] == cfg("print.scale")
         assert settings["crs"] == cfg("crs.working")
+
+    def test_they_come_from_the_config_they_are_given(self, tmp_path):
+        import json
+        from lib.LIB_project_config import load_files
+        from lib.LIB_terrain_stl import settings_id, shared_settings
+        path = tmp_path / "other.json"
+        path.write_text(json.dumps({"terrain": {"exaggeration": 33.0}}),
+                        encoding="utf-8")
+        config = load_files(path)
+        assert shared_settings(config)["exaggeration"] == pytest.approx(33.0)
+        assert settings_id(config) != settings_id()
 
     def test_params_defaults_agree_with_the_shared_settings(self):
         """The dataclass defaults and the manifest must not disagree."""

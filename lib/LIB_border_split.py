@@ -40,22 +40,49 @@ import numpy as np
 import manifold3d as m3d
 import trimesh
 
-from lib.LIB_project_config import get as _cfg
+from dataclasses import dataclass
+
+from lib.LIB_project_config import build_params
+from lib.LIB_project_config import shipped as _shipped
 
 log = logging.getLogger(__name__)
 
 #: Default usable print-bed edge in millimetres (matches the project default).
-DEFAULT_BED_MM = _cfg("print.bed_mm")
+DEFAULT_BED_MM = _shipped("print.bed_mm")
 #: Default keep-clear border subtracted from each bed edge, per side.
-DEFAULT_MARGIN_MM = _cfg("print.bed_margin_mm")
+DEFAULT_MARGIN_MM = _shipped("print.bed_margin_mm")
 #: Border parts smaller than this are sub-printable slivers (matches the other libs).
 MIN_PART_AREA_MM2 = 0.5
 
 _EPS = 1e-6
 
 
+@dataclass
+class BedParams:
+    """The print bed the border is cut to fit.  Millimetres."""
+    bed_mm: float = DEFAULT_BED_MM          #: usable bed edge (square bed)
+    margin_mm: float = DEFAULT_MARGIN_MM    #: keep-clear border, per side
+
+
+#: The config key behind each field of :class:`BedParams`.
+_BEDPARAMS_KEYS = {
+    "bed_mm": "print.bed_mm",
+    "margin_mm": "print.bed_margin_mm",
+}
+
+
+def load_bed_params(*config_files, **overrides):
+    """
+    A :class:`BedParams` filled from config files, later files winning.
+
+    A window passes ``LIB_project_config.settings_files()``; a setting no file
+    mentions keeps its built-in default, and ``overrides`` win over all.
+    """
+    return build_params(BedParams, _BEDPARAMS_KEYS, *config_files, **overrides)
+
+
 def split_to_bed(mesh, bed_mm=DEFAULT_BED_MM, margin_mm=0.0,
-                 out_dir=None, out_stem="border"):
+                 out_dir=None, out_stem="border", bed=None):
     """
     Subdivide a border mesh into watertight pieces that each fit the print bed.
 
@@ -72,6 +99,9 @@ def split_to_bed(mesh, bed_mm=DEFAULT_BED_MM, margin_mm=0.0,
     out_dir : str | pathlib.Path, optional
         If given, each piece is exported as ``<out_stem>_001.stl``,
         ``<out_stem>_002.stl`` … inside this directory.
+    bed : BedParams, optional
+        The bed as a structure, as :func:`load_bed_params` returns it; when
+        given, it supplies ``bed_mm`` and ``margin_mm``.
     out_stem : str
         Filename stem for exported pieces.
 
@@ -87,6 +117,8 @@ def split_to_bed(mesh, bed_mm=DEFAULT_BED_MM, margin_mm=0.0,
         If the bed (after margin) is not positive, the mesh is empty, or a piece
         fails the watertight / positive-volume gate.
     """
+    if bed is not None:
+        bed_mm, margin_mm = bed.bed_mm, bed.margin_mm
     bed_w, bed_d = _bed_dims(bed_mm)
     fit_w = bed_w - 2.0 * margin_mm
     fit_d = bed_d - 2.0 * margin_mm

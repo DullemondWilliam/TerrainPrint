@@ -55,7 +55,8 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QDoubleSpinBox,
 # project root on sys.path before importing lib.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lib.LIB_border_connectors import ConnectorParams, DEFAULT_SCALE
+from lib.LIB_border_connectors import ConnectorParams, load_connector_params
+from lib.LIB_project_config import settings_files
 from lib.LIB_terrain_trim import trim_terrain, _load_union_crs
 
 GEOJSON_FILTER = "GeoJSON (*.geojson *.json);;All files (*)"
@@ -139,7 +140,8 @@ class TerrainTrimTester(QMainWindow):
         self.btn_gj = QPushButton("Import Province …")
         self.btn_gj.clicked.connect(self.import_province)
 
-        self.scale_spin = self._spin(1.0, 100_000_000.0, float(DEFAULT_SCALE), 0,
+        saved = load_connector_params(*settings_files())
+        self.scale_spin = self._spin(1.0, 100_000_000.0, float(saved.scale), 0,
                                      "Map-scale denominator the slab was printed at")
         self.scale_spin.setSingleStep(500_000.0)
         self.scale_spin.valueChanged.connect(self._invalidate)
@@ -351,7 +353,8 @@ class TerrainTrimTester(QMainWindow):
 
     # -- parameters ---------------------------------------------------------
     def _params(self) -> ConnectorParams:
-        return ConnectorParams(scale=self.scale_spin.value())
+        return load_connector_params(*settings_files(),
+                                     scale=self.scale_spin.value())
 
     def _invalidate(self, *_) -> None:
         """Any input/parameter change invalidates the last trim."""

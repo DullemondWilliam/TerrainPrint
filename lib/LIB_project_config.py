@@ -35,6 +35,25 @@ Reading
 
     scale = get("print.scale")              # 8000000
     crs   = get("crs.working")              # "EPSG:3347"
+
+How the settings reach the libraries
+------------------------------------
+**Libraries never read these files themselves.**  Each one takes its settings
+through its API, as a structure -- ``ThinParams``, ``StressParams``,
+``SeamParams`` and the rest -- whose defaults are the shipped values in
+``DEFAULTS`` (see :func:`shipped`).  So a library behaves the same on every
+desk, and its tests do not depend on who runs them.
+
+Each library also has a ``load_*_params(*config_files, **overrides)`` that
+fills its structure from config files, later files winning.  The windows call
+it with :func:`settings_files` -- the project file, then the local one -- so
+what you save is what they measure with::
+
+    from lib.LIB_project_config import settings_files
+    from lib.LIB_thin_features import load_thin_params, thin_features
+
+    params = load_thin_params(*settings_files(), width_mm=0.8)
+    report = thin_features(province, params)
 """
 
 import json
@@ -335,6 +354,57 @@ def get(dotted, default=None, config=None):
             return default
         node = node[part]
     return node
+
+
+def shipped(dotted):
+    """
+    One built-in value by dotted path, never read from any file.
+
+    What a library's settings structure defaults to.  A library that read the
+    config files for its own defaults behaved differently on every desk -- the
+    thin-land test said "at a 1 mm setting" and failed wherever the local file
+    said 0.8 -- so the libraries take their settings through their API, and the
+    numbers they fall back to are these, the same everywhere.
+    """
+    return get(dotted, config=DEFAULTS)
+
+
+def settings_files():
+    """
+    The files the windows read their settings from, in the order they layer:
+    the tracked project file, then this desk's local one.
+
+    Looked up when called, not at import, so a test that points the two paths
+    somewhere else is obeyed.
+    """
+    return (CONFIG_PATH, LOCAL_CONFIG_PATH)
+
+
+def load_files(*paths):
+    """
+    The built-in defaults with each file in ``paths`` laid over them in turn,
+    later files winning.  A missing or unreadable file adds nothing, as with
+    :func:`load`.
+    """
+    merged = DEFAULTS
+    for path in paths:
+        if path is not None:
+            merged = _merge(merged, _read(path))
+    return merged
+
+
+def build_params(cls, keys, *paths, **overrides):
+    """
+    A settings structure filled from config files: the common body of every
+    library's ``load_*_params``.
+
+    ``keys`` maps each field of ``cls`` to its dotted config key; fields not
+    named keep the structure's own default, and ``overrides`` win over all.
+    """
+    config = load_files(*paths)
+    values = {name: get(dotted, config=config) for name, dotted in keys.items()}
+    values.update(overrides)
+    return cls(**values)
 
 
 def update_local(dotted, value):

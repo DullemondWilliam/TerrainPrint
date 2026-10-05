@@ -53,6 +53,14 @@ from lib.LIB_stress_points import StressParams, stress_points
 #: One print-mm, in metres, at the project's 1:8,000,000.
 MM = 8000.0
 
+#: The settings this coast was pinned under. The neck holds about 18 mm², so
+#: the smallest lobe worth holding up has to be below that or the neck is not
+#: reported at all -- exactly the "too thin to survive the floor" loss the
+#: docstring describes. These tests were written on a desk whose saved floor
+#: was 15 mm², and passed only by inheriting it; the shipped floor is 25. They
+#: now say the number they need instead of borrowing it.
+PARAMS = StressParams(report_above=0.0, min_lobe_mm2=15.0)
+
 #: Fort Rupert in the working CRS (EPSG:3347), from 127.41 W 50.695 N.
 FORT_RUPERT = (3832122.0, 2296279.0)
 
@@ -72,7 +80,7 @@ class FortRupertTestCase(unittest.TestCase):
     def setUpClass(cls):
         cls.coast = north_vancouver_island()
         # report_above=0 so the measurement is on trial rather than the filter.
-        cls.report = stress_points(cls.coast, StressParams(report_above=0.0))
+        cls.report = stress_points(cls.coast, PARAMS)
 
     def distance_mm(self, point):
         return math.hypot(point.x - FORT_RUPERT[0],
