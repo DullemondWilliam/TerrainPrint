@@ -588,7 +588,7 @@ class TestBoxes:
         page = window.seam_page
         titles = {box.title() for box in page.findChildren(U.QGroupBox)}
         assert titles >= {"Border", "Simplify", "Fit check", "Auto solve",
-                          "Push border"}
+                          "Edit by hand"}
 
     def test_harness_controls_live_in_their_boxes(self, tmp_path):
         window = _mushroom_window(tmp_path)
@@ -715,3 +715,137 @@ class TestAutoSolve:
         page._on_solve_failed("boom")
         assert "boom" in page.solve_label.text()
         assert page.btn_solve.isEnabled()
+
+
+class TestMoveVertices:
+    """Drag a seam vertex on either panel; both provinces follow."""
+
+    @staticmethod
+    def _head_corner(page, ax):
+        """(part, index) and position of the mushroom's far top corner."""
+        _pair, seam = page._editable(ax)
+        target = (O + 28 * MM, O + 25 * MM)
+        for part_no, part in enumerate(seam.geoms):
+            for index, c in enumerate(part.coords):
+                if abs(c[0] - target[0]) < 1 and abs(c[1] - target[1]) < 1:
+                    return part_no, index
+        raise AssertionError("corner not on the seam")
+
+    def test_the_tools_are_exclusive(self, tmp_path):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        page.btn_grow_a.click()
+        page.btn_vertices.click()
+        assert page._push_mode == U.VERTEX
+        assert not page.btn_grow_a.isChecked()
+        page._escape()
+        assert page._push_mode is None
+        assert not page.btn_vertices.isChecked()
+
+    def test_picks_the_vertex_under_the_pointer(self, tmp_path):
+        window = _mushroom_window(tmp_path)
+        window.resize(1200, 800)
+        page = window.seam_page
+        page.canvas.draw()
+        ax = page.ax_before
+        part, index = self._head_corner(page, ax)
+        x, y = ax.transData.transform((O + 28 * MM, O + 25 * MM))
+        assert page.pick_vertex(ax, x + 2, y - 2) == (part, index)
+        assert page.pick_vertex(ax, x + 200, y + 200) is None
+
+    def test_moving_a_vertex_moves_both_provinces(self, tmp_path):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        before = page.geom_a.union(page.geom_b)
+        part, index = self._head_corner(page, page.ax_before)
+        assert page.move_vertex(page.ax_before, part, index,
+                                (O + 30 * MM, O + 27 * MM))
+        after = page.geom_a.union(page.geom_b)
+        assert before.symmetric_difference(after).area / MM ** 2 < 1e-6
+        assert len(page._undo) == 1
+        assert "moved a vertex" in page._undo[0][2]
+        assert "1 edit" in page.heading.text()
+
+    def test_undo_and_redo_a_vertex_move(self, tmp_path):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        original = (page.geom_a, page.geom_b)
+        part, index = self._head_corner(page, page.ax_before)
+        page.move_vertex(page.ax_before, part, index,
+                         (O + 30 * MM, O + 27 * MM))
+        moved = (page.geom_a, page.geom_b)
+        page.undo_push()
+        assert (page.geom_a, page.geom_b) == original
+        page.redo_push()
+        assert (page.geom_a, page.geom_b) == moved
+
+    def test_a_refused_move_says_why_and_changes_nothing(self, tmp_path):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        original = (page.geom_a, page.geom_b)
+        part, index = self._head_corner(page, page.ax_before)
+        assert not page.move_vertex(page.ax_before, part, index,
+                                    (O + 60 * MM, O + 25 * MM))
+        assert (page.geom_a, page.geom_b) == original
+        assert page._undo == []
+        assert "sea" in page.push_label.text()
+
+    def test_an_end_cannot_be_picked_up(self, tmp_path, qtbot):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        page.set_push_mode(U.VERTEX)
+        _pair, seam = page._editable(page.ax_before)
+        end = seam.geoms[0].coords[0]
+
+        class _Event:
+            inaxes = page.ax_before
+            button = 1
+            xdata, ydata = end
+            x, y = page.ax_before.transData.transform(end)
+        page._on_press(_Event)
+        assert page._drag is None
+        assert "pinned" in page.push_label.text()
+
+    def test_a_drag_on_the_right_panel_edits_the_simplified_pair(
+            self, tmp_path, monkeypatch):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        page._on_done(simplify_shared_border(page.geom_a, page.geom_b,
+                                             page._params()))
+        simplified = page.result.a.union(page.result.b)
+        runs = []
+        monkeypatch.setattr(page, "run", lambda: runs.append(1))
+        part, index = self._head_corner(page, page.ax_after)
+        assert page.move_vertex(page.ax_after, part, index,
+                                (O + 30 * MM, O + 27 * MM))
+        # The pair being edited is now the simplified one, moved -- and it
+        # is simplified again to keep the right panel live.
+        assert page.geom_a.union(page.geom_b).symmetric_difference(
+            simplified).area / MM ** 2 < 1e-6
+        assert runs == [1]
+
+    def test_dragging_previews_then_commits(self, tmp_path):
+        window = _mushroom_window(tmp_path)
+        page = window.seam_page
+        page.set_push_mode(U.VERTEX)
+        ax = page.ax_before
+        part, index = self._head_corner(page, ax)
+        start = (O + 28 * MM, O + 25 * MM)
+        end = (O + 30 * MM, O + 27 * MM)
+
+        def event(xy):
+            class _Event:
+                inaxes = ax
+                button = 1
+                xdata, ydata = xy
+                x, y = ax.transData.transform(xy)
+            return _Event
+
+        page._on_press(event(start))
+        assert page._drag is not None and page._preview is not None
+        page._on_motion(event(end))
+        xs, ys = page._preview.get_data()
+        assert xs[1] == pytest.approx(end[0]) and ys[1] == pytest.approx(end[1])
+        page._on_release(event(end))
+        assert page._drag is None and page._preview is None
+        assert len(page._undo) == 1

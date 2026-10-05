@@ -54,12 +54,17 @@ Its controls are grouped in boxes: **Border** (back, the pair, Apply),
   the border further than **Max move** from where it ran, and what cannot be
   fixed within that is left for the brush.  It works on the simplified pair if
   there is one, outlines the land it moved in green, and is one undo step.
-* **Push border** -- a brush that moves the border.  **Grow <A>** hands the
+* **Edit by hand** -- two tools that move the border.  **Grow <A>** hands the
   land under the stroke from B to A; **Grow <B>** the other way.  Only land
   touching the province growing moves, so it moves the border rather than
   making enclaves, and the pair still covers exactly the ground it did.  It
   edits the pair as imported; if the seam had been simplified, that is run
-  again on the edited pair.  **Undo** (Ctrl+Z) and **Redo** (Ctrl+Shift+Z or
+  again on the edited pair.  **Move Vertices** drags one vertex of the seam:
+  the sliver between its old and new path changes hands.  Drag on the left
+  panel to edit the border as imported, on the right to edit the simplified
+  one that will be saved.  The end vertices are pinned, a vertex cannot be
+  dropped in the sea, and a move that makes the border cross itself is
+  refused.  **Undo** (Ctrl+Z) and **Redo** (Ctrl+Shift+Z or
   Ctrl+Y) step through the pushes and solves; the history lasts until another
   border is opened.  Esc leaves the brush.
 
@@ -105,7 +110,9 @@ from harnesses.UI_shared_border import SharedBorderTester
 from lib.LIB_border_ledger import LEDGER_NAME, BorderLedger, find_borders
 from lib.LIB_project_config import get as cfg
 from lib.LIB_project_config import update_local
-from lib.LIB_seam_fit import FitParams, fit_report, push_border, solve_fit
+from lib.LIB_seam_fit import (FitParams, fit_report, move_seam_vertex,
+                              push_border, solve_fit)
+from lib.LIB_shared_border import _shared_seam
 
 GEOJSON_FILTER = "GeoJSON (*.geojson *.json);;All files (*)"
 GEOJSON_GLOBS = ("*.geojson", "*.json")
@@ -143,6 +150,15 @@ SOLVED_COLOUR = "#1E8449"
 
 #: The two push modes: grow province A into B, or B into A.
 GROW_A, GROW_B = "a", "b"
+
+#: The third hand tool: drag a vertex of the seam.
+VERTEX = "vertex"
+
+#: How close the pointer has to come to a vertex to pick it up, in pixels.
+VERTEX_PICK_PX = 8
+
+#: The two seam segments being dragged, drawn over everything while they move.
+DRAG_COLOUR = "#D35400"
 
 #: The fit settings, as ``(config key, label, lo, hi, decimals, step, tip)``.
 #: Saved to the local config as they are turned, so the list on the first page
@@ -343,6 +359,8 @@ class SeamPage(SharedBorderTester):
         self._solve_thread = None
         self._solve_worker = None
         self._solve_marks: list = []      #: land the last solve moved
+        #: A vertex being dragged: (axes, pair, seam, part, index), or None.
+        self._drag = None
 
         self._regroup()
 
@@ -527,21 +545,32 @@ class SeamPage(SharedBorderTester):
             lambda value: update_local("seam.brush_mm", value))
         row.addWidget(QLabel("Brush:"))
         row.addWidget(self.brush_spin)
+        self.btn_vertices = QPushButton("Move Vertices")
+        self.btn_vertices.setCheckable(True)
+        self.btn_vertices.setToolTip(
+            "Drag a vertex of the seam to move it; both provinces follow.\n"
+            "Drag on the left panel to edit the border as imported, on the\n"
+            "right to edit the simplified one that will be saved. The two end\n"
+            "vertices are pinned to the coast or a third province.")
+        self.btn_vertices.clicked.connect(
+            lambda checked: self.set_push_mode(VERTEX if checked else None))
+        row.addWidget(self.btn_vertices)
         self.btn_undo = QPushButton("Undo")
-        self.btn_undo.setToolTip("Take back the last push (Ctrl+Z).")
+        self.btn_undo.setToolTip("Take back the last edit (Ctrl+Z).")
         self.btn_undo.clicked.connect(self.undo_push)
         self.btn_redo = QPushButton("Redo")
         self.btn_redo.setToolTip(
-            "Put back the push just undone (Ctrl+Shift+Z or Ctrl+Y).")
+            "Put back the edit just undone (Ctrl+Shift+Z or Ctrl+Y).")
         self.btn_redo.clicked.connect(self.redo_push)
         row.addStretch(1)
         for button in (self.btn_undo, self.btn_redo):
             button.setEnabled(False)
             row.addWidget(button)
         self.push_label = _note_label(
-            "Drag across the seam to hand land from one province to the "
-            "other. Esc leaves the brush.")
-        return _box("Push border", row, self.push_label)
+            "Grow: drag across the seam to hand land from one province to "
+            "the other. Move Vertices: drag a seam vertex. Esc leaves the "
+            "tool.")
+        return _box("Edit by hand", row, self.push_label)
 
     # -- the pair -----------------------------------------------------------
     def load_pair(self, province_a: Province, province_b: Province,
@@ -725,19 +754,24 @@ class SeamPage(SharedBorderTester):
     # exactly the region a circular brush sweeps, so the preview is honest, and
     # the real geometry is built once, on release.
     def set_push_mode(self, mode) -> None:
+        """Switch hand tool: GROW_A, GROW_B, VERTEX, or None for neither."""
         self._cancel_stroke()
+        self._cancel_drag()
         self._push_mode = mode
         self.btn_grow_a.setChecked(mode == GROW_A)
         self.btn_grow_b.setChecked(mode == GROW_B)
+        self.btn_vertices.setChecked(mode == VERTEX)
         if mode is None:
             self.canvas.unsetCursor()
         else:
             self.canvas.setCursor(Qt.CursorShape.CrossCursor)
 
     def _escape(self) -> None:
-        """Esc backs out one step: first the stroke, then the brush."""
+        """Esc backs out one step: first the stroke or drag, then the tool."""
         if self._stroke is not None:
             self._cancel_stroke()
+        elif self._drag is not None:
+            self._cancel_drag()
         else:
             self.set_push_mode(None)
 
@@ -764,6 +798,9 @@ class SeamPage(SharedBorderTester):
                 or event.inaxes not in (self.ax_before, self.ax_after)
                 or event.xdata is None or self.geom_a is None):
             return
+        if self._push_mode == VERTEX:
+            self._start_drag(event)
+            return
         self._stroke = [(event.xdata, event.ydata)]
         self._stroke_ax = event.inaxes
         colour = "#2E86C1" if self._push_mode == GROW_A else "#7F8C8D"
@@ -774,6 +811,9 @@ class SeamPage(SharedBorderTester):
         self.canvas.draw_idle()
 
     def _on_motion(self, event) -> None:
+        if self._drag is not None:
+            self._extend_drag(event)
+            return
         if self._stroke is None or event.inaxes is not self._stroke_ax:
             return
         if event.xdata is None:
@@ -784,11 +824,135 @@ class SeamPage(SharedBorderTester):
         self.canvas.draw_idle()
 
     def _on_release(self, event) -> None:
+        if self._drag is not None:
+            self._finish_drag(event)
+            return
         if self._stroke is None:
             return
         points = self._stroke
         self._cancel_stroke()
         self.push(points)
+
+    # -- vertex dragging ----------------------------------------------------
+    def _editable(self, ax):
+        """
+        The pair a vertex drag on ``ax`` edits, and the seam it shows.
+
+        The panel decides: the left shows the pair as imported, the right the
+        simplified pair, and a vertex is moved on the border it was picked
+        from. Returns ``(pair, seam)``, or None if that panel has no seam.
+        """
+        if ax is self.ax_after and self.result is not None:
+            pair = (self.result.a, self.result.b)
+        else:
+            pair = (self.geom_a, self.geom_b)
+        seam = _shared_seam(*pair) if pair[0] is not None else None
+        return (pair, seam) if seam is not None else None
+
+    def pick_vertex(self, ax, x_px: float, y_px: float):
+        """
+        The seam vertex nearest a pixel position on ``ax``, as ``(part,
+        index)``, or None if none lies within ``VERTEX_PICK_PX``.
+
+        Measured on the screen, not the ground: what has to be close is the
+        pointer to the dot, at whatever zoom the panel is at.
+        """
+        editable = self._editable(ax)
+        if editable is None:
+            return None
+        best, best_d = None, float(VERTEX_PICK_PX)
+        for part_no, part in enumerate(editable[1].geoms):
+            for index, xy in enumerate(ax.transData.transform(
+                    list(part.coords))):
+                d = ((xy[0] - x_px) ** 2 + (xy[1] - y_px) ** 2) ** 0.5
+                if d <= best_d:
+                    best, best_d = (part_no, index), d
+        return best
+
+    def _start_drag(self, event) -> None:
+        picked = self.pick_vertex(event.inaxes, event.x, event.y)
+        if picked is None:
+            self.push_label.setText("No seam vertex there — press on one of "
+                                    "the dots along the border.")
+            return
+        pair, seam = self._editable(event.inaxes)
+        part, index = picked
+        coords = list(seam.geoms[part].coords)
+        if index == 0 or index == len(coords) - 1:
+            self.push_label.setText(
+                "That end is pinned: the border meets the coast or a third "
+                "province there.")
+            return
+        self._drag = (event.inaxes, pair, seam, part, index)
+        prev, here, nxt = coords[index - 1], coords[index], coords[index + 1]
+        self._preview, = event.inaxes.plot(
+            [prev[0], here[0], nxt[0]], [prev[1], here[1], nxt[1]],
+            color=DRAG_COLOUR, linewidth=1.8, marker="o", markersize=4,
+            markevery=[1], zorder=7)
+        self.canvas.draw_idle()
+
+    def _extend_drag(self, event) -> None:
+        ax, _pair, seam, part, index = self._drag
+        if event.inaxes is not ax or event.xdata is None:
+            return
+        coords = list(seam.geoms[part].coords)
+        prev, nxt = coords[index - 1], coords[index + 1]
+        self._preview.set_data([prev[0], event.xdata, nxt[0]],
+                               [prev[1], event.ydata, nxt[1]])
+        self.canvas.draw_idle()
+
+    def _finish_drag(self, event) -> None:
+        ax, _pair, _seam, part, index = self._drag
+        if event.inaxes is not ax or event.xdata is None:
+            self._cancel_drag()
+            self.push_label.setText("Dropped off the panel — nothing moved.")
+            return
+        self._cancel_drag()
+        self.move_vertex(ax, part, index, (event.xdata, event.ydata))
+
+    def _cancel_drag(self) -> None:
+        self._drag = None
+        if self._preview is not None:
+            try:
+                self._preview.remove()
+            except (ValueError, NotImplementedError):
+                pass
+            self._preview = None
+            self.canvas.draw_idle()
+
+    def move_vertex(self, ax, part: int, index: int, to) -> bool:
+        """
+        Commit one vertex move on ``ax``'s border. Returns whether it moved.
+
+        A move on the right panel edits the simplified pair, which then
+        becomes the pair being edited -- as Auto Solve does -- and is
+        simplified again, which leaves a deliberately placed vertex alone.
+        """
+        if self._busy or self._thread is not None:
+            return False
+        editable = self._editable(ax)
+        if editable is None:
+            return False
+        (geom_a, geom_b), seam = editable
+        try:
+            new_a, new_b = move_seam_vertex(geom_a, geom_b, seam, part, index,
+                                            to, self._params().scale)
+        except (ValueError, IndexError) as exc:
+            self.push_label.setText(f"Not moved: {exc}")
+            return False
+        if new_a is geom_a and new_b is geom_b:
+            self.push_label.setText("Not moved: that is where it already is.")
+            return False
+        old = seam.geoms[part].coords[index]
+        shift = ((to[0] - old[0]) ** 2 + (to[1] - old[1]) ** 2) ** 0.5
+        shift_mm = shift / self._params().mpm
+        note = f"moved a vertex {shift_mm:.2f} mm"
+        self._undo.append((self.geom_a, self.geom_b, note))
+        self._redo = []
+        self.geom_a, self.geom_b = new_a, new_b
+        self.push_label.setText(f"{note[0].upper()}{note[1:]}.")
+        self._after_edit()
+        return True
 
     def push(self, points) -> bool:
         """

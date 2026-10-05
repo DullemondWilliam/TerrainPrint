@@ -71,6 +71,10 @@ the province growing, so it moves the border rather than creating enclaves, and
 it hands land over rather than adding or removing any -- the pair partitions
 exactly the ground it did before, so no gap can open.
 
+:func:`move_seam_vertex` is the finest hand tool: drag one vertex of the
+seam, and the sliver between its old and new path changes hands -- again by
+the same hand-over, so the pair still partitions the same ground.
+
 :func:`solve_fit` is the same fix made automatically.  Every problem gets two
 candidate repairs, both made of that same hand-over:
 
@@ -96,9 +100,9 @@ import logging
 from dataclasses import dataclass, field
 
 from shapely import segmentize
-from shapely.geometry import MultiPolygon, Point, Polygon
+from shapely.geometry import LineString, MultiPolygon, Point, Polygon
 from shapely.affinity import translate
-from shapely.ops import unary_union
+from shapely.ops import polygonize, unary_union
 
 from lib.LIB_island_bridging import brush_stroke
 from lib.LIB_project_config import get as _cfg
@@ -527,6 +531,73 @@ def transfer(region, geom_grow, geom_shrink, scale=DEFAULT_SCALE):
     if shrunk.is_empty:
         return unchanged                  # never erase a province outright
     return _as_polygonal(grown), _as_polygonal(shrunk), moved
+
+
+def move_seam_vertex(geom_a, geom_b, seam, part, index, to,
+                     scale=DEFAULT_SCALE):
+    """
+    Move one vertex of the seam, and both provinces with it.
+
+    Parameters
+    ----------
+    geom_a, geom_b : the pair, in the working metre CRS.
+    seam           : their seam, as :func:`LIB_shared_border._shared_seam`
+                     gives it -- the vertices the caller showed.
+    part, index    : which vertex: ``seam.geoms[part].coords[index]``.
+    to             : where it goes, ``(x, y)``.
+
+    Returns
+    -------
+    ``(new_a, new_b)``.
+
+    Raises
+    ------
+    ValueError, saying why, when the move is refused: an end vertex (where the
+    border meets the coast or a third province -- moving it would open a gap
+    there), a vertex dropped outside both provinces, or a move that makes the
+    border cross itself.
+
+    Only the land between the old path (previous vertex, old position, next
+    vertex) and the new one changes hands, face by face: every face between
+    the two paths was on one side of the border and is now on the other.
+    """
+    coords = list(seam.geoms[part].coords)
+    if index <= 0 or index >= len(coords) - 1:
+        raise ValueError(
+            "the ends of the border are pinned: one meets the coast or a "
+            "third province there, and moving it would open a gap.")
+    union = unary_union([geom_a, geom_b])
+    target = Point(to)
+    slack = scale / 1000.0 * 1e-3
+    if not union.buffer(slack).contains(target):
+        raise ValueError("a vertex cannot leave the land -- that is the sea.")
+    moved = coords[:index] + [tuple(to[:2])] + coords[index + 1:]
+    new_part = LineString(moved)
+    others = [g for i, g in enumerate(seam.geoms) if i != part]
+    if not new_part.is_simple or any(
+            new_part.crosses(other) for other in others):
+        raise ValueError("that would make the border cross itself.")
+
+    old_path = LineString(coords[index - 1:index + 2])
+    new_path = LineString(moved[index - 1:index + 2])
+    a, b = geom_a, geom_b
+    for face in polygonize(unary_union([old_path, new_path])):
+        inside = face.representative_point()
+        if a.contains(inside):
+            b, a, _ = transfer(face, b, a, scale)
+        elif b.contains(inside):
+            a, b, _ = transfer(face, a, b, scale)
+    if a is geom_a and b is geom_b:
+        return geom_a, geom_b                 # nowhere far enough to matter
+    # The border the files now share has to be the one that was drawn; if
+    # the faces said otherwise -- a move across another part of the seam, or
+    # across a lake -- refuse rather than save a border nobody drew.
+    expected = unary_union(others + [new_part])
+    found = _shared_seam(a, b)
+    if found is None or found.hausdorff_distance(expected) > 10 * slack:
+        raise ValueError("the border would not run where it was dragged -- "
+                         "the move crosses another part of it.")
+    return a, b
 
 
 # ---------------------------------------------------------------------------

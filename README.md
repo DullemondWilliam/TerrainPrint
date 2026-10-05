@@ -227,11 +227,19 @@ leaves anything that would need more for the brush. Moved land is outlined in
 green, and the whole solve is one undo step. On Labrador/Québec, simplified,
 it takes 33 problems to 6 in about 12 s.
 
-**Push border:** *Grow A* / *Grow B* turn the map into a brush that hands the
+**Edit by hand:** two tools that move the border.
+
+*Grow A* / *Grow B* turn the map into a brush that hands the
 land under the stroke to that province, so a locking tab or thin finger can be
 pushed back by hand. *Undo* (Ctrl+Z) and *Redo* (Ctrl+Shift+Z or Ctrl+Y)
-step through the pushes and solves until another border is opened; Esc leaves
-the brush.
+step through every edit until another border is opened; Esc leaves the tool.
+
+*Move Vertices* lets you drag a vertex of the seam; the sliver between its old
+and new path changes hands, so the two provinces still meet exactly. Drag on
+the left panel to edit the border as imported, on the right to edit the
+simplified border that will be saved. The two end vertices are pinned (they
+sit on the coast or a third province), a vertex can't be dropped in the sea,
+and a move that would make the border cross itself is refused.
 
 ## Recommended Workflow
 

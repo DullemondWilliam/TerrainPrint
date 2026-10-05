@@ -275,3 +275,68 @@ class TestTransfer:
                   (20, 40)]
         report = fit_report(*_pair(sliver), params=_params())
         assert not any(t.head_mm < 0.1 for t in report.tabs)
+
+
+class TestMoveSeamVertex:
+    """Dragging one vertex: the sliver between old and new path changes hands."""
+
+    @staticmethod
+    def _index_at(seam, y_mm, part=0):
+        coords = list(seam.geoms[part].coords)
+        return next(i for i, c in enumerate(coords)
+                    if abs(c[1] - (O + y_mm * MM)) < 1.0)
+
+    def test_moves_exactly_the_triangle_between_the_paths(self):
+        from lib.LIB_shared_border import _shared_seam
+        from lib.LIB_seam_fit import move_seam_vertex
+        a, b = _pair([(20, 0), (20, 20), (20, 40)])
+        seam = _shared_seam(a, b)
+        new_a, new_b = move_seam_vertex(a, b, seam, 0, self._index_at(seam, 20),
+                                        (O + 25 * MM, O + 20 * MM), SCALE)
+        # Half of 40 mm by 5 mm, from East to West.
+        assert (new_a.area - a.area) / MM ** 2 == pytest.approx(100.0)
+        assert a.union(b).symmetric_difference(
+            new_a.union(new_b)).area / MM ** 2 < 1e-6
+        assert new_a.intersection(new_b).area / MM ** 2 < 1e-6
+        moved = _shared_seam(new_a, new_b)
+        assert (O + 25 * MM, O + 20 * MM) in list(moved.geoms[0].coords)
+
+    def test_moving_back_restores_the_pair(self):
+        from lib.LIB_shared_border import _shared_seam
+        from lib.LIB_seam_fit import move_seam_vertex
+        a, b = _pair([(20, 0), (20, 20), (20, 40)])
+        seam = _shared_seam(a, b)
+        i = self._index_at(seam, 20)
+        a2, b2 = move_seam_vertex(a, b, seam, 0, i, (O + 23 * MM, O + 20 * MM))
+        seam2 = _shared_seam(a2, b2)
+        a3, b3 = move_seam_vertex(a2, b2, seam2, 0, self._index_at(seam2, 20),
+                                  (O + 20 * MM, O + 20 * MM))
+        assert a3.symmetric_difference(a).area / MM ** 2 < 1e-6
+
+    @pytest.mark.parametrize("end", ["first", "last"])
+    def test_the_ends_are_pinned(self, end):
+        from lib.LIB_shared_border import _shared_seam
+        from lib.LIB_seam_fit import move_seam_vertex
+        a, b = _pair([(20, 0), (20, 20), (20, 40)])
+        seam = _shared_seam(a, b)
+        index = 0 if end == "first" else len(seam.geoms[0].coords) - 1
+        with pytest.raises(ValueError, match="pinned"):
+            move_seam_vertex(a, b, seam, 0, index, (O + 21 * MM, O + 1 * MM))
+
+    def test_a_vertex_cannot_go_to_sea(self):
+        from lib.LIB_shared_border import _shared_seam
+        from lib.LIB_seam_fit import move_seam_vertex
+        a, b = _pair([(20, 0), (20, 20), (20, 40)])
+        seam = _shared_seam(a, b)
+        with pytest.raises(ValueError, match="sea"):
+            move_seam_vertex(a, b, seam, 0, self._index_at(seam, 20),
+                             (O + 50 * MM, O + 20 * MM))
+
+    def test_the_border_cannot_cross_itself(self):
+        from lib.LIB_shared_border import _shared_seam
+        from lib.LIB_seam_fit import move_seam_vertex
+        a, b = _pair([(20, 0), (20, 10), (24, 15), (20, 20), (20, 40)])
+        seam = _shared_seam(a, b)
+        with pytest.raises(ValueError, match="cross"):
+            move_seam_vertex(a, b, seam, 0, self._index_at(seam, 20),
+                             (O + 24 * MM, O + 5 * MM))
