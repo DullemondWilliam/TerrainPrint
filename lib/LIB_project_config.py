@@ -191,6 +191,33 @@ DEFAULTS = {
         # Where UI_border_editor saves provinces once their shared borders are
         # cleaned, with the ledger of which borders are done.
         "provinces_bordered": "Data/JSonProvinces-Bordered",
+        # Province terrain STLs (with their .frame.json sidecars) as the
+        # terrain editor saves them, and where UI_join_editor writes them back
+        # with butterfly-key slots cut, alongside the keys to print.
+        "stl": "Data/STL",
+        "stl_keyed": "Data/STL-Keyed",
+    },
+    "keys": {
+        # Butterfly (bowtie) keys joining neighbouring province pieces from
+        # the back, in printed millimetres. Read by UI_join_editor and the
+        # UI_butterfly_keys harness; the slot depth is print.dovetail_mm, tied
+        # to the base it is cut into. One size map-wide, so any key fits any
+        # slot. The defaults are the border connectors' dovetail lobe.
+        # Key width at the seam (the waist).
+        "neck_mm": 1.6,
+        # Key width at each end: wider than the neck, or nothing is captured
+        # behind the waist and the pieces slide apart.
+        "mouth_mm": 3.2,
+        # How far each half reaches into its province from the seam.
+        "reach_mm": 3.0,
+        # Slot oversize per side, so a printed key presses in. The same 0.2 mm
+        # as seam.edge_loss_mm, for the same reason.
+        "clearance_mm": 0.2,
+        # Pitch Auto Place spaces keys at along a seam.
+        "spacing_mm": 14.0,
+        # Extra keys printed on the plates: a key under a centimetre is easy
+        # to lose.
+        "spares": 4,
     },
     "island_editor": {
         # Printed sizes, converted to ground units through print.scale at the

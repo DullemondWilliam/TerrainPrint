@@ -27,10 +27,20 @@
     "min_area_mm2": 0.02,
     "original_opacity": 40
   },
+  "keys": {
+    "clearance_mm": 0.2,
+    "mouth_mm": 3.2,
+    "neck_mm": 1.6,
+    "reach_mm": 3.0,
+    "spacing_mm": 14.0,
+    "spares": 4
+  },
   "paths": {
     "provinces_bordered": "Data/JSonProvinces-Bordered",
     "provinces_in": "Data/JSon-Provinces-Orig",
-    "provinces_out": "Data/JSonProvinces-Cleaned"
+    "provinces_out": "Data/JSonProvinces-Cleaned",
+    "stl": "Data/STL",
+    "stl_keyed": "Data/STL-Keyed"
   },
   "print": {
     "bed_margin_mm": 10.0,

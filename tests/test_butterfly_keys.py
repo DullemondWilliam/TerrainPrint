@@ -260,3 +260,52 @@ class TestKeyLayout:
 
     def test_no_keys_no_mesh(self):
         assert K.key_layout(0, P) is None
+
+
+class TestKeyPlates:
+
+    def test_keys_spill_onto_further_plates_and_each_fits_the_bed(self):
+        bed, margin = 40.0, 2.0
+        plates = K.key_plates(100, P, bed_mm=bed, margin_mm=margin)
+        assert len(plates) > 1
+        assert sum(len(p.split(only_watertight=False)) for p in plates) == 100
+        for plate in plates:
+            width, depth, _ = plate.extents
+            assert width <= bed - 2 * margin and depth <= bed - 2 * margin
+
+    def test_one_plate_when_they_fit(self):
+        assert len(K.key_plates(5, P)) == 1
+        assert K.key_plates(0, P) == []
+
+
+class TestAvoid:
+
+    def test_a_slot_cutting_into_an_avoided_region_is_refused(self):
+        seam = K.find_seam(A, B)
+        placed = K.auto_place(seam, P)
+        first = K.key_polygon(seam, placed[0], P, clearance=True)
+        checks = K.check_keys(seam, placed, A.union(B), P,
+                              avoid=[(first.centroid.buffer(MPM), "thin land")])
+        assert not checks[0].ok and checks[0].reason == "thin land"
+        assert all(c.ok for c in checks[1:])
+
+    def test_touching_an_avoided_region_is_not_cutting_into_it(self):
+        seam = K.find_seam(A, B)
+        placed = K.auto_place(seam, P)[:1]
+        slot = K.key_polygon(seam, placed[0], P, clearance=True)
+        _, y0, x1, y1 = slot.bounds
+        beside = box(x1, y0, x1 + MPM, y1)
+        assert K.check_keys(seam, placed, A.union(B), P,
+                            avoid=[(beside, "x")])[0].ok
+
+
+class TestKeySettings:
+
+    def test_dimensions_come_from_the_keys_section(self):
+        params = K.load_key_params(neck_mm=2.0, mouth_mm=5.0)
+        assert (params.neck_mm, params.mouth_mm) == (2.0, 5.0)
+        assert K.KeyParams().spares == 4
+
+    def test_negative_spares_are_refused(self):
+        with pytest.raises(ValueError):
+            K.KeyParams(spares=-1).validate()

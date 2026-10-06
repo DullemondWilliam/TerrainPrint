@@ -76,13 +76,13 @@ from lib.LIB_terrain_stl import read_frame
 log = logging.getLogger(__name__)
 
 EPSG_METRIC = _shipped("crs.working")
-#: The border connectors' dovetail profile: one opinion about what locks.
-_CP = ConnectorParams()
 #: A pocket cutter starts this far below the base, so the boolean sees an
 #: intersecting solid rather than a coplanar face.
 _UNDERCUT_MM = 0.1
 #: Gap between keys laid out on the bed in the key STL.
 _LAYOUT_GAP_MM = 2.0
+#: Overlap below this fraction of a slot's area is a touch, not a collision.
+_TOUCH_FRACTION = 1e-6
 
 
 @dataclass
@@ -90,14 +90,16 @@ class KeyParams:
     """Butterfly key geometry.  All lengths are **print-mm**."""
     scale: float = _shipped("print.scale")            #: map scale denominator
     depth_mm: float = _shipped("print.dovetail_mm")   #: slot depth into each piece
-    neck_mm: float = _CP.neck_mm                  #: key width at the seam
-    mouth_mm: float = _CP.mouth_mm                #: key width at each end
-    reach_mm: float = _CP.reach_mm                #: seam to each end
-    clearance_mm: float = _CP.clearance_mm        #: slot oversize, per side
+    neck_mm: float = _shipped("keys.neck_mm")         #: key width at the seam
+    mouth_mm: float = _shipped("keys.mouth_mm")       #: key width at each end
+    reach_mm: float = _shipped("keys.reach_mm")       #: seam to each end
+    clearance_mm: float = _shipped("keys.clearance_mm")   #: slot oversize, per side
     #: The key is printed this much shorter than the slot is deep, so it seats
     #: below the base instead of standing proud of it.
     height_clearance_mm: float = 0.1
-    spacing_mm: float = _CP.spacing_mm            #: auto-placement pitch
+    spacing_mm: float = _shipped("keys.spacing_mm")   #: auto-placement pitch
+    #: Extra keys laid out on the plates beyond those placed.
+    spares: int = _shipped("keys.spares")
     #: Keep auto-placed keys this far from a seam's ends (the coast or a triple
     #: junction); defaults to the key's own half-width.
     end_margin_mm: float | None = None
@@ -130,6 +132,8 @@ class KeyParams:
                              "otherwise nothing is captured behind the waist.")
         if self.reach_mm <= 0 or self.spacing_mm <= 0:
             raise ValueError("reach_mm and spacing_mm must be positive.")
+        if self.clearance_mm < 0 or self.spares < 0:
+            raise ValueError("clearance_mm and spares cannot be negative.")
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +145,12 @@ class KeyParams:
 _KEYPARAMS_KEYS = {
     "scale": "print.scale",
     "depth_mm": "print.dovetail_mm",
+    "neck_mm": "keys.neck_mm",
+    "mouth_mm": "keys.mouth_mm",
+    "reach_mm": "keys.reach_mm",
+    "clearance_mm": "keys.clearance_mm",
+    "spacing_mm": "keys.spacing_mm",
+    "spares": "keys.spares",
 }
 
 
@@ -327,12 +337,15 @@ class KeyCheck:
     reason: str = ""
 
 
-def check_keys(seam, placements, land, params=None) -> list:
+def check_keys(seam, placements, land, params=None, avoid=()) -> list:
     """
     Every placement with its polygon and verdict.
 
     Refused: a slot hanging off ``land`` (the two footprints' union) by more
-    than ``max_overhang``, or one that collides with an earlier key's slot.
+    than ``max_overhang``, one that collides with an earlier key's slot, or
+    one that cuts into any ``(geometry, reason)`` in ``avoid`` -- slots on
+    another border, or land the seam fit check calls too thin -- refused with
+    that reason.
     """
     params = params or KeyParams()
     grown = land.buffer(params.seam_tol_mm * params.mpm)
@@ -348,8 +361,20 @@ def check_keys(seam, placements, land, params=None) -> list:
         elif any(c.ok and c.slot.intersects(slot) for c in checks):
             check.ok, check.overlaps = False, True
             check.reason = "overlaps another key"
+        else:
+            hit = next((reason for geom, reason in avoid
+                        if _cuts_into(slot, geom)), None)
+            if hit is not None:
+                check.ok, check.reason = False, hit
         checks.append(check)
     return checks
+
+
+def _cuts_into(slot, geom) -> bool:
+    """More than a touch: a slot grazing a region along an edge is clear."""
+    if geom is None or geom.is_empty or not slot.intersects(geom):
+        return False
+    return slot.intersection(geom).area > _TOUCH_FRACTION * slot.area
 
 
 # ---------------------------------------------------------------------------
@@ -390,16 +415,23 @@ def key_solid(params=None):
     return _man_to_trimesh(_extrude_man(poly, 0.0, params.key_height_mm))
 
 
+def _usable_bed(bed_mm, margin_mm) -> float:
+    return (_shipped("print.bed_mm") if bed_mm is None else bed_mm) \
+        - 2 * (_shipped("print.bed_margin_mm") if margin_mm is None else margin_mm)
+
+
+def _pitch(params) -> tuple:
+    return params.mouth_mm + _LAYOUT_GAP_MM, 2 * params.reach_mm + _LAYOUT_GAP_MM
+
+
 def key_layout(count, params=None, bed_mm=None, margin_mm=None):
     """``count`` keys laid out in rows on the bed, as one mesh (or None)."""
     if count <= 0:
         return None
     params = params or KeyParams()
-    bed = (_shipped("print.bed_mm") if bed_mm is None else bed_mm) \
-        - 2 * (_shipped("print.bed_margin_mm") if margin_mm is None else margin_mm)
+    bed = _usable_bed(bed_mm, margin_mm)
     solid = key_solid(params)
-    pitch_x = params.mouth_mm + _LAYOUT_GAP_MM
-    pitch_y = 2 * params.reach_mm + _LAYOUT_GAP_MM
+    pitch_x, pitch_y = _pitch(params)
     per_row = max(1, int((bed + _LAYOUT_GAP_MM) // pitch_x))
     copies = []
     for i in range(count):
@@ -408,6 +440,25 @@ def key_layout(count, params=None, bed_mm=None, margin_mm=None):
         copy.apply_translation([col * pitch_x, row * pitch_y, 0.0])
         copies.append(copy)
     return trimesh.util.concatenate(copies)
+
+
+def key_plates(count, params=None, bed_mm=None, margin_mm=None) -> list:
+    """
+    ``count`` keys on as many bed-sized plates as they need, one mesh each.
+
+    :func:`key_layout` lays rows out without end; this stops each plate at the
+    rows that fit the usable bed and starts another.
+    """
+    if count <= 0:
+        return []
+    params = params or KeyParams()
+    bed = _usable_bed(bed_mm, margin_mm)
+    pitch_x, pitch_y = _pitch(params)
+    per_row = max(1, int((bed + _LAYOUT_GAP_MM) // pitch_x))
+    rows = max(1, int((bed + _LAYOUT_GAP_MM) // pitch_y))
+    per_plate = per_row * rows
+    return [key_layout(min(per_plate, count - start), params, bed_mm, margin_mm)
+            for start in range(0, count, per_plate)]
 
 
 @dataclass
