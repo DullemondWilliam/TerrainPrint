@@ -67,6 +67,7 @@ flowchart TD
 ├── UI_terrain_editor.py               # National DEM → province STL, the whole pipeline
 ├── UI_province_viewer.py              # Every province at once, at print size
 ├── UI_border_editor.py                # Clean every shared border, tracking which are done
+├── UI_join_editor.py                  # Butterfly keys across every border; keyed STLs + key plates
 ├── harnesses/                         # One throwaway visual harness per lib (UI_*.py)
 ├── docs/USING_DEMTO3D.md              # DEM -> STL is now done in QGIS (DEMto3D plugin)
 ├── lib/                               # Library modules (imported as lib.LIB_*)
@@ -77,6 +78,8 @@ flowchart TD
 │   ├── LIB_border_simplification.py   # Topology-aware border simplification
 │   ├── LIB_border_split.py            # Split a border STL into bed-sized pieces
 │   ├── LIB_border_stl.py              # Extrude a border region to a slab STL
+│   ├── LIB_butterfly_keys.py          # Bowtie keys joining two province STLs from the back
+│   ├── LIB_province_joins.py          # Bowtie keys across every border of a map
 │   ├── LIB_island_merging.py          # Merge two islands with a connecting neck of land
 │   ├── LIB_island_removal.py          # Small-island detection and removal
 │   ├── LIB_lake_removal.py            # Interior ring (lake) removal helper
@@ -241,6 +244,46 @@ the left panel to edit the border as imported, on the right to edit the
 simplified border that will be saved. The two end vertices are pinned (they
 sit on the coast or a third province), a vertex can't be dropped in the sea,
 and a move that would make the border cross itself is refused.
+
+---
+
+### 6. Join Editor (`UI_join_editor.py`)
+
+Joins every province to its neighbours with butterfly (bowtie) keys pressed
+into slots in the back of the printed pieces, and writes the slotted STLs and
+the keys to print.
+
+```powershell
+py -3 UI_join_editor.py
+```
+
+**Inputs:** *Provinces …* is the folder the Border Editor saved
+(`Data/JSonProvinces-Bordered`); *STLs …* is the terrain STLs cut from those
+same files, each with its `.frame.json` (`Data/STL`). Files pair by name,
+ignoring `_simplified` / `_trimmed` / `_keyed`. *Load* finds every border.
+Pieces built under other terrain settings, and files that do not pair, are
+listed under the borders.
+
+**Key (print-mm):** *Neck*, *Mouth*, *Reach*, *Depth*, *Clearance*, *Spacing*
+and *Spares* set one key size for the whole map, so any key fits any slot.
+They are saved as you turn them (`keys.*`; *Depth* is `print.dovetail_mm`) and
+every key is re-checked at once. A key whose neck is not narrower than its
+mouth, or a slot as deep as the terrain base, blocks cutting.
+
+**Placing:** pick a border in the list or click near its seam. *Auto Place*
+spaces keys along it (*Auto Place All* along every border); click the seam to
+add a key, click a key to remove it, drag a key along the seam. *Undo* / *Redo*
+(Ctrl+Z / Ctrl+Y). Borders are grey with no keys, green when every key passes,
+amber when some are refused (off the land, into a third province, colliding
+with a key on another border, or on land the fit check calls too thin), and
+red when an STL on that border was cut from a province that has changed since:
+rebuild it in the terrain editor.
+
+**Cut and Save All** writes into the save folder (`Data/STL-Keyed`):
+`<province>_keyed.stl` with its frame, `butterfly_keys_01.stl` … (every key
+plus the spares, on bed-sized plates), and `join_plan.json`, which reopens the
+keys on the next load. *3D* shows the selected border's two pieces cropped
+round the seam with the keys in their slots, seen from below, or a key plate.
 
 ## Settings
 

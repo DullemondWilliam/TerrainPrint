@@ -7,8 +7,13 @@ shared border, and the run writes:
 * each province STL with its slots cut into the back (`<province>_keyed.stl`),
 * the keys themselves, laid out on bed-sized plates for printing.
 
-> **Status: planned.** Nothing here is built yet. §7 lists the decisions to
-> take before the build starts.
+> **Status: built.** `LIB_province_joins` and `UI_join_editor` implement this
+> plan. Of the decisions in §7: the key size is set in the window, map-wide,
+> and saved to the `keys` config section (1, with the defaults left at today's
+> lobe until a test print says otherwise); uncleaned borders are allowed and
+> labelled (2); `keys.spares` adds 4 spare keys (3); province splitting is
+> left out (4); and there is no chamfer (5). §9 records where the build
+> differed from the plan.
 
 ---
 
@@ -343,3 +348,25 @@ them (`load_key_params(*settings_files())`, as every window does now).
 No separate harness is planned. The pairwise one (`UI_butterfly_keys`) already
 exercises the geometry, and `LIB_border_ledger` set the precedent of a library
 whose window is the app itself.
+
+---
+
+## 9. What the build changed
+
+* **The seam-agreement check reads the base rim, not a footprint union.**
+  `base_outline` takes the base-triangle edges used only once, straight from
+  the faces. On the 414k-face British Columbia STL that is 0.34 s for 9,089 rim
+  edges. The footprint union that reconciliation uses would cost seconds.
+* **Agreement tolerance is the slot clearance** (never below `seam_tol_mm`).
+  A seam off the piece's edge by less than the clearance puts the slot where
+  the clearance absorbs it, so that is the line between "fine" and "rebuild".
+* **The real data caught a mismatched piece on its first load.**
+  `Data/STL/CAN_British Columbia.stl` is 129 × 229 mm, but the bordered British
+  Columbia is 192 × 241 mm at 1:8,000,000. It was built from a DEM covering
+  only part of the province, and `load_province` refuses it with an overlap of
+  0.59. The window lists it as a problem instead of keying it.
+* **Key plates skip themselves on re-import.** `stl_files` leaves out
+  `butterfly_keys_*.stl`, and `_keyed` reduces to the province name, so the
+  output folder can be loaded back as an STL folder.
+* **No separate `USING_PROVINCE_JOINS.md`.** The README's Join Editor section
+  and the window's own docstring cover the workflow.
