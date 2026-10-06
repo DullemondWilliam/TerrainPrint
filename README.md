@@ -84,6 +84,8 @@ flowchart TD
 │   ├── LIB_stl_reconcile.py           # Recover a printed STL's metres→print-mm frame
 │   ├── LIB_terrain_trim.py            # Clip a DEMto3D slab STL to the province coastline
 │   └── LIB_thin_features.py           # Find land too narrow to print (necks, spits, islets)
+├── ui/                                # Qt widgets shared by more than one window
+│   └── seam_editor.py                 # The seam editor (Border Editor + Shared Border harness)
 ├── tests/                             # All pytest suites (lib + core + app)
 └── README.md                          # This file
 ```
@@ -194,7 +196,7 @@ finds every shared seam. Borders are listed as **Not cleaned** or **Cleaned**,
 and drawn red or green on the map. Click two neighbouring provinces (or a border
 in a list) and press *Edit Border →* (or double-click the border).
 
-**Edit Border page:** the Shared Border editor (`harnesses/UI_shared_border.py`)
+**Edit Border page:** the seam editor (`ui/seam_editor.py`, also run standalone as `harnesses/UI_shared_border.py`)
 with the same parameters and before/after panels. *Apply and Mark Cleaned*
 writes both provinces into the save folder (default
 `Data/JSonProvinces-Bordered`, under their own file names) and records the

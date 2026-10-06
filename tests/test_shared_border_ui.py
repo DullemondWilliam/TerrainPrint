@@ -22,7 +22,10 @@ from shapely.geometry import Polygon, box
 
 import geopandas as gpd
 
+from PySide6.QtWidgets import QMessageBox
+
 from harnesses import UI_shared_border as U
+from ui.seam_editor import MAX_VERTEX_MARKERS
 
 pytestmark = pytest.mark.usefixtures("qapp")
 
@@ -30,8 +33,8 @@ pytestmark = pytest.mark.usefixtures("qapp")
 @pytest.fixture(autouse=True)
 def _no_modal_dialogs(monkeypatch):
     """Modal dialogs block forever headlessly; stub them for every test."""
-    monkeypatch.setattr(U.QMessageBox, "critical", lambda *a, **k: None)
-    monkeypatch.setattr(U.QMessageBox, "warning", lambda *a, **k: None)
+    monkeypatch.setattr(QMessageBox, "critical", lambda *a, **k: None)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: None)
 
 
 WORK_CRS = "EPSG:3347"
@@ -257,7 +260,7 @@ class TestPanels:
         """Past a few thousand they are a smear, not information."""
         window = _loaded(tmp_path,
                          seam=_zigzag(amplitude_mm=0.02, step_mm=0.002))
-        assert window.seam_stats()["vertices"] > U.MAX_VERTEX_MARKERS
+        assert window.seam_stats()["vertices"] > MAX_VERTEX_MARKERS
         window._draw_before()
         assert len(window.ax_before.lines) == 1        # the seam, no markers
 

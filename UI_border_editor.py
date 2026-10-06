@@ -4,7 +4,7 @@ UI_border_editor.py
 Clean every border two provinces share, one at a time, and keep track of which
 are done.
 
-``harnesses/UI_shared_border.py`` cleans one seam between two files picked by
+The seam editor (``ui.seam_editor``) cleans one seam between two files picked by
 hand.  A country has dozens of seams, and after the third one the question is no
 longer *how* to clean a border but **which ones are left**.  This window holds
 the whole set of provinces, finds every border between them, and lists each
@@ -36,7 +36,7 @@ differences:
 * **← Borders** goes back without saving.
 
 Its controls are grouped in boxes: **Border** (back, the pair, Apply),
-**Simplify** (the harness's settings and Simplify Seam), and three of its own:
+**Simplify** (the seam editor's settings and Simplify Seam), and three of its own:
 
 * **Fit check** -- where the printed pieces will not mesh (``lib.LIB_seam_fit``),
   marked on both panels: narrow land at the seam in red, fingers too thin to
@@ -83,7 +83,7 @@ can be done in any order.
 Run with:  python UI_border_editor.py
 
 Reuses ``lib.LIB_shared_border``, ``lib.LIB_border_ledger``,
-``lib.LIB_seam_fit`` and the seam editor from ``harnesses.UI_shared_border``.
+``lib.LIB_seam_fit`` and the seam editor from ``ui.seam_editor``.
 """
 
 import sys
@@ -106,13 +106,13 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QDoubleSpinBox,
                                QMessageBox, QPushButton, QStackedWidget,
                                QVBoxLayout, QWidget)
 
-from harnesses.UI_shared_border import SharedBorderTester
 from lib.LIB_border_ledger import LEDGER_NAME, BorderLedger, find_borders
 from lib.LIB_project_config import get as cfg
 from lib.LIB_project_config import settings_files, update_local
 from lib.LIB_seam_fit import (FitParams, fit_report, load_fit_params,
                               move_seam_vertex, push_border, solve_fit)
 from lib.LIB_shared_border import _shared_seam
+from ui.seam_editor import SeamEditor
 
 GEOJSON_FILTER = "GeoJSON (*.geojson *.json);;All files (*)"
 GEOJSON_GLOBS = ("*.geojson", "*.json")
@@ -125,7 +125,7 @@ DEFAULT_SAVE_DIR = _ROOT / cfg("paths.provinces_bordered")
 PROVINCE_COLOUR = "#D6EAF8"
 SELECT_COLOUR = "#F5B041"
 EDGE_COLOUR = "#1B4F72"
-CLEANED_COLOUR = "#27AE60"        # green -- the harness's conditioned seam
+CLEANED_COLOUR = "#27AE60"        # green -- the seam editor's conditioned seam
 NOT_CLEANED_COLOUR = "#C0392B"    # red -- still as imported
 LABEL_COLOUR = "#2C3E50"
 
@@ -294,15 +294,15 @@ def _note_label(text: str = "") -> QLabel:
     return label
 
 
-class SeamPage(SharedBorderTester):
+class SeamPage(SeamEditor):
     """
     The second screen: the Shared Border editor, fed a pair rather than files.
 
     Subclassed rather than copied so it *is* the same editor -- every control,
-    the threaded run, the linked panels -- and stays so as the harness changes.
+    the threaded run, the linked panels -- and stays so as the editor changes.
     The ends are different: the pair arrives from the list, and Save Both
     becomes Apply, which hands the result back instead of asking for a folder.
-    The harness's two rows are regrouped into **Border** and **Simplify**
+    The editor's two rows are regrouped into **Border** and **Simplify**
     boxes, and three of this page's own sit under them:
 
     * **Fit check** -- marks, on both panels, where the printed pieces will
@@ -321,11 +321,11 @@ class SeamPage(SharedBorderTester):
     applied = Signal(object)              # SeamResult
 
     def __init__(self):
-        # Set before the harness builds itself: its __init__ calls
+        # Set before the editor builds itself: its __init__ calls
         # _invalidate, which this class extends.
         self.fit_before = None            #: FitReport of the pair as edited
         self.fit_after = None             #: FitReport of the simplified pair
-        #: True from the moment a run is asked for. The harness's run() calls
+        #: True from the moment a run is asked for. The editor's run() calls
         #: _set_busy before it creates the thread, so ``_thread`` alone reads
         #: idle at exactly the moment the buttons are being locked.
         self._busy = False
@@ -419,11 +419,11 @@ class SeamPage(SharedBorderTester):
     # -- building ---------------------------------------------------------
     def _regroup(self) -> None:
         """
-        The harness's two loose rows, and this page's three, as titled boxes.
+        The editor's two loose rows, and this page's three, as titled boxes.
 
-        The harness lays its toolbar and parameters out as bare rows; they are
+        The editor lays its toolbar and parameters out as bare rows; they are
         taken out of its layout and their widgets moved into boxes, rather than
-        the harness being changed, so it stays the standalone tool it is.
+        the editor being changed, so the standalone harness keeps its layout.
         """
         root = self.centralWidget().layout()
         toolbar = root.takeAt(0).layout()
