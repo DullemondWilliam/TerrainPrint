@@ -14,6 +14,7 @@ based on the ones that already exist. They all live in `harnesses/`:
 | `UI_island_bridges.py`  | `LIB_island_bridges.plan_bridges`      | a *plan* before a result: eleven print-mm parameters over two rows, the scored bridges drawn and labelled on the input panel, and a report of what the spanning tree could not reach |
 | `UI_terrain_trim.py`    | `LIB_terrain_trim.trim_terrain`        | mesh + GeoJSON in, mesh out: a 2-D placement overlay (slab extent vs reconciled province) beside a vispy solid coloured by elevation |
 | `UI_terrain_stl.py`    | `LIB_terrain_stl.terrain_to_stl`       | raster in, **mesh out**: matplotlib DEM on the left, vispy solid on the right; live triangle/bed estimate before meshing |
+| `UI_province_joins.py` | `LIB_province_joins.cut_all`          | the whole map, not one pair: every border in a list, keys placed by click and drag with undo, one key size map-wide, and a threaded cut that writes keyed STLs and key plates |
 | `UI_shared_border.py`  | `LIB_shared_border.simplify_shared_border` | a *pair* of GeoJSONs and the seam between them; before/after with vertex markers, the original seam ghosted behind the new one, and a Zoom-to-Seam because a border is invisible at full extent |
 
 The **editors and viewers stay in the project root**, not in `harnesses/`:

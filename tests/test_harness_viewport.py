@@ -31,7 +31,8 @@ import pytest
 
 from harnesses import UI_border_regions, UI_border_stl, UI_butterfly_keys
 from harnesses import UI_island_bridges, UI_island_merge, UI_island_removal
-from harnesses import UI_lake_removal, UI_shared_border, UI_terrain_stl
+from harnesses import UI_lake_removal, UI_province_joins, UI_shared_border
+from harnesses import UI_terrain_stl
 from harnesses import UI_terrain_trim
 
 pytestmark = pytest.mark.usefixtures("qapp")
@@ -48,6 +49,7 @@ HARNESSES = [
     (UI_island_merge, "IslandMergeTester"),
     (UI_island_removal, "IslandRemovalTester"),
     (UI_lake_removal, "LakeRemovalTester"),
+    (UI_province_joins, "ProvinceJoinsTester"),
     (UI_shared_border, "SharedBorderTester"),
     (UI_terrain_stl, "TerrainStlTester"),
     (UI_terrain_trim, "TerrainTrimTester"),

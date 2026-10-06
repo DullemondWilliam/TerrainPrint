@@ -1,4 +1,4 @@
-# Planning: `LIB_province_joins` + `UI_join_editor` — butterfly keys across the map
+# Planning: `LIB_province_joins` + `UI_province_joins` — butterfly keys across the map
 
 A plan for a library and a window that join **every** pair of neighbouring
 province STLs with butterfly (bowtie) keys. The user places the keys along each
@@ -7,7 +7,7 @@ shared border, and the run writes:
 * each province STL with its slots cut into the back (`<province>_keyed.stl`),
 * the keys themselves, laid out on bed-sized plates for printing.
 
-> **Status: built.** `LIB_province_joins` and `UI_join_editor` implement this
+> **Status: built.** `LIB_province_joins` and `UI_province_joins` implement this
 > plan. Of the decisions in §7: the key size is set in the window, map-wide,
 > and saved to the `keys` config section (1, with the defaults left at today's
 > lobe until a test print says otherwise); uncleaned borders are allowed and
@@ -52,7 +52,7 @@ UI_border_editor      ->  Data/JSonProvinces-Bordered  (+ border_ledger.json)
 UI_terrain_editor     ->  Data/STL/<province>.stl  (+ .frame.json)
         |                  terrain cut by the *bordered* GeoJSON
         |
-UI_join_editor (new)  ->  Data/STL-Keyed/<province>_keyed.stl  (+ .frame.json)
+UI_province_joins (new)  ->  Data/STL-Keyed/<province>_keyed.stl  (+ .frame.json)
    LIB_province_joins      Data/STL-Keyed/butterfly_keys_01.stl, _02 …
    LIB_butterfly_keys      Data/STL-Keyed/join_plan.json
 ```
@@ -67,7 +67,7 @@ corridor stage is skipped. The join editor checks that it was done (§3.2).
 
 ---
 
-## 2. Window layout (`UI_join_editor.py`)
+## 2. Window layout (`harnesses/UI_province_joins.py`)
 
 This is a root-level app like `UI_border_editor.py`, not a harness, because it
 works on the whole map. It has one main screen:
@@ -336,18 +336,17 @@ them (`load_key_params(*settings_files())`, as every window does now).
 3. **`cut_all` + `export`.** Test that every slot half lands on its key in the
    assembly, that each province gets one boolean, that `dirty` re-cuts only
    what changed, that plates fit the bed, and that the outputs are watertight.
-4. **`UI_join_editor`: list and plan view.** Import, pairing report, border
+4. **`UI_province_joins`: list and plan view.** Import, pairing report, border
    list, click and drag placement, undo/redo. Tests are pytest-qt, as for
    `test_border_editor.py`.
-5. **`UI_join_editor`: cut, save, 3D.** The threaded Cut and Save All, the
+5. **`UI_province_joins`: cut, save, 3D.** The threaded Cut and Save All, the
    cropped assembly view, and reopening `join_plan.json`.
 6. **Docs.** README tree and workflow, and a `USING_PROVINCE_JOINS.md`
    covering the end-to-end order: island editor → border editor → terrain
    editor → join editor.
 
-No separate harness is planned. The pairwise one (`UI_butterfly_keys`) already
-exercises the geometry, and `LIB_border_ledger` set the precedent of a library
-whose window is the app itself.
+The window was planned as a root-level app with no separate harness; it ended
+up as the library's harness instead (§9).
 
 ---
 
@@ -370,3 +369,7 @@ whose window is the app itself.
   output folder can be loaded back as an STL folder.
 * **No separate `USING_PROVINCE_JOINS.md`.** The README's Join Editor section
   and the window's own docstring cover the workflow.
+* **The window became a harness.** Built at the project root as
+  `UI_join_editor.py`, it was moved to `harnesses/UI_province_joins.py`
+  (`ProvinceJoinsTester`) to sit with the other lib harnesses, following
+  their naming. Its tests are `tests/test_province_joins_ui.py`.

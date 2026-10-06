@@ -192,15 +192,15 @@ DEFAULTS = {
         # cleaned, with the ledger of which borders are done.
         "provinces_bordered": "Data/JSonProvinces-Bordered",
         # Province terrain STLs (with their .frame.json sidecars) as the
-        # terrain editor saves them, and where UI_join_editor writes them back
+        # terrain editor saves them, and where the UI_province_joins harness writes them back
         # with butterfly-key slots cut, alongside the keys to print.
         "stl": "Data/STL",
         "stl_keyed": "Data/STL-Keyed",
     },
     "keys": {
         # Butterfly (bowtie) keys joining neighbouring province pieces from
-        # the back, in printed millimetres. Read by UI_join_editor and the
-        # UI_butterfly_keys harness; the slot depth is print.dovetail_mm, tied
+        # the back, in printed millimetres. Read by the UI_province_joins and
+        # UI_butterfly_keys harnesses; the slot depth is print.dovetail_mm, tied
         # to the base it is cut into. One size map-wide, so any key fits any
         # slot. The defaults are the border connectors' dovetail lobe.
         # Key width at the seam (the waist).

@@ -67,7 +67,6 @@ flowchart TD
 ├── UI_terrain_editor.py               # National DEM → province STL, the whole pipeline
 ├── UI_province_viewer.py              # Every province at once, at print size
 ├── UI_border_editor.py                # Clean every shared border, tracking which are done
-├── UI_join_editor.py                  # Butterfly keys across every border; keyed STLs + key plates
 ├── harnesses/                         # One throwaway visual harness per lib (UI_*.py)
 ├── docs/USING_DEMTO3D.md              # DEM -> STL is now done in QGIS (DEMto3D plugin)
 ├── lib/                               # Library modules (imported as lib.LIB_*)
@@ -247,14 +246,14 @@ and a move that would make the border cross itself is refused.
 
 ---
 
-### 6. Join Editor (`UI_join_editor.py`)
+### 6. Province Joins harness (`harnesses/UI_province_joins.py`)
 
 Joins every province to its neighbours with butterfly (bowtie) keys pressed
 into slots in the back of the printed pieces, and writes the slotted STLs and
 the keys to print.
 
 ```powershell
-py -3 UI_join_editor.py
+py -3 harnesses/UI_province_joins.py
 ```
 
 **Inputs:** *Provinces …* is the folder the Border Editor saved

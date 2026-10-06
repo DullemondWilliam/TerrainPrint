@@ -1,7 +1,7 @@
 """
-test_join_editor.py
+test_province_joins_ui.py
 
-UI_join_editor.py: place butterfly keys on every border of a map, set the
+harnesses/UI_province_joins.py: place butterfly keys on every border of a map, set the
 key's size, cut every piece and write the lot.
 
 pytest-style for pytest-qt's ``qapp`` fixture.  The geometry is covered by
@@ -9,7 +9,7 @@ test_province_joins.py and test_butterfly_keys.py; this guards the window:
 that a click does what it says, that the key size set here is the one judged
 and cut, that edits undo, and that what is written reopens.
 
-Run with:  ./.venv/Scripts/python.exe -m pytest tests/test_join_editor.py -v
+Run with:  ./.venv/Scripts/python.exe -m pytest tests/test_province_joins_ui.py -v
 """
 
 import json
@@ -18,7 +18,7 @@ import matplotlib.backend_bases
 import pytest
 from shapely.geometry import box
 
-import UI_join_editor as U
+from harnesses import UI_province_joins as U
 from lib import LIB_project_config as config
 from lib.LIB_province_joins import PLAN_NAME
 from lib.LIB_seam_fit import FitParams
@@ -36,7 +36,7 @@ def _no_modal_dialogs(monkeypatch):
 
 def _window(tmp_path, folder=None):
     folder = folder or _folder(tmp_path)
-    w = U.JoinEditor()
+    w = U.ProvinceJoinsTester()
     w.resize(1500, 920)
     w.geojson_dir = w.stl_dir = folder
     w.save_dir = tmp_path / "keyed"
@@ -164,7 +164,7 @@ class TestKeySize:
         merged = config.load_files(*config.settings_files())
         assert config.get("keys.neck_mm", config=merged) == 2.4
         assert config.get("keys.spares", config=merged) == 9
-        assert U.JoinEditor().key_spins["neck_mm"].value() == 2.4
+        assert U.ProvinceJoinsTester().key_spins["neck_mm"].value() == 2.4
 
     def test_a_key_that_cannot_lock_blocks_cutting(self, window):
         window.key_spins["neck_mm"].setValue(window.params().mouth_mm + 1.0)
@@ -246,7 +246,7 @@ class TestCutting:
         assert "Key plate 1" in window.solid_title.text()
 
     def test_load_and_cut_run_on_threads(self, tmp_path, qtbot):
-        w = U.JoinEditor()
+        w = U.ProvinceJoinsTester()
         w.geojson_dir = w.stl_dir = _folder(tmp_path)
         w.save_dir = tmp_path / "keyed"
         w.start_load()

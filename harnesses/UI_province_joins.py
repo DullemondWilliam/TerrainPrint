@@ -1,7 +1,8 @@
 """
-UI_join_editor.py
+UI_province_joins.py
 
-Join every province on the map to its neighbours with butterfly keys.
+A standalone visual harness for ``LIB_province_joins``: join every province on
+the map to its neighbours with butterfly keys.
 
 ``harnesses/UI_butterfly_keys.py`` keys one pair of STLs picked by hand.  A map
 has a dozen borders and every province sits on several, so this window holds
@@ -44,10 +45,11 @@ some are refused, and red when an STL on it is out of date -- cut from a
 province the Border Editor has changed since.  Its keys are refused until the
 STL is rebuilt.
 
-Run with:  python UI_join_editor.py
+Run with:  python harnesses/UI_province_joins.py
 
 Reuses ``lib.LIB_province_joins``, ``lib.LIB_butterfly_keys``,
-``lib.LIB_border_ledger`` and ``lib.LIB_seam_fit``.
+``lib.LIB_border_ledger`` and ``lib.LIB_seam_fit``; styled after
+``UI_butterfly_keys.py`` and ``UI_border_editor.py``.
 """
 
 import sys
@@ -74,6 +76,10 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QDoubleSpinBox,
                                QProgressBar, QPushButton, QSpinBox, QSplitter,
                                QVBoxLayout, QWidget)
 
+# Runnable by path from anywhere (python harnesses/UI_province_joins.py), so put
+# the project root on sys.path before importing lib.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from lib.LIB_border_ledger import BorderLedger
 from lib.LIB_butterfly_keys import KeyParams, load_key_params, snap
 from lib.LIB_project_config import get as cfg
@@ -84,7 +90,7 @@ from lib.LIB_province_joins import (PLAN_NAME, JoinPlan, auto_plan,
                                     pair_folders)
 from lib.LIB_seam_fit import fit_report, load_fit_params
 
-_ROOT = Path(__file__).resolve().parent
+_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_GEOJSON_DIR = _ROOT / cfg("paths.provinces_bordered")
 DEFAULT_STL_DIR = _ROOT / cfg("paths.stl")
 DEFAULT_SAVE_DIR = _ROOT / cfg("paths.stl_keyed")
@@ -222,10 +228,11 @@ def _polygons(geometry) -> list:
             if g.geom_type == "Polygon"]
 
 
-class JoinEditor(QMainWindow):
+class ProvinceJoinsTester(QMainWindow):
 
     def __init__(self):
         super().__init__()
+        self.setWindowTitle("Province Joins — Visual Tester")
         self.resize(1500, 920)
 
         # -- state ----------------------------------------------------------
@@ -1011,7 +1018,6 @@ class JoinEditor(QMainWindow):
                 f"{params.key_height_mm:g} mm; slots {params.depth_mm:g} mm "
                 f"deep into a {self.base_mm():g} mm base.")
             self.key_label.setStyleSheet("color:#555;")
-        self._update_title()
 
     def _selection_text(self) -> str:
         join = self.current_join()
@@ -1041,13 +1047,6 @@ class JoinEditor(QMainWindow):
                 f"{f', {refused} refused' if refused else ''}.")
         self.status.setText(f"{prefix} {tail}".strip())
 
-    def _update_title(self) -> None:
-        if not self.pieces:
-            self.setWindowTitle("Join Editor — (nothing loaded)")
-            return
-        self.setWindowTitle(f"Join Editor — {self.key_count()} key(s) on "
-                            f"{len(self.joins)} border(s)")
-
     def closeEvent(self, event) -> None:
         if self._thread is not None:
             self._thread.quit()
@@ -1058,7 +1057,7 @@ class JoinEditor(QMainWindow):
 def main() -> int:
     app = QApplication(sys.argv)
     vispy.use(app="pyside6")          # before the window builds its scene
-    window = JoinEditor()
+    window = ProvinceJoinsTester()
     window.show()
     return app.exec()
 
