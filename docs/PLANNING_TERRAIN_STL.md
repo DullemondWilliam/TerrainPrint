@@ -30,7 +30,7 @@ clipped DEM (GeoTIFF)          │
    ▼
 province terrain solid (STL)
    │
-   │  LIB_dovetail_fitter
+   │  LIB_butterfly_keys
    ▼
 keyed, printable piece
 ```
@@ -220,7 +220,7 @@ class TerrainResult:
 ```
 
 `origin_m` + `mpm` *is* the metres→print-mm affine. Written to a sidecar JSON
-next to the STL, it lets `LIB_dovetail_fitter` skip the IoU search entirely and
+next to the STL, it lets `LIB_butterfly_keys` skip the IoU search entirely and
 removes the Y-flip ambiguity that search exists to resolve.
 
 ---

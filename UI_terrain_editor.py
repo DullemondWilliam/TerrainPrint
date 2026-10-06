@@ -1271,7 +1271,7 @@ class TerrainEditorTester(QMainWindow):
         """
         ``borders.geojson`` + ``name_<province>.geojson`` per trimmed target,
         each in the CRS its province arrived in -- the folder layout
-        ``build_border_from_dir`` and ``fit_dovetails_from_dir`` read.
+        ``build_border_from_dir`` reads.
         """
         folder.mkdir(parents=True, exist_ok=True)
         default_crs = next(iter(self.region_crs.values()), EPSG_WORKING)

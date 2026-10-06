@@ -5,7 +5,7 @@ LIB_stl_reconcile.py
 Recover the metres->print-mm transform of an externally-produced STL.
 
 Province and terrain pieces are built by separate GeoJSON->STL steps (the
-dovetail fitter's printed provinces, the DEMto3D terrain slabs) and land on disk
+printed provinces, the DEMto3D terrain slabs) and land on disk
 in an *unknown* local print-mm frame, sometimes with a flipped Y axis.  The map
 scale is fixed (``ConnectorParams.scale``), so the metres->print-mm mapping is
 known up to a translation and an optional Y-flip.  :func:`reconcile` lifts a 2-D

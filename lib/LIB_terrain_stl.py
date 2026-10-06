@@ -58,7 +58,7 @@ there; 30 gives 5.9 mm).  Every piece of one map must share the same exaggeratio
 The result knows its own frame
 ------------------------------
 ``LIB_stl_reconcile`` exists because DEMto3D writes STLs in a frame nobody
-recorded, so the dovetail fitter has to recover it by footprint IoU with a
+recorded, so the keying step has to recover it by footprint IoU with a
 Y-flip search.  This module *builds* the mesh, so it knows the frame exactly and
 returns it, writing a ``.frame.json`` sidecar next to the STL.  Downstream code
 should read that instead of guessing.
@@ -200,7 +200,7 @@ class TerrainResult:
         config, and the only thing that legitimately differs between pieces --
         it is where this province sits in metres.  Paired with the configured
         scale it *is* the metres->print-mm affine, which is what saves the
-        dovetail fitter from reconciling.
+        keying step from reconciling.
 
         ``settings_id`` fingerprints the map-wide settings the piece was built
         with, so a piece built before someone changed the exaggeration can be

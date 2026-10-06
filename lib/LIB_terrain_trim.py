@@ -19,10 +19,10 @@ province polygon so the cut follows the true coastline regardless of elevation.
 
 The result is a watertight, coastline-accurate province solid with its base
 retained under the terrain.  Because the trimmed STL now has a province-shaped
-flat base, it also unblocks the downstream dovetail fitter
-(:mod:`lib.LIB_dovetail_fitter`), whose reconciliation matches that base against
+flat base, it also unblocks the downstream butterfly keys
+(:mod:`lib.LIB_butterfly_keys`), whose reconciliation matches that base against
 the same GeoJSON.  Recommended workflow: DEMto3D export -> ``trim_terrain`` ->
-``fit_dovetails``.
+``LIB_butterfly_keys``.
 
 Reconciliation
 --------------
@@ -41,12 +41,14 @@ does not change the base thickness.
 
 import argparse
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import manifold3d as m3d
 import geopandas as gpd
+import trimesh
 from shapely.affinity import affine_transform
 from shapely.geometry import Polygon
 from shapely.ops import unary_union
@@ -56,7 +58,6 @@ from lib.LIB_border_connectors import (ConnectorParams, DEFAULT_SCALE,
                                        _man_to_trimesh, _safe_union,
                                        load_connector_params)
 from lib.LIB_project_config import settings_files
-from lib.LIB_dovetail_fitter import _load_mesh, _safe_name
 from lib.LIB_stl_reconcile import reconcile
 
 log = logging.getLogger(__name__)
@@ -212,6 +213,20 @@ def _load_union_crs(path, crs):
     """Union of a GeoJSON's geometry reprojected into ``crs`` (metres)."""
     gdf = gpd.read_file(path).to_crs(crs)
     return _safe_union(list(gdf.geometry))
+
+
+def _load_mesh(stl):
+    """Return a Trimesh from a Trimesh or a path to an STL."""
+    if isinstance(stl, trimesh.Trimesh):
+        return stl
+    loaded = trimesh.load(str(stl), force="mesh")
+    if not isinstance(loaded, trimesh.Trimesh):
+        raise ValueError(f"{stl} did not load as a single mesh.")
+    return loaded
+
+
+def _safe_name(name):
+    return re.sub(r"[^\w.-]+", "_", name).strip("_") or "province"
 
 
 def _validate(mesh, name):

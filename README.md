@@ -77,7 +77,6 @@ flowchart TD
 │   ├── LIB_border_simplification.py   # Topology-aware border simplification
 │   ├── LIB_border_split.py            # Split a border STL into bed-sized pieces
 │   ├── LIB_border_stl.py              # Extrude a border region to a slab STL
-│   ├── LIB_dovetail_fitter.py         # Key printed province STLs to the border (dovetails)
 │   ├── LIB_island_merging.py          # Merge two islands with a connecting neck of land
 │   ├── LIB_island_removal.py          # Small-island detection and removal
 │   ├── LIB_lake_removal.py            # Interior ring (lake) removal helper

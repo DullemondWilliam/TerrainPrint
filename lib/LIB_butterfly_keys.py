@@ -26,8 +26,7 @@ is how each STL's print-mm frame maps to metres:
 
 * an STL built by ``LIB_terrain_stl`` carries a ``.frame.json`` sidecar whose
   ``origin_m`` *is* that mapping (with ``print.scale``), so nothing is guessed;
-* any other STL is reconciled by footprint (``LIB_stl_reconcile``), exactly as
-  ``LIB_dovetail_fitter`` does, and refused below ``min_fit_score``.
+* any other STL is reconciled by footprint (``LIB_stl_reconcile``) and refused below ``min_fit_score``.
 
 A sidecar frame is still checked against the GeoJSON by the same footprint
 overlap, so an STL paired with the wrong province is caught either way.

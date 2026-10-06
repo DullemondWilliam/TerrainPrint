@@ -22,7 +22,7 @@ prepared DEM ───────────────────┤
    ▼
 province terrain solid (STL + .frame.json)
    │
-   │  LIB_dovetail_fitter
+   │  LIB_butterfly_keys
    ▼
 keyed, printable piece
 ```
@@ -176,7 +176,7 @@ module logs a warning when that happens, because no gate here detects it.
 ## The frame, so nothing downstream has to guess
 
 `LIB_stl_reconcile` exists because DEMto3D writes STLs in a frame nobody
-recorded, forcing the dovetail fitter to recover it by footprint IoU with a
+recorded, forcing the keying step to recover it by footprint IoU with a
 Y-flip search. This module *builds* the mesh, so it knows the frame and writes a
 `.frame.json` sidecar beside the STL.
 

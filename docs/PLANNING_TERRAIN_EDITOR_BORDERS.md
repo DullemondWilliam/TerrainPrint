@@ -156,7 +156,7 @@ All three passes run in a `BorderWorker`, off the UI thread like `RunWorker`.
 
 **Save Borders …** writes a folder holding `borders.geojson` plus one
 `name_<province>.geojson` per trimmed target, in the source CRS. That is the
-layout `build_border_from_dir` and `fit_dovetails_from_dir` already read, so the
+layout `build_border_from_dir` already reads, so the
 CLI tools and this window can hand off to each other.
 
 ---

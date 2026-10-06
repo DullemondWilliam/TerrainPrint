@@ -8,7 +8,7 @@ geometry is worked in, how tall a border bar is, how big the print bed is -- wer
 each declared wherever they were first needed.  That let the same figure drift
 into several spellings: the print scale was ``DEFAULT_SCALE`` in
 ``LIB_border_connectors``, ``DEFAULT_PRINT_SCALE`` in ``UI_island_editor``, and a
-bare ``8_000_000`` in a spin box in ``UI_dovetail_fitter``, with nothing keeping
+bare ``8_000_000`` in a spin box in a harness, with nothing keeping
 the three in step.  A number the whole pipeline agrees on should be written once.
 
 Two files, merged, local winning
