@@ -148,3 +148,56 @@ class TestSelectionDrivesTheOperations:
         editor.invert_selection()
         assert not editor.btn_merge.isEnabled()
         assert not editor.btn_remove_sel.isEnabled()
+
+
+class _Event:
+    """Just enough of a matplotlib mouse event for the press/move/release path."""
+
+    def __init__(self, editor, x, y, button=1):
+        self.button, self.inaxes = button, editor.ax
+        self.xdata, self.ydata = x, y
+        self.x, self.y = editor.ax.transData.transform((x, y))
+
+
+def _drag(editor, monkeypatch, op, start, end):
+    monkeypatch.setattr(editor, "_box_op", lambda: op)
+    editor._on_press(_Event(editor, *start))
+    editor._on_motion(_Event(editor, *end))
+    editor._on_release(_Event(editor, *end))
+
+
+class TestSelectionBox:
+    """Shift+drag adds every island the box touches; Ctrl+drag takes them away."""
+
+    def test_a_box_adds_the_islands_it_touches(self, editor, monkeypatch):
+        # From inside island 0 to partway into island 2: 0, 1 and 2 are touched.
+        _drag(editor, monkeypatch, M.BOX_ADD, (2_000, 2_000), (41_000, 3_000))
+        assert _picked(editor) == [0, 1, 2]
+
+    def test_it_adds_to_what_was_already_selected(self, editor, monkeypatch):
+        editor.selected = [3]
+        _drag(editor, monkeypatch, M.BOX_ADD, (-1_000, -1_000), (6_000, 6_000))
+        assert _picked(editor) == [0, 3]
+
+    def test_a_box_drawn_backwards_is_the_same_box(self, editor, monkeypatch):
+        _drag(editor, monkeypatch, M.BOX_ADD, (41_000, 3_000), (2_000, 2_000))
+        assert _picked(editor) == [0, 1, 2]
+
+    def test_ctrl_box_removes(self, editor, monkeypatch):
+        editor.select_all()
+        _drag(editor, monkeypatch, M.BOX_REMOVE, (19_000, 1_000), (45_000, 2_000))
+        assert _picked(editor) == [0, 3]
+
+    def test_a_plain_drag_still_pans(self, editor, monkeypatch):
+        xlim = editor.ax.get_xlim()
+        _drag(editor, monkeypatch, None, (2_000, 2_000), (41_000, 3_000))
+        assert _picked(editor) == []
+        assert editor.ax.get_xlim() != xlim
+
+    def test_escape_cancels_the_box(self, editor, monkeypatch):
+        monkeypatch.setattr(editor, "_box_op", lambda: M.BOX_ADD)
+        editor._on_press(_Event(editor, 2_000, 2_000))
+        editor._escape()
+        assert editor._box is None and editor._box_patch is None
+        editor._on_release(_Event(editor, 41_000, 3_000))
+        assert _picked(editor) == []

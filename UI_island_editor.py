@@ -11,7 +11,9 @@ Workflow
    selectable island (worked in EPSG:3347 metres so km / km² are ground units).
 2. **Edit** — on a single live canvas (left-drag pans, the arrow keys pan in
    steps — Shift for a long stride, Ctrl for a nudge — and the wheel zooms at
-   all times; a left click with no drag toggles an island's selection):
+   all times; a left click with no drag toggles an island's selection, and a
+   Shift+drag draws a box that adds every island it touches — Ctrl+drag the
+   same box takes them away):
    - **Merge** (the *Expansion Merge* group) — bridge two or more clicked
      islands with necks of land;
      **From Gap** first sets the buffer to the least that bridges them.
@@ -160,7 +162,8 @@ from matplotlib.backends.backend_qtagg import \
     NavigationToolbar2QT as NavigationToolbar
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.figure import Figure
-from shapely.geometry import MultiPolygon, Point
+from matplotlib.patches import Rectangle
+from shapely.geometry import MultiPolygon, Point, box
 from shapely.ops import unary_union
 
 from PySide6.QtCore import QEvent, QObject, QThread, QTimer, Qt, Signal
@@ -418,6 +421,11 @@ DRAW, ERASE = "draw", "erase"
 #: selection, and no real drag is this short.
 PAN_SLOP_PX = 4
 
+#: The two things a selection box can do to the islands it touches, chosen by
+#: the modifier held as the drag starts: Shift adds them, Ctrl takes them away.
+#: Plain drag stays a pan, so the box costs the map none of its navigation.
+BOX_ADD, BOX_REMOVE = "add", "remove"
+
 #: How many points larger than the interface default the status line runs. It
 #: carries the landmass counts and the result of every operation, and is read
 #: mid-edit from across the desk, so it is the one label worth setting above the
@@ -632,6 +640,8 @@ class IslandEditor(QMainWindow):
         self.undo_stack = QUndoStack(self)
         self._grab = None                  # anchor of an in-progress left-drag
         self._dragged = False              # whether that drag has passed PAN_SLOP_PX
+        self._box = None                   # [op, x0, y0, x1, y1] of an in-progress selection box
+        self._box_patch = None             # the rectangle previewing that box
         self._brush_mode = None            # DRAW, ERASE, or None (neither)
         self._stroke = None                # points of an in-progress brush stroke
         self._preview = None               # the artist previewing that stroke
@@ -1739,8 +1749,9 @@ class IslandEditor(QMainWindow):
     def _redraw(self, preserve_view: bool = False) -> None:
         if preserve_view:
             xlim, ylim = self.ax.get_xlim(), self.ax.get_ylim()
-        self._style_axis("Province islands  (click to select, drag to pan, "
-                         "wheel to zoom; red = below the minimum area)")
+        self._style_axis("Province islands  (click to select, Shift+drag to box-"
+                         "select, drag to pan, wheel to zoom; red = below the "
+                         "minimum area)")
         if self.parts:
             gs = gpd.GeoSeries(self.parts)
             thr = self._to_km2(self.area_spin.value())
@@ -1793,6 +1804,10 @@ class IslandEditor(QMainWindow):
         if self._brush_mode is not None:
             self._start_stroke(event)
             return
+        op = self._box_op()
+        if op is not None and self.parts:
+            self._start_box(op, event)
+            return
         # Anchor in data coordinates: the pan keeps this point under the cursor.
         self._grab = (event.xdata, event.ydata, event.x, event.y)
         self._dragged = False
@@ -1800,6 +1815,9 @@ class IslandEditor(QMainWindow):
     def _on_motion(self, event) -> None:
         if self._stroke is not None:
             self._extend_stroke(event)
+            return
+        if self._box is not None:
+            self._extend_box(event)
             return
         if self._grab is None or event.xdata is None or event.ydata is None:
             return
@@ -1816,6 +1834,9 @@ class IslandEditor(QMainWindow):
     def _on_release(self, event) -> None:
         if self._stroke is not None:
             self._finish_stroke()
+            return
+        if self._box is not None:
+            self._finish_box(event)
             return
         if self._grab is None:
             return
@@ -1837,6 +1858,76 @@ class IslandEditor(QMainWindow):
         self._redraw(preserve_view=True)
         self._sync_buttons()
         self._update_status()
+
+    # -- selection box -------------------------------------------------------
+    # Selecting by box rather than click is for the archipelagos: forty islets
+    # off a coast are forty clicks, most of them on a speck a pixel wide.  A box
+    # takes every island it *touches*, not only the ones it swallows whole, so
+    # a corner dragged across a mainland's coast picks the mainland up too.
+    @staticmethod
+    def _box_op():
+        """What a drag starting now would do with a box: BOX_ADD, BOX_REMOVE or None."""
+        mods = QApplication.keyboardModifiers()
+        if mods & Qt.KeyboardModifier.ControlModifier:
+            return BOX_REMOVE
+        if mods & Qt.KeyboardModifier.ShiftModifier:
+            return BOX_ADD
+        return None
+
+    def _start_box(self, op, event) -> None:
+        self._box = [op, event.xdata, event.ydata, event.xdata, event.ydata]
+        # Dashed orange to add, the doomed-island red to take away: the box says
+        # which it will do before the button comes up.
+        colour = SELECT_EDGE if op == BOX_ADD else REMOVE_EDGE
+        self._box_patch = Rectangle(
+            (event.xdata, event.ydata), 0, 0, fill=True, facecolor=colour,
+            alpha=0.15, edgecolor=colour, linestyle="--", linewidth=1.2)
+        self.ax.add_patch(self._box_patch)
+        self.canvas.setCursor(Qt.CursorShape.CrossCursor)
+        self.canvas.draw_idle()
+
+    def _extend_box(self, event) -> None:
+        if event.xdata is None or event.ydata is None:
+            return          # pointer left the axes; the box keeps its last corner
+        _op, x0, y0 = self._box[:3]
+        self._box[3:] = event.xdata, event.ydata
+        self._box_patch.set_bounds(min(x0, event.xdata), min(y0, event.ydata),
+                                   abs(event.xdata - x0), abs(event.ydata - y0))
+        self.canvas.draw_idle()
+
+    def _cancel_box(self) -> None:
+        self._box = None
+        if self._box_patch is not None:
+            self._box_patch.remove()
+            self._box_patch = None
+            self.canvas.unsetCursor()
+            self.canvas.draw_idle()
+
+    def _finish_box(self, event) -> None:
+        """Add (or remove) every island the box touches."""
+        # A release outside the axes keeps the corner the box was last drawn to.
+        if event.xdata is not None and event.ydata is not None:
+            self._box[3:] = event.xdata, event.ydata
+        op, x0, y0, x1, y1 = self._box
+        self._cancel_box()
+        hits = self._islands_in_box(x0, y0, x1, y1)
+        sel = set(self.selected)
+        if op == BOX_ADD:
+            new = [i for i in hits if i not in sel]
+            self.selected.extend(new)
+            note = f"Box added {len(new)} island(s) — "
+        else:
+            gone = sel.intersection(hits)
+            self.selected = [i for i in self.selected if i not in gone]
+            note = f"Box removed {len(gone)} island(s) — "
+        self._redraw(preserve_view=True)
+        self._sync_buttons()
+        self._update_status(note)
+
+    def _islands_in_box(self, x0: float, y0: float, x1: float, y1: float) -> list:
+        """Indices of the islands the box from (x0, y0) to (x1, y1) touches."""
+        region = box(min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
+        return [i for i, part in enumerate(self.parts) if part.intersects(region)]
 
     def _island_at(self, x: float, y: float):
         point = Point(x, y)
@@ -1875,8 +1966,11 @@ class IslandEditor(QMainWindow):
                             else "Erase mode — drag to rub land out; ")
 
     def _escape(self) -> None:
-        """Esc backs out one step: first the stroke, then the mode itself."""
-        if self._stroke is not None:
+        """Esc backs out one step: first the stroke or box, then the mode itself."""
+        if self._box is not None:
+            self._cancel_box()
+            self._update_status("Box cancelled — ")
+        elif self._stroke is not None:
             self._cancel_stroke()
             self._update_status("Stroke cancelled — ")
         elif self._brush_mode is not None:
