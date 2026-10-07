@@ -690,3 +690,114 @@ class TestConnectorMouse:
         window.btn_edit_lobes.setChecked(False)
         self._click(window, FREE_A)
         assert window.borders.lobes == defined.lobes
+
+
+# -- the connector's shape ------------------------------------------------------
+def _neck_mouth_reach_mm(lobe):
+    """A lobe's neck, mouth and root-to-far length, in print-mm."""
+    from math import dist
+    c = lobe.exterior.coords
+    root = ((c[0][0] + c[3][0]) / 2, (c[0][1] + c[3][1]) / 2)
+    far = ((c[1][0] + c[2][0]) / 2, (c[1][1] + c[2][1]) / 2)
+    return (dist(c[0], c[3]) / MPM, dist(c[1], c[2]) / MPM,
+            dist(root, far) / MPM)
+
+
+class TestConnectorShape:
+
+    def test_settings_reach_the_connector_params(self):
+        p = U.BorderSettings(lobe_height_mm=0.8, lobe_depth_mm=4.0,
+                             lobe_width_mm=1.2, lobe_ratio=2.5
+                             ).connector_params()
+        assert (p.dovetail_mm, p.reach_mm, p.neck_mm) == (0.8, 4.0, 1.2)
+        assert p.mouth_mm == pytest.approx(3.0)
+
+    def test_shipped_shape_is_the_lib_default(self):
+        p = U.BorderSettings().connector_params()
+        assert p.neck_mm == pytest.approx(1.6)
+        assert p.mouth_mm == pytest.approx(3.2)
+        assert p.dovetail_mm == pytest.approx(cfg("print.dovetail_mm"))
+
+    def test_the_spins_feed_the_next_define(self, tmp_path):
+        window = _window(tmp_path)
+        window.lobe_width_spin.setValue(1.0)
+        window.lobe_ratio_spin.setValue(3.0)
+        window.lobe_depth_spin.setValue(5.0)
+        window.lobe_height_spin.setValue(0.6)
+        s = window.border_settings()
+        assert (s.lobe_width_mm, s.lobe_ratio, s.lobe_depth_mm,
+                s.lobe_height_mm) == (1.0, 3.0, 5.0, 0.6)
+
+    def test_connectors_have_a_row_of_their_own(self, tmp_path):
+        window = _window(tmp_path)
+        rows = window.tabs.widget(1).layout()
+        first, second = rows.itemAt(0).layout(), rows.itemAt(1).layout()
+        for widget in (window.btn_edit_lobes, window.lobe_height_spin,
+                       window.lobe_depth_spin, window.lobe_width_spin,
+                       window.lobe_ratio_spin, window.spacing_spin):
+            assert second.indexOf(widget) >= 0
+            assert first.indexOf(widget) < 0
+        assert first.indexOf(window.btn_define) >= 0
+
+    def test_reshaping_keeps_every_connector_where_it_stood(self, defined):
+        wider = U.replace(defined.settings, lobe_width_mm=2.0,
+                          lobe_ratio=1.5)
+        lobes, dropped = U.reshape_connectors(defined, wider)
+        assert dropped == 0 and len(lobes) == len(defined.lobes)
+        for old, new in zip(defined.lobes, lobes):
+            neck, mouth, _ = _neck_mouth_reach_mm(new)
+            assert neck == pytest.approx(2.0)
+            assert mouth == pytest.approx(3.0)
+            assert U._anchor(new, wider.connector_params()) == pytest.approx(
+                U._anchor(old, defined.settings.connector_params()))
+
+    def test_a_shape_that_collides_is_dropped_and_counted(self, defined):
+        huge = U.replace(defined.settings, lobe_width_mm=10.0, lobe_ratio=5.0)
+        lobes, dropped = U.reshape_connectors(defined, huge)
+        assert dropped > 0 and len(lobes) + dropped == len(defined.lobes)
+
+    def test_turning_a_spin_reshapes_the_map(self, tmp_path, defined):
+        window = _edit_window(tmp_path, defined)
+        window.lobe_depth_spin.setValue(4.0)
+        assert window.borders.settings.lobe_depth_mm == 4.0
+        for lobe in window.borders.lobes:
+            *_, reach = _neck_mouth_reach_mm(lobe)
+            assert reach == pytest.approx(4.0 + window.borders.settings
+                                          .connector_params().overlap_mm)
+        assert "reshaped" in window.status.text()
+        assert defined.settings.lobe_depth_mm != 4.0     # shared: untouched
+
+    def test_hand_edits_survive_a_reshape(self, tmp_path, defined):
+        window = _edit_window(tmp_path, defined)
+        window.add_connector(*FREE_A)
+        window.lobe_width_spin.setValue(1.4)
+        assert len(window.borders.lobes) == len(defined.lobes) + 1
+        assert "edited by hand" in window.border_report.text()
+
+    def test_a_reshape_is_one_undo_step(self, tmp_path, defined):
+        window = _edit_window(tmp_path, defined)
+        original = list(window.borders.lobes)
+        window.lobe_ratio_spin.setValue(1.5)
+        window.undo_connectors()
+        assert window.borders.lobes == original
+        assert window.lobe_ratio_spin.value() == pytest.approx(2.0)
+        assert window.borders.settings.lobe_ratio == pytest.approx(2.0)
+        window.redo_connectors()
+        assert window.lobe_ratio_spin.value() == pytest.approx(1.5)
+        assert window.borders.settings.lobe_ratio == pytest.approx(1.5)
+
+    def test_height_changes_the_bar_not_the_outline(self, tmp_path, defined,
+                                                    bar):
+        window = _edit_window(tmp_path, defined)
+        window.apply_bar(bar)
+        before = list(window.borders.lobes)
+        window.lobe_height_spin.setValue(0.6)
+        assert window.bar is None
+        assert all(a.equals(b) for a, b in zip(before, window.borders.lobes))
+        assert window.borders.settings.connector_params().dovetail_mm == 0.6
+
+    def test_with_no_borders_a_spin_only_waits_for_define(self, tmp_path):
+        window = _window(tmp_path)
+        window.lobe_width_spin.setValue(1.2)
+        assert window.borders is None
+        assert not window.btn_lobe_undo.isEnabled()

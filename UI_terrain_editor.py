@@ -121,6 +121,14 @@ into the corridor.
 targets (near a triple junction) has no single pocket to key into, so it is
 dropped and counted (FR-3.7).
 
+*Connectors have a shape.*  **Height** (the lobe layer, and so the pocket
+depth), **Depth** (how far a lobe reaches into its province), **Width** (its
+neck at the corridor) and **Ratio** (mouth over neck; above 1 the wide end is
+captured) sit on the connectors row with **Spacing**.  Turned on a defined
+map, they reshape every connector where it stands rather than defining the
+borders again, so hand edits survive; a connector the new shape no longer
+lets stand is dropped and counted, and the change is one Undo step.
+
 *Connectors can be edited by hand.*  **Edit Connectors** turns the right-hand
 map into a tool: click a connector to delete it, drag one along the corridor to
 move it, click beside the corridor to add one on that side.  A placed lobe has
@@ -147,7 +155,7 @@ import re
 import shutil
 import sys
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import geopandas as gpd
@@ -297,6 +305,14 @@ class BorderSettings:
     width_mm: float = _shipped("borders.width_mm")
     connectors: bool = True
     lobe_spacing_mm: float = _shipped("borders.lobe_spacing_mm")
+    #: The connector's shape.  Height is the lobe layer, and so the depth of
+    #: the pocket it drops into; depth is how far it reaches into the
+    #: province; width is the neck at the corridor, and the mouth at the far
+    #: end is ``ratio`` times that -- above 1, the wide end is captured.
+    lobe_height_mm: float = _shipped("print.dovetail_mm")
+    lobe_depth_mm: float = ConnectorParams.reach_mm
+    lobe_width_mm: float = ConnectorParams.neck_mm
+    lobe_ratio: float = ConnectorParams.mouth_mm / ConnectorParams.neck_mm
     scale: float = _shipped("print.scale")
 
     @property
@@ -305,8 +321,11 @@ class BorderSettings:
         return self.scale / 1000.0
 
     def connector_params(self) -> ConnectorParams:
-        return load_connector_params(*settings_files(), scale=self.scale,
-                                     spacing_mm=self.lobe_spacing_mm)
+        return load_connector_params(
+            *settings_files(), scale=self.scale,
+            spacing_mm=self.lobe_spacing_mm, dovetail_mm=self.lobe_height_mm,
+            reach_mm=self.lobe_depth_mm, neck_mm=self.lobe_width_mm,
+            mouth_mm=self.lobe_width_mm * self.lobe_ratio)
 
 
 
@@ -318,8 +337,14 @@ _BORDER_SETTINGS_KEYS = {
     "min_angle_deg": "seam.min_angle_deg",
     "width_mm": "borders.width_mm",
     "lobe_spacing_mm": "borders.lobe_spacing_mm",
+    "lobe_height_mm": "print.dovetail_mm",
     "scale": "print.scale",
 }
+
+#: The fields of :class:`BorderSettings` that shape a connector, which the
+#: window changes on a defined map without defining it again.
+SHAPE_FIELDS = ("lobe_height_mm", "lobe_depth_mm", "lobe_width_mm",
+                "lobe_ratio")
 
 
 def load_border_settings(*config_files, **overrides):
@@ -501,19 +526,66 @@ def place_connector(definition: BorderDefinition, x: float, y: float,
     lobe = lobe_at(d.border, x, y, p)
     if lobe is None:
         return None, "No connector fits there."
-    targets = list(d.targets.values())
-    if lobe.intersection(_safe_union(targets)).area             < p.min_overlap_frac * lobe.area:
-        return None, ("That edge faces no province to print -- a "
-                      "surrounding region has nothing to key into.")
-    if _owners(lobe, d.border, targets) != 1:
-        return None, ("It would reach into two provinces, with no one "
-                      "pocket to key into.")
+    others = [other for i, other in enumerate(d.lobes) if i != ignore]
+    why = _connector_fault(lobe, d, others, p,
+                           _safe_union(list(d.targets.values())))
+    return (None, why) if why else (lobe, "")
+
+
+def _connector_fault(lobe, definition, others, p, land) -> str:
+    """Why ``lobe`` cannot stand beside ``others``, or "" when it can.
+    ``land`` is the union of the targets, passed in so a caller checking
+    many lobes builds it once."""
+    d = definition
+    if lobe.intersection(land).area < p.min_overlap_frac * lobe.area:
+        return ("That edge faces no province to print -- a surrounding "
+                "region has nothing to key into.")
+    if _owners(lobe, d.border, list(d.targets.values())) != 1:
+        return ("It would reach into two provinces, with no one pocket to "
+                "key into.")
     reach = lobe.difference(d.border)
     gap = p.clearance_mm * p.mpm
-    for i, other in enumerate(d.lobes):
-        if i != ignore and reach.distance(other.difference(d.border)) < gap:
-            return None, "It would run into another connector."
-    return lobe, ""
+    for other in others:
+        if reach.distance(other.difference(d.border)) < gap:
+            return "It would run into another connector."
+    return ""
+
+
+def _anchor(lobe, p: ConnectorParams):
+    """Where on the corridor edge ``lobe`` (built with ``p``) is anchored: the
+    point on its centre line ``overlap`` from the root and ``reach`` from
+    the far end."""
+    c = lobe.exterior.coords
+    rx, ry = (c[0][0] + c[3][0]) / 2, (c[0][1] + c[3][1]) / 2
+    fx, fy = (c[1][0] + c[2][0]) / 2, (c[1][1] + c[2][1]) / 2
+    t = p.overlap_mm / (p.overlap_mm + p.reach_mm)
+    return rx + (fx - rx) * t, ry + (fy - ry) * t
+
+
+def reshape_connectors(definition: BorderDefinition,
+                       settings: BorderSettings):
+    """
+    ``definition``'s connectors in the shape ``settings`` asks for, each where
+    it stood: ``(lobes, dropped)``.
+
+    A lobe is rebuilt at its anchor on the corridor edge, so a connector put
+    by hand stays put.  One the new shape no longer lets stand -- grown into
+    a neighbour, or now reaching into two provinces -- is dropped and counted;
+    the rest keep their order.
+    """
+    d = definition
+    if d.border is None or not d.lobes:
+        return list(d.lobes), 0
+    old, new = d.settings.connector_params(), settings.connector_params()
+    land = _safe_union(list(d.targets.values()))
+    kept, dropped = [], 0
+    for lobe in d.lobes:
+        reshaped = lobe_at(d.border, *_anchor(lobe, old), new)
+        if reshaped is None or _connector_fault(reshaped, d, kept, new, land):
+            dropped += 1
+        else:
+            kept.append(reshaped)
+    return kept, dropped
 
 
 @dataclass
@@ -805,6 +877,35 @@ class TerrainEditorTester(QMainWindow):
                        self.spacing_spin):
             widget.valueChanged.connect(self._invalidate_borders)
         self.chk_connectors.toggled.connect(self._invalidate_borders)
+        # The connector's shape.  Unlike the settings above these do not stale
+        # the definition: the lobes are reshaped where they stand, so the ones
+        # put by hand survive.  Keyboard tracking is off so typing "2.5" is
+        # one reshape, not three.
+        thickness = _cfg("print.border_thickness_mm")
+        self.lobe_height_spin = self._mm_spin(
+            defaults.lobe_height_mm, 0.2, max(0.3, thickness - 0.2),
+            "Height of the connector layer under the border bar -- and so\n"
+            "the depth of the pocket it drops into in the province's back.\n"
+            f"Under the {thickness:.1f} mm bar (print.border_thickness_mm); "
+            "keep it\nunder the terrain Base, or the pocket cuts through.")
+        self.lobe_depth_spin = self._mm_spin(
+            defaults.lobe_depth_mm, 0.5, 20.0,
+            "How far each connector reaches into its province from the\n"
+            "corridor edge.")
+        self.lobe_width_spin = self._mm_spin(
+            defaults.lobe_width_mm, 0.4, 20.0,
+            "Width of the connector's neck, at the corridor edge -- its\n"
+            "narrowest, and so the part that must survive printing.")
+        self.lobe_ratio_spin = self._spin(
+            1.05, 5.0, defaults.lobe_ratio, 2,
+            "Width at the far end over the width at the neck. Above 1 the\n"
+            "wide end is captured behind the neck, which is what locks the\n"
+            "pieces together; 2 is a 1.6 mm neck opening to 3.2 mm.")
+        self.lobe_ratio_spin.setSingleStep(0.1)
+        self.lobe_ratio_spin.setSuffix(" ×")
+        for widget in self._shape_spins():
+            widget.setKeyboardTracking(False)
+            widget.valueChanged.connect(self._on_connector_shape)
         self.btn_define = QPushButton("Define Borders")
         self.btn_define.clicked.connect(self.define)
         self.btn_define.setEnabled(False)
@@ -843,18 +944,28 @@ class TerrainEditorTester(QMainWindow):
                               ("Width:", self.width_spin)):
             border_bar.addWidget(QLabel(label))
             border_bar.addWidget(widget)
-        border_bar.addWidget(self.chk_connectors)
-        border_bar.addWidget(QLabel("Spacing:"))
-        border_bar.addWidget(self.spacing_spin)
         border_bar.addWidget(self.btn_define)
         border_bar.addWidget(self.btn_save_borders)
-        border_bar.addWidget(self.btn_edit_lobes)
-        border_bar.addWidget(self.btn_lobe_undo)
-        border_bar.addWidget(self.btn_lobe_redo)
         border_bar.addStretch(1)
+        # A row of its own for the connectors: where they go, what shape they
+        # are, and the tool that moves them by hand.
+        connector_bar = QHBoxLayout()
+        connector_bar.addWidget(self.chk_connectors)
+        for label, widget in (("Spacing:", self.spacing_spin),
+                              ("Height:", self.lobe_height_spin),
+                              ("Depth:", self.lobe_depth_spin),
+                              ("Width:", self.lobe_width_spin),
+                              ("Ratio:", self.lobe_ratio_spin)):
+            connector_bar.addWidget(QLabel(label))
+            connector_bar.addWidget(widget)
+        connector_bar.addWidget(self.btn_edit_lobes)
+        connector_bar.addWidget(self.btn_lobe_undo)
+        connector_bar.addWidget(self.btn_lobe_redo)
+        connector_bar.addStretch(1)
         borders_page = QWidget()
         borders_layout = QVBoxLayout(borders_page)
         borders_layout.addLayout(border_bar)
+        borders_layout.addLayout(connector_bar)
         borders_layout.addWidget(self.border_report)
 
         # -- stage 3: STL -- the original harness ----------------------------
@@ -1255,7 +1366,8 @@ class TerrainEditorTester(QMainWindow):
             min_angle_deg=self.min_angle_spin.value(),
             width_mm=self.width_spin.value(),
             connectors=self.chk_connectors.isChecked(),
-            lobe_spacing_mm=self.spacing_spin.value())
+            lobe_spacing_mm=self.spacing_spin.value(),
+            **self._shape_values())
 
     def define(self) -> None:
         """Run the Borders stage off the UI thread."""
@@ -1568,27 +1680,69 @@ class TerrainEditorTester(QMainWindow):
         self._commit_lobes(lobes, "Moved a connector.")
         return True
 
+    def _shape_spins(self) -> tuple:
+        return (self.lobe_height_spin, self.lobe_depth_spin,
+                self.lobe_width_spin, self.lobe_ratio_spin)
+
+    def _shape_values(self) -> dict:
+        return dict(zip(SHAPE_FIELDS,
+                        (spin.value() for spin in self._shape_spins())))
+
+    def _on_connector_shape(self) -> None:
+        """A shape spin turned: reshape the connectors where they stand, as
+        one undoable step.  With no borders defined yet the next Define
+        picks the value up from the spins, and there is nothing to do."""
+        if not self.connectors_editable() or self._thread is not None:
+            return
+        settings = replace(self.borders.settings, **self._shape_values())
+        if settings == self.borders.settings:
+            return
+        lobes, dropped = reshape_connectors(self.borders, settings)
+        message = "Connectors reshaped."
+        if dropped:
+            message += (f" {dropped} dropped: the new shape ran into a "
+                        "neighbour or into two provinces.")
+        self._lobe_undo.append(self._snapshot())
+        self._lobe_redo.clear()
+        self.borders.settings = settings
+        self._set_lobes(lobes, message, edited=self.borders.lobes_edited)
+
+    def _snapshot(self):
+        return self.borders.lobes, self.borders.settings
+
+    def _restore(self, snapshot, message: str) -> None:
+        lobes, settings = snapshot
+        edited = self.borders.lobes_edited
+        self.borders.settings = settings
+        for spin, value in zip(self._shape_spins(),
+                               (getattr(settings, f) for f in SHAPE_FIELDS)):
+            spin.blockSignals(True)
+            spin.setValue(value)
+            spin.blockSignals(False)
+        self._set_lobes(lobes, message, edited=edited)
+
     def _commit_lobes(self, lobes: list, message: str) -> None:
         """Make ``lobes`` the connectors, as one undoable step."""
-        self._lobe_undo.append(self.borders.lobes)
+        self._lobe_undo.append(self._snapshot())
         self._lobe_redo.clear()
         self._set_lobes(lobes, message)
 
     def undo_connectors(self) -> None:
         if self._lobe_undo and self._thread is None and self.borders:
-            self._lobe_redo.append(self.borders.lobes)
-            self._set_lobes(self._lobe_undo.pop(), "Undone.")
+            self._lobe_redo.append(self._snapshot())
+            self._restore(self._lobe_undo.pop(), "Undone.")
 
     def redo_connectors(self) -> None:
         if self._lobe_redo and self._thread is None and self.borders:
-            self._lobe_undo.append(self.borders.lobes)
-            self._set_lobes(self._lobe_redo.pop(), "Redone.")
+            self._lobe_undo.append(self._snapshot())
+            self._restore(self._lobe_redo.pop(), "Redone.")
 
-    def _set_lobes(self, lobes: list, message: str) -> None:
+    def _set_lobes(self, lobes: list, message: str,
+                   edited: bool = True) -> None:
         """Adopt a lobe list: the bar and any pocketed solid were built from
         the old one, so both go stale."""
         self.borders.lobes = list(lobes)
-        self.borders.lobes_edited = True
+        self.borders.lobes_edited = edited
         self._invalidate_bar()
         if self.stl_result is not None and self._pockets:
             self._invalidate_mesh()
@@ -2140,6 +2294,7 @@ class TerrainEditorTester(QMainWindow):
                   self.province_combo, self.coast_spin, self.internal_spin,
                   self.min_seg_spin, self.min_angle_spin, self.width_spin,
                   self.chk_connectors, self.spacing_spin, self.chk_pockets,
+                  *self._shape_spins(),
                   self.btn_define, self.btn_save_borders, self.btn_build_bar,
                   self.btn_save_bar, self.btn_edit_lobes, self.btn_lobe_undo,
                   self.btn_lobe_redo):
