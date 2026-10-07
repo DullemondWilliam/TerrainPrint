@@ -120,6 +120,18 @@ into the corridor.
 targets (near a triple junction) has no single pocket to key into, so it is
 dropped and counted (FR-3.7).
 
+*Connectors can be edited by hand.*  **Edit Connectors** turns the right-hand
+map into a tool: click a connector to delete it, drag one along the corridor to
+move it, click beside the corridor to add one on that side.  A placed lobe has
+the generated profile and is held to the same rules -- it must reach a province
+to print, and only one -- and its far end must stay a clearance clear of every
+other lobe's, or two pockets run into one; a refused place says why and a drag
+shows it in red before you let go.  Every edit is one Undo (Ctrl+Z / Ctrl+Y)
+step and stales the border bar and a pocketed solid.  **Define Borders**
+places them afresh and discards the edits.  **Save Borders** writes them to
+``connectors.geojson``, which ``build_border_from_dir`` uses in place of
+generating its own.
+
 *The bed split cannot yet see connectors.*  ``split_to_bed`` cuts the bar
 without knowing where the lobes are (FR-3.11 is not enforced), so the status
 line counts the connectors a cut went through rather than letting a split lobe
@@ -151,21 +163,23 @@ from matplotlib.path import Path as MplPath
 from rasterio.crs import CRS
 from rasterio.enums import Resampling
 from shapely.affinity import affine_transform
-from shapely.geometry import Polygon
+from shapely.geometry import Point, Polygon
 from shapely.geometry.polygon import orient
 from shapely.ops import unary_union
 from vispy import scene
 
 from PySide6.QtCore import QObject, Qt, QThread, Signal
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox,
                                QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel,
                                QListWidget, QMainWindow, QMessageBox,
                                QProgressBar, QPushButton, QSizePolicy,
                                QTabWidget, QVBoxLayout, QWidget)
 
-from lib.LIB_border_connectors import (ConnectorParams, _polys, _repair,
-                                       _safe_union, build_border_mesh,
-                                       generate_lobes, load_connector_params,
+from lib.LIB_border_connectors import (CONNECTORS_NAME, ConnectorParams,
+                                       _polys, _repair, _safe_union,
+                                       build_border_mesh, generate_lobes,
+                                       load_connector_params, lobe_at,
                                        notch_province)
 from lib.LIB_border_regions import build_border_regions
 from lib.LIB_border_simplification import topo_simplify_two_tolerances
@@ -222,6 +236,12 @@ BAR_COLOUR = (0.55, 0.57, 0.58, 1.0)   # the border bar in the 3D panel
 ROLES = ("target", "surrounding")
 #: What the 3D panel shows on the STL stage.
 SHOW_CHOICES = ["Terrain", "Border bar", "Assembly"]
+DRAG_COLOUR = "#1E8449"       # dark green — where a dragged connector lands
+REFUSED_COLOUR = "#C0392B"    # red — where it cannot
+#: How near, in screen pixels, a click must be to a connector to pick it.
+PICK_PX = 8
+#: A press that travels further than this is a drag, not a click.
+CLICK_SLOP_PX = 4
 #: A lobe counts as reaching into a region past this fraction of its own area,
 #: so a lobe grazing a neighbour's corner at float precision is not an owner.
 _OWNER_FRAC = 1e-3
@@ -332,6 +352,7 @@ class BorderDefinition:
     #: coast beside the seam (3.4 mm² of NWT/Nunavut at 0.5 mm).
     overlap_mm2: float = 0.0
     lobes_dropped: int = 0         #: lobes reaching into two targets (FR-3.7)
+    lobes_edited: bool = False     #: moved, added or deleted by hand since
 
     def province_lobes(self, name) -> list:
         """The lobes that key into target ``name`` -- its pockets."""
@@ -445,15 +466,53 @@ def _owned_lobes(lobes, border, targets):
     """Keep the lobes whose far end lands in exactly one target (FR-3.7)."""
     kept, dropped = [], 0
     for lobe in lobes:
-        reach = lobe.difference(border)
-        owners = sum(1 for geom in targets
-                     if reach.intersects(geom)
-                     and reach.intersection(geom).area > _OWNER_FRAC * lobe.area)
-        if owners == 1:
+        if _owners(lobe, border, targets) == 1:
             kept.append(lobe)
         else:
             dropped += 1
     return kept, dropped
+
+
+def _owners(lobe, border, targets) -> int:
+    """How many of ``targets`` the lobe's far end reaches into."""
+    reach = lobe.difference(border)
+    return sum(1 for geom in targets
+               if reach.intersects(geom)
+               and reach.intersection(geom).area > _OWNER_FRAC * lobe.area)
+
+
+def place_connector(definition: BorderDefinition, x: float, y: float,
+                    ignore: int | None = None):
+    """
+    The connector a click at (x, y) puts on the corridor edge nearest it, and
+    why not when it cannot go there: ``(lobe, "")`` or ``(None, reason)``.
+
+    A hand-placed lobe is held to the rules a generated one is -- it reaches a
+    province to print, and only one (FR-3.7) -- and to one more: its far end
+    stays a clearance clear of every other lobe's, or two pockets run into
+    one.  ``ignore`` is the index of the lobe being moved, which may land
+    where it already was.
+    """
+    d = definition
+    if d.border is None:
+        return None, "There is no corridor to put a connector on."
+    p = d.settings.connector_params()
+    lobe = lobe_at(d.border, x, y, p)
+    if lobe is None:
+        return None, "No connector fits there."
+    targets = list(d.targets.values())
+    if lobe.intersection(_safe_union(targets)).area             < p.min_overlap_frac * lobe.area:
+        return None, ("That edge faces no province to print -- a "
+                      "surrounding region has nothing to key into.")
+    if _owners(lobe, d.border, targets) != 1:
+        return None, ("It would reach into two provinces, with no one "
+                      "pocket to key into.")
+    reach = lobe.difference(d.border)
+    gap = p.clearance_mm * p.mpm
+    for i, other in enumerate(d.lobes):
+        if i != ignore and reach.distance(other.difference(d.border)) < gap:
+            return None, "It would run into another connector."
+    return lobe, ""
 
 
 @dataclass
@@ -666,6 +725,13 @@ class TerrainEditorTester(QMainWindow):
         self.bar: BarResult | None = None    #: the border bar, split
         self._outline_cache: dict = {}       #: (name, crs) -> reprojected geom
         self._boundary_is_region = False     #: boundary came from the combo?
+        # Connector editing: undo/redo hold whole lobe lists, the press is in
+        # screen pixels, the drag is the index of the lobe being moved.
+        self._lobe_undo: list = []
+        self._lobe_redo: list = []
+        self._press = None
+        self._drag: int | None = None
+        self._drag_artist = None
 
         central = QWidget()
         root = QVBoxLayout(central)
@@ -753,6 +819,23 @@ class TerrainEditorTester(QMainWindow):
             "dovetail tools read (build_border_from_dir).")
         self.btn_save_borders.clicked.connect(self.save_borders)
         self.btn_save_borders.setEnabled(False)
+        self.btn_edit_lobes = QPushButton("Edit Connectors")
+        self.btn_edit_lobes.setCheckable(True)
+        self.btn_edit_lobes.setToolTip(
+            "Edit the connectors by hand on the right-hand map:\n"
+            "  click a connector to delete it\n"
+            "  drag a connector to move it along the corridor\n"
+            "  click beside the corridor to add one on that side\n"
+            "Ctrl+Z / Ctrl+Y undo and redo. Define Borders places them\n"
+            "afresh, discarding what was edited.")
+        self.btn_edit_lobes.toggled.connect(self._on_edit_toggled)
+        self.btn_edit_lobes.setEnabled(False)
+        self.btn_lobe_undo = QPushButton("Undo")
+        self.btn_lobe_undo.clicked.connect(self.undo_connectors)
+        self.btn_lobe_redo = QPushButton("Redo")
+        self.btn_lobe_redo.clicked.connect(self.redo_connectors)
+        QShortcut(QKeySequence.Undo, self, activated=self.undo_connectors)
+        QShortcut(QKeySequence.Redo, self, activated=self.redo_connectors)
         self.border_report = QLabel("Add provinces on the Import tab.")
         self.border_report.setWordWrap(True)
         self.border_report.setStyleSheet("color:#555;")
@@ -770,6 +853,9 @@ class TerrainEditorTester(QMainWindow):
         border_bar.addWidget(self.spacing_spin)
         border_bar.addWidget(self.btn_define)
         border_bar.addWidget(self.btn_save_borders)
+        border_bar.addWidget(self.btn_edit_lobes)
+        border_bar.addWidget(self.btn_lobe_undo)
+        border_bar.addWidget(self.btn_lobe_redo)
         border_bar.addStretch(1)
         borders_page = QWidget()
         borders_layout = QVBoxLayout(borders_page)
@@ -1000,6 +1086,9 @@ class TerrainEditorTester(QMainWindow):
 
         self.mpl_toolbar = NavigationToolbar(self.canvas, self)
         self.canvas.mpl_connect("scroll_event", self._on_scroll)
+        self.canvas.mpl_connect("button_press_event", self._on_press)
+        self.canvas.mpl_connect("motion_notify_event", self._on_motion)
+        self.canvas.mpl_connect("button_release_event", self._on_release)
 
         # DEM + cropped raster on the left, the finished solid on the right.
         # The 3-D panel is vispy, not mplot3d: a province is ~200k triangles and
@@ -1193,6 +1282,8 @@ class TerrainEditorTester(QMainWindow):
     def apply_borders(self, definition: BorderDefinition) -> None:
         """Adopt a border definition: report it, draw it, hand it to stage 3."""
         self.borders = definition
+        self._lobe_undo.clear()
+        self._lobe_redo.clear()
         self._invalidate_bar()
         self._update_border_controls()
         self.border_report.setText(self._borders_text())
@@ -1218,7 +1309,9 @@ class TerrainEditorTester(QMainWindow):
             text += f" Corridor {s.width_mm:.2f} mm"
             if s.connectors:
                 text += f", {len(d.lobes)} connector(s)"
-                if d.lobes_dropped:
+                if d.lobes_edited:
+                    text += " (edited by hand)"
+                elif d.lobes_dropped:
                     text += (f" ({d.lobes_dropped} dropped: they reached "
                              "into two provinces)")
             text += "."
@@ -1230,6 +1323,8 @@ class TerrainEditorTester(QMainWindow):
         if self.borders is None and self.bar is None:
             return
         self.borders = None
+        self._lobe_undo.clear()
+        self._lobe_redo.clear()
         self._invalidate_bar()
         self._update_border_controls()
         self.border_report.setText(self._regions_text())
@@ -1246,6 +1341,12 @@ class TerrainEditorTester(QMainWindow):
             self.borders is not None and self.borders.border is not None
             and not busy)
         self.btn_save_bar.setEnabled(self.bar is not None and not busy)
+        editable = self.connectors_editable() and not busy
+        self.btn_edit_lobes.setEnabled(editable)
+        if not self.connectors_editable() and self.btn_edit_lobes.isChecked():
+            self.btn_edit_lobes.setChecked(False)
+        self.btn_lobe_undo.setEnabled(editable and bool(self._lobe_undo))
+        self.btn_lobe_redo.setEnabled(editable and bool(self._lobe_redo))
         # Buffer grows the cut outward, and outward is the corridor.
         if self.borders is not None:
             self.buf_spin.blockSignals(True)
@@ -1286,6 +1387,18 @@ class TerrainEditorTester(QMainWindow):
         if self.borders.border is not None:
             write("border", self.borders.border, default_crs,
                   folder / "borders.geojson")
+        # The lobes as they stand, so a hand edit survives the folder being
+        # read back (build_border_from_dir uses these rather than its own).
+        connectors = folder / CONNECTORS_NAME
+        if self.borders.lobes:
+            frame = gpd.GeoDataFrame(
+                {"name": [f"connector_{i}" for i in
+                          range(1, len(self.borders.lobes) + 1)]},
+                geometry=list(self.borders.lobes), crs=EPSG_WORKING)
+            frame.to_crs(default_crs).to_file(connectors, driver="GeoJSON")
+            written.append(connectors)
+        elif connectors.exists():
+            connectors.unlink()      # a stale set would key into nothing
         for name, geom in self.borders.targets.items():
             write(name, geom, self.region_crs.get(name, default_crs),
                   folder / f"name_{_safe_name(name)}.geojson")
@@ -1384,6 +1497,162 @@ class TerrainEditorTester(QMainWindow):
             return
         self.status.setText(f"Saved {len(self.bar.pieces)} border piece(s) "
                             f"to {folder}.")
+
+    # -- stage 2: editing connectors by hand ---------------------------------
+    def connectors_editable(self) -> bool:
+        d = self.borders
+        return (d is not None and d.border is not None
+                and d.settings.connectors)
+
+    def _editing(self) -> bool:
+        return (self.btn_edit_lobes.isChecked() and self._showing_borders()
+                and self._thread is None and self.connectors_editable())
+
+    def _on_edit_toggled(self, on: bool) -> None:
+        if not on:
+            return
+        # Pan or zoom would take the clicks; the edit tool asked for them.
+        mode = str(self.mpl_toolbar.mode)
+        if "pan" in mode:
+            self.mpl_toolbar.pan()
+        elif "zoom" in mode:
+            self.mpl_toolbar.zoom()
+        self.status.setText(
+            "Editing connectors: click one to delete it, drag one to move it, "
+            "click beside the corridor to add one.")
+
+    def connector_at(self, x: float, y: float) -> int | None:
+        """The index of the connector under (x, y), nearest first."""
+        if self.borders is None or not self.borders.lobes:
+            return None
+        point = Point(x, y)
+        dist, index = min((lobe.distance(point), i)
+                          for i, lobe in enumerate(self.borders.lobes))
+        return index if dist <= self._pick_distance() else None
+
+    def _pick_distance(self) -> float:
+        width_px = max(self.ax_after.get_window_extent().width, 1.0)
+        x0, x1 = self.ax_after.get_xlim()
+        return abs(x1 - x0) / width_px * PICK_PX
+
+    def click_connectors(self, x: float, y: float) -> None:
+        """A click with the tool on: delete the connector under it, or add one
+        on the corridor edge beside it."""
+        index = self.connector_at(x, y)
+        if index is not None:
+            self.delete_connector(index)
+            return
+        p = self.borders.settings.connector_params()
+        reach = p.reach_mm * p.mpm + self._pick_distance()
+        if self.borders.border.distance(Point(x, y)) > reach:
+            self.status.setText("Click beside the corridor to add a "
+                                "connector there.")
+            return
+        self.add_connector(x, y)
+
+    def add_connector(self, x: float, y: float) -> bool:
+        lobe, why = place_connector(self.borders, x, y)
+        if lobe is None:
+            self.status.setText(f"No connector added: {why}")
+            return False
+        self._commit_lobes(self.borders.lobes + [lobe], "Added a connector.")
+        return True
+
+    def delete_connector(self, index: int) -> None:
+        lobes = list(self.borders.lobes)
+        del lobes[index]
+        self._commit_lobes(lobes, "Deleted a connector.")
+
+    def move_connector(self, index: int, x: float, y: float) -> bool:
+        lobe, why = place_connector(self.borders, x, y, ignore=index)
+        if lobe is None:
+            self.status.setText(f"Connector not moved: {why}")
+            return False
+        lobes = list(self.borders.lobes)
+        lobes[index] = lobe
+        self._commit_lobes(lobes, "Moved a connector.")
+        return True
+
+    def _commit_lobes(self, lobes: list, message: str) -> None:
+        """Make ``lobes`` the connectors, as one undoable step."""
+        self._lobe_undo.append(self.borders.lobes)
+        self._lobe_redo.clear()
+        self._set_lobes(lobes, message)
+
+    def undo_connectors(self) -> None:
+        if self._lobe_undo and self._thread is None and self.borders:
+            self._lobe_redo.append(self.borders.lobes)
+            self._set_lobes(self._lobe_undo.pop(), "Undone.")
+
+    def redo_connectors(self) -> None:
+        if self._lobe_redo and self._thread is None and self.borders:
+            self._lobe_undo.append(self.borders.lobes)
+            self._set_lobes(self._lobe_redo.pop(), "Redone.")
+
+    def _set_lobes(self, lobes: list, message: str) -> None:
+        """Adopt a lobe list: the bar and any pocketed solid were built from
+        the old one, so both go stale."""
+        self.borders.lobes = list(lobes)
+        self.borders.lobes_edited = True
+        self._invalidate_bar()
+        if self.stl_result is not None and self._pockets:
+            self._invalidate_mesh()
+        self._update_border_controls()
+        self.border_report.setText(self._borders_text())
+        self.status.setText(f"{message} {len(self.borders.lobes)} "
+                            "connector(s).")
+        if self._showing_borders():
+            self._draw_borders(preserve_view=True)
+
+    # -- map events ---------------------------------------------------------
+    def _on_press(self, event) -> None:
+        if (event.button != 1 or event.inaxes is not self.ax_after
+                or event.xdata is None or not self._editing()
+                or self.mpl_toolbar.mode):
+            self._press = None
+            return
+        self._press = (event.x, event.y)
+        self._drag = self.connector_at(event.xdata, event.ydata)
+
+    def _moved(self, event) -> bool:
+        return self._press is not None and \
+            abs(event.x - self._press[0]) + abs(event.y - self._press[1]) \
+            > CLICK_SLOP_PX
+
+    def _on_motion(self, event) -> None:
+        """Outline where the dragged connector would land, red if it cannot."""
+        if (self._drag is None or event.inaxes is not self.ax_after
+                or event.xdata is None or not self._moved(event)):
+            return
+        lobe, _ = place_connector(self.borders, event.xdata, event.ydata,
+                                  ignore=self._drag)
+        shape = lobe or lobe_at(self.borders.border, event.xdata, event.ydata,
+                                self.borders.settings.connector_params())
+        if self._drag_artist is not None:
+            self._drag_artist.remove()
+            self._drag_artist = None
+        if shape is not None:
+            xs, ys = shape.exterior.xy
+            (self._drag_artist,) = self.ax_after.plot(
+                xs, ys, linewidth=1.6, zorder=10,
+                color=DRAG_COLOUR if lobe is not None else REFUSED_COLOUR)
+        self.canvas.draw_idle()
+
+    def _on_release(self, event) -> None:
+        moved = self._moved(event)
+        press, drag = self._press, self._drag
+        self._press = self._drag = None
+        if self._drag_artist is not None:
+            self._drag_artist.remove()
+            self._drag_artist = None
+            self.canvas.draw_idle()
+        if (press is None or event.button != 1 or event.xdata is None
+                or event.inaxes is not self.ax_after or not self._editing()):
+            return
+        if not moved:
+            self.click_connectors(event.xdata, event.ydata)
+        elif drag is not None:
+            self.move_connector(drag, event.xdata, event.ydata)
 
     # -- tabs ---------------------------------------------------------------
     def _showing_borders(self) -> bool:
@@ -1890,7 +2159,8 @@ class TerrainEditorTester(QMainWindow):
                   self.min_seg_spin, self.min_angle_spin, self.width_spin,
                   self.chk_connectors, self.spacing_spin, self.chk_pockets,
                   self.btn_define, self.btn_save_borders, self.btn_build_bar,
-                  self.btn_save_bar):
+                  self.btn_save_bar, self.btn_edit_lobes, self.btn_lobe_undo,
+                  self.btn_lobe_redo):
             w.setEnabled(not busy)
         if not busy:      # re-apply the preconditions the blanket enable ignored
             self.btn_run.setEnabled(
@@ -1978,10 +2248,16 @@ class TerrainEditorTester(QMainWindow):
                 else gpd.GeoSeries([geom], crs=EPSG_WORKING).to_crs(crs).iloc[0])
         return self._outline_cache[key]
 
-    def _draw_borders(self) -> None:
-        """Tab 2: the regions as imported | as defined, both in crs.working."""
+    def _draw_borders(self, preserve_view: bool = False) -> None:
+        """Tab 2: the regions as imported | as defined, both in crs.working.
+
+        ``preserve_view`` keeps both panels where they are -- a connector edit
+        is made zoomed in, and must not throw the map back to full extent.
+        """
         self._drop_colorbar()
         ax, after = self.ax_before, self.ax_after
+        views = [(a.get_xlim(), a.get_ylim()) for a in (ax, after)]
+        self._drag_artist = None         # cleared with the axes below
         self._clear_ax(ax, f"As imported — {len(self.targets)} to print, "
                            f"{len(self.surrounding)} surrounding")
         for geom in self.surrounding.values():
@@ -2015,6 +2291,10 @@ class TerrainEditorTester(QMainWindow):
                                    linewidth=0.6)
             after.set_xlim(ax.get_xlim())
             after.set_ylim(ax.get_ylim())
+        if preserve_view:
+            for a, (xlim, ylim) in zip((ax, after), views):
+                a.set_xlim(xlim)
+                a.set_ylim(ylim)
         self.canvas.draw_idle()
 
     @staticmethod

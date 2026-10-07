@@ -1168,7 +1168,8 @@ class IslandEditor(QMainWindow):
         # they did while they were stacked above it.
         #
         # Scores first, then Printability, then Stress: what the editing has
-        # cost, then the two judgements, in that order -- this finds narrow land, that finds the narrow land which is
+        # cost, then the two judgements, in that order -- this finds narrow
+        # land, that finds the narrow land which is
         # holding something up.
         self.side = QWidget()
         side = QVBoxLayout(self.side)

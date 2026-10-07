@@ -196,14 +196,7 @@ def generate_lobes(border_geom_m, prov_union_m, p: ConnectorParams):
     and the province pocket have the exact same profile; a lobe is dropped only
     if it fails to reach into ``prov_union_m``.
     """
-    mpm       = p.mpm
-    spacing_m = p.spacing_mm * mpm
-    neck_m    = p.neck_mm    * mpm
-    mouth_m   = p.mouth_mm   * mpm
-    reach_m   = p.reach_mm   * mpm
-    overlap_m = p.overlap_mm * mpm
-    eps       = 0.001 * mpm
-
+    spacing_m = p.spacing_mm * p.mpm
     lobes = []
     for ring in _rings(border_geom_m):
         length = ring.length
@@ -211,36 +204,70 @@ def generate_lobes(border_geom_m, prov_union_m, p: ConnectorParams):
             continue
         count = int(length // spacing_m)
         for k in range(count):
-            s  = (k + 0.5) * spacing_m
-            P  = ring.interpolate(s)
-            Pa = ring.interpolate(min(s + eps, length))
-            Pb = ring.interpolate(max(s - eps, 0.0))
-            tx, ty = Pa.x - Pb.x, Pa.y - Pb.y
-            tlen = (tx*tx + ty*ty) ** 0.5
-            if tlen == 0:
-                continue
-            tx, ty = tx/tlen, ty/tlen          # unit tangent
-            nx, ny = -ty, tx                    # unit normal (perpendicular)
-
-            # Point the normal OUT of the border corridor (into a province).
-            if border_geom_m.contains(Point(P.x + nx*eps*10, P.y + ny*eps*10)):
-                nx, ny = -nx, -ny
-
-            rc = (P.x - nx*overlap_m, P.y - ny*overlap_m)   # root centre (in corridor)
-            fc = (P.x + nx*reach_m,   P.y + ny*reach_m)     # far centre  (in province)
-            root1 = (rc[0] + tx*neck_m/2,  rc[1] + ty*neck_m/2)
-            root2 = (rc[0] - tx*neck_m/2,  rc[1] - ty*neck_m/2)
-            far1  = (fc[0] + tx*mouth_m/2, fc[1] + ty*mouth_m/2)
-            far2  = (fc[0] - tx*mouth_m/2, fc[1] - ty*mouth_m/2)
-
-            lobe = Polygon([root1, far1, far2, root2])
-            if (not lobe.is_valid) or lobe.is_empty:
+            lobe = _lobe_on_ring(ring, (k + 0.5) * spacing_m, border_geom_m, p)
+            if lobe is None:
                 continue
             if prov_union_m is not None:
                 if lobe.intersection(prov_union_m).area < p.min_overlap_frac * lobe.area:
                     continue
             lobes.append(lobe)
     return lobes
+
+
+def lobe_at(border_geom_m, x, y, p: ConnectorParams):
+    """
+    The lobe :func:`generate_lobes` would place at the corridor edge nearest
+    (x, y) -- one connector, put by hand.
+
+    The point is projected onto the nearest boundary ring of the corridor, so a
+    click either side of the corridor picks the edge (and so the province) on
+    that side, and the lobe has the same profile as a generated one.  Returns
+    None when there is no corridor or the lobe there would be degenerate.
+    """
+    point = Point(x, y)
+    rings = _rings(border_geom_m)
+    if not rings:
+        return None
+    ring = min(rings, key=point.distance)
+    return _lobe_on_ring(ring, ring.project(point), border_geom_m, p)
+
+
+def _lobe_on_ring(ring, s, border_geom_m, p: ConnectorParams):
+    """The dovetail trapezoid ``s`` metres along ``ring``, reaching out of the
+    corridor; None where the ring has no direction or the lobe is invalid."""
+    mpm       = p.mpm
+    neck_m    = p.neck_mm    * mpm
+    mouth_m   = p.mouth_mm   * mpm
+    reach_m   = p.reach_mm   * mpm
+    overlap_m = p.overlap_mm * mpm
+    eps       = 0.001 * mpm
+    length    = ring.length
+
+    P  = ring.interpolate(s)
+    Pa = ring.interpolate(min(s + eps, length))
+    Pb = ring.interpolate(max(s - eps, 0.0))
+    tx, ty = Pa.x - Pb.x, Pa.y - Pb.y
+    tlen = (tx*tx + ty*ty) ** 0.5
+    if tlen == 0:
+        return None
+    tx, ty = tx/tlen, ty/tlen          # unit tangent
+    nx, ny = -ty, tx                    # unit normal (perpendicular)
+
+    # Point the normal OUT of the border corridor (into a province).
+    if border_geom_m.contains(Point(P.x + nx*eps*10, P.y + ny*eps*10)):
+        nx, ny = -nx, -ny
+
+    rc = (P.x - nx*overlap_m, P.y - ny*overlap_m)   # root centre (in corridor)
+    fc = (P.x + nx*reach_m,   P.y + ny*reach_m)     # far centre  (in province)
+    root1 = (rc[0] + tx*neck_m/2,  rc[1] + ty*neck_m/2)
+    root2 = (rc[0] - tx*neck_m/2,  rc[1] - ty*neck_m/2)
+    far1  = (fc[0] + tx*mouth_m/2, fc[1] + ty*mouth_m/2)
+    far2  = (fc[0] - tx*mouth_m/2, fc[1] - ty*mouth_m/2)
+
+    lobe = Polygon([root1, far1, far2, root2])
+    if (not lobe.is_valid) or lobe.is_empty:
+        return None
+    return lobe
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +396,15 @@ def _safe_union(geoms):
         return unary_union([g.buffer(0) for g in clean])
 
 
+#: The lobes as placed, beside ``borders.geojson`` in a saved borders folder.
+CONNECTORS_NAME = "connectors.geojson"
+
+
+def _polys_of(geoms):
+    """Every polygon part of a sequence of geometries, in order."""
+    return [poly for geom in geoms for poly in _polys(geom)]
+
+
 def _load_union_m(path):
     gdf = gpd.read_file(path).to_crs(EPSG_METRIC)
     return _safe_union(list(gdf.geometry))
@@ -378,15 +414,22 @@ def build_border_from_dir(border_dir, out_path, p: ConnectorParams):
     """
     Read ``<border_dir>/borders.geojson`` (+ sibling ``name_*.geojson`` provinces)
     and write the border STL with dovetail lobes.  Returns (mesh, n_lobes).
+
+    When the folder holds ``connectors.geojson`` -- the lobes as placed, by hand
+    or otherwise, in the terrain editor -- those are used as they are rather
+    than generated again, so the bar keys into the pockets that were carved.
     """
     border_dir = Path(border_dir)
     border_geom_m = _load_union_m(border_dir / "borders.geojson")
 
-    prov_paths = sorted(border_dir.glob("name_*.geojson"))
-    prov_union_m = (_safe_union([_load_union_m(pp) for pp in prov_paths])
-                    if prov_paths else None)
-
-    lobes = generate_lobes(border_geom_m, prov_union_m, p)
+    placed = border_dir / CONNECTORS_NAME
+    if placed.exists():
+        lobes = _polys_of(gpd.read_file(placed).to_crs(EPSG_METRIC).geometry)
+    else:
+        prov_paths = sorted(border_dir.glob("name_*.geojson"))
+        prov_union_m = (_safe_union([_load_union_m(pp) for pp in prov_paths])
+                        if prov_paths else None)
+        lobes = generate_lobes(border_geom_m, prov_union_m, p)
     mesh  = build_border_mesh(border_geom_m, lobes, p)
     if mesh is not None:
         mesh.export(str(out_path))

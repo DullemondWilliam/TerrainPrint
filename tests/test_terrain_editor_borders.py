@@ -455,3 +455,238 @@ class TestAssembly:
         window.show_combo.setCurrentText("Assembly")
         assert window._solid_meshes == []
         assert "needs both" in window.solid_title.text()
+
+
+# -- editing connectors by hand ----------------------------------------------
+# On the fixture the A/B seam's corridor runs x 7392-7408 km; A's lobes sit
+# along its west edge at y ~1040, 1152, 1264, 1376 km and B's along its east
+# edge at y ~1136, 1248, 1360 km.  So y 1210 km is free on both sides.
+FREE_A = (7_380 * KM, 1_210 * KM)       # beside the corridor, in A
+FREE_B = (7_420 * KM, 1_050 * KM)       # beside the corridor, in B
+ON_FIRST = (7_380 * KM, 1_040 * KM)     # where A's first lobe already is
+FACING_C = (7_300 * KM, 1_430 * KM)     # across the A/C frontier, in C
+
+
+def _fresh(defined):
+    """A copy whose lobe list the window may change: ``defined`` is shared."""
+    from dataclasses import replace
+    return replace(defined, lobes=list(defined.lobes))
+
+
+def _edit_window(tmp_path, defined):
+    window = _window(tmp_path)
+    window.apply_borders(_fresh(defined))
+    window.tabs.setCurrentIndex(1)
+    window.btn_edit_lobes.setChecked(True)
+    return window
+
+
+def _owner(definition, lobe):
+    reach = lobe.difference(definition.border)
+    return [n for n, g in definition.targets.items()
+            if reach.intersection(g).area > 1e-3 * lobe.area]
+
+
+class TestPlaceConnector:
+
+    def test_lands_on_the_side_clicked(self, defined):
+        lobe_a, why = U.place_connector(defined, *FREE_A)
+        assert lobe_a is not None, why
+        assert _owner(defined, lobe_a) == ["A"]
+        lobe_b, why = U.place_connector(defined, *FREE_B)
+        assert lobe_b is not None, why
+        assert _owner(defined, lobe_b) == ["B"]
+
+    def test_has_the_generated_profile(self, defined):
+        lobe, _ = U.place_connector(defined, *FREE_A)
+        assert lobe.area == pytest.approx(defined.lobes[0].area, rel=1e-6)
+
+    def test_its_root_sinks_into_the_corridor(self, defined):
+        lobe, _ = U.place_connector(defined, *FREE_A)
+        assert lobe.intersection(defined.border).area > 0
+
+    def test_refused_facing_a_surrounding_region(self, defined):
+        lobe, why = U.place_connector(defined, *FACING_C)
+        assert lobe is None and "no province" in why
+
+    def test_refused_on_top_of_another_connector(self, defined):
+        lobe, why = U.place_connector(defined, *ON_FIRST)
+        assert lobe is None and "another connector" in why
+
+    def test_a_moved_connector_may_land_where_it_was(self, defined):
+        lobe, why = U.place_connector(defined, *ON_FIRST, ignore=0)
+        assert lobe is not None, why
+
+    def test_refused_with_no_corridor(self, defined):
+        from dataclasses import replace
+        lobe, why = U.place_connector(replace(defined, border=None), *FREE_A)
+        assert lobe is None and "no corridor" in why
+
+
+class TestEditingConnectors:
+
+    def test_tool_needs_connectors_and_a_corridor(self, tmp_path, defined):
+        window = _window(tmp_path)
+        assert not window.btn_edit_lobes.isEnabled()
+        window.apply_borders(_fresh(defined))
+        assert window.btn_edit_lobes.isEnabled()
+        window.btn_edit_lobes.setChecked(True)
+        window.chk_connectors.setChecked(False)     # stales the definition
+        assert not window.btn_edit_lobes.isEnabled()
+        assert not window.btn_edit_lobes.isChecked()
+
+    def test_add_delete_move(self, tmp_path, defined):
+        window = _edit_window(tmp_path, defined)
+        n = len(defined.lobes)
+        assert window.add_connector(*FREE_A)
+        assert len(window.borders.lobes) == n + 1
+        window.delete_connector(n)
+        assert len(window.borders.lobes) == n
+        first = window.borders.lobes[0]
+        assert window.move_connector(0, *FREE_A)
+        assert len(window.borders.lobes) == n
+        assert not window.borders.lobes[0].equals(first)
+        assert _owner(window.borders, window.borders.lobes[0]) == ["A"]
+
+    def test_a_refused_edit_changes_nothing_and_says_why(self, tmp_path,
+                                                         defined):
+        window = _edit_window(tmp_path, defined)
+        before = list(window.borders.lobes)
+        assert not window.add_connector(*FACING_C)
+        assert not window.move_connector(1, *ON_FIRST)
+        assert window.borders.lobes == before
+        assert "not moved" in window.status.text()
+        assert not window.btn_lobe_undo.isEnabled()
+
+    def test_the_shared_definition_is_not_touched(self, tmp_path, defined):
+        n = len(defined.lobes)
+        window = _edit_window(tmp_path, defined)
+        window.delete_connector(0)
+        assert len(defined.lobes) == n and not defined.lobes_edited
+
+    def test_undo_and_redo(self, tmp_path, defined):
+        window = _edit_window(tmp_path, defined)
+        original = list(window.borders.lobes)
+        window.add_connector(*FREE_A)
+        window.delete_connector(0)
+        edited = list(window.borders.lobes)
+        window.undo_connectors()
+        window.undo_connectors()
+        assert window.borders.lobes == original
+        assert not window.btn_lobe_undo.isEnabled()
+        window.redo_connectors()
+        window.redo_connectors()
+        assert window.borders.lobes == edited
+        assert not window.btn_lobe_redo.isEnabled()
+
+    def test_a_new_edit_drops_the_redo(self, tmp_path, defined):
+        window = _edit_window(tmp_path, defined)
+        window.delete_connector(0)
+        window.undo_connectors()
+        window.add_connector(*FREE_B)
+        assert not window.btn_lobe_redo.isEnabled()
+
+    def test_defining_again_discards_the_history(self, tmp_path, defined):
+        window = _edit_window(tmp_path, defined)
+        window.delete_connector(0)
+        window.apply_borders(_fresh(defined))
+        assert not window.btn_lobe_undo.isEnabled()
+        assert "edited by hand" not in window.border_report.text()
+
+    def test_report_says_edited(self, tmp_path, defined):
+        window = _edit_window(tmp_path, defined)
+        window.delete_connector(0)
+        text = window.border_report.text()
+        assert f"{len(defined.lobes) - 1} connector(s) (edited by hand)" in text
+
+    def test_an_edit_stales_the_bar(self, tmp_path, defined, bar):
+        window = _edit_window(tmp_path, defined)
+        window.apply_bar(bar)
+        window.delete_connector(0)
+        assert window.bar is None
+        assert not window.btn_save_bar.isEnabled()
+
+    def test_an_edit_keeps_the_view(self, tmp_path, defined):
+        window = _edit_window(tmp_path, defined)
+        window.ax_after.set_xlim(7_300 * KM, 7_500 * KM)
+        window.ax_after.set_ylim(1_100 * KM, 1_300 * KM)
+        window.add_connector(*FREE_A)
+        assert window.ax_after.get_xlim() == (7_300 * KM, 7_500 * KM)
+        assert window.ax_after.get_ylim() == (1_100 * KM, 1_300 * KM)
+
+    def test_pockets_follow_the_edit(self, tmp_path, defined):
+        window = _edit_window(tmp_path, defined)
+        window.province_combo.setCurrentText("A")
+        window.add_connector(*FREE_A)
+        assert window.borders.lobes[-1] in window.province_lobes()
+
+    def test_saved_connectors_are_what_the_folder_builds(self, tmp_path,
+                                                         defined):
+        from lib.LIB_border_connectors import build_border_from_dir
+        window = _edit_window(tmp_path, defined)
+        window.delete_connector(0)
+        window.delete_connector(0)
+        folder = tmp_path / "borders"
+        assert (folder / "connectors.geojson") in window.write_borders(folder)
+        _, n_lobes = build_border_from_dir(
+            folder, tmp_path / "bar.stl", U.BorderSettings().connector_params())
+        assert n_lobes == len(defined.lobes) - 2
+
+    def test_saving_none_removes_a_stale_file(self, tmp_path, defined):
+        window = _edit_window(tmp_path, defined)
+        folder = tmp_path / "borders"
+        window.write_borders(folder)
+        window.borders.lobes = []
+        window.write_borders(folder)
+        assert not (folder / "connectors.geojson").exists()
+
+
+class TestConnectorMouse:
+    """The tool through matplotlib events, as a person would use it."""
+
+    @staticmethod
+    def _event(window, xy, button=1):
+        from types import SimpleNamespace
+        x, y = window.ax_after.transData.transform(xy)
+        return SimpleNamespace(button=button, inaxes=window.ax_after,
+                               xdata=xy[0], ydata=xy[1], x=x, y=y)
+
+    def _click(self, window, xy):
+        event = self._event(window, xy)
+        window._on_press(event)
+        window._on_release(event)
+
+    def test_click_beside_the_corridor_adds(self, tmp_path, defined):
+        window = _edit_window(tmp_path, defined)
+        self._click(window, FREE_A)
+        assert len(window.borders.lobes) == len(defined.lobes) + 1
+
+    def test_click_on_a_connector_deletes_it(self, tmp_path, defined):
+        window = _edit_window(tmp_path, defined)
+        self._click(window, defined.lobes[0].centroid.coords[0])
+        assert len(window.borders.lobes) == len(defined.lobes) - 1
+        assert defined.lobes[0] not in window.borders.lobes
+
+    def test_drag_moves_and_previews(self, tmp_path, defined):
+        window = _edit_window(tmp_path, defined)
+        window._on_press(self._event(window,
+                                     defined.lobes[0].centroid.coords[0]))
+        window._on_motion(self._event(window, FREE_A))
+        assert window._drag_artist is not None
+        window._on_release(self._event(window, FREE_A))
+        assert window._drag_artist is None
+        assert len(window.borders.lobes) == len(defined.lobes)
+        assert not window.borders.lobes[0].equals(defined.lobes[0])
+
+    def test_a_click_far_from_the_corridor_does_nothing(self, tmp_path,
+                                                        defined):
+        window = _edit_window(tmp_path, defined)
+        self._click(window, (7_100 * KM, 1_100 * KM))
+        assert window.borders.lobes == defined.lobes
+        assert "beside the corridor" in window.status.text()
+
+    def test_nothing_happens_with_the_tool_off(self, tmp_path, defined):
+        window = _edit_window(tmp_path, defined)
+        window.btn_edit_lobes.setChecked(False)
+        self._click(window, FREE_A)
+        assert window.borders.lobes == defined.lobes
