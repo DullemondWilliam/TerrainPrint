@@ -42,14 +42,14 @@ border has moved since.
 
 A border is drawn grey with no keys, green when every key passes, amber when
 some are refused, and red when an STL on it is out of date -- cut from a
-province the Border Editor has changed since.  Its keys are refused until the
+province that has changed since.  Its keys are refused until the
 STL is rebuilt.
 
 Run with:  python harnesses/UI_province_joins.py
 
 Reuses ``lib.LIB_province_joins``, ``lib.LIB_butterfly_keys``,
 ``lib.LIB_border_ledger`` and ``lib.LIB_seam_fit``; styled after
-``UI_butterfly_keys.py`` and ``UI_border_editor.py``.
+``UI_butterfly_keys.py``.
 """
 
 import sys
@@ -300,7 +300,7 @@ class ProvinceJoinsTester(QMainWindow):
         self.stl_label = _note_label()
         self.btn_geojson = QPushButton("Provinces …")
         self.btn_geojson.setToolTip(
-            "The folder of bordered province GeoJSONs the Border Editor saved.")
+            "The folder of bordered province GeoJSONs.")
         self.btn_geojson.clicked.connect(self.choose_geojson_dir)
         self.btn_stl = QPushButton("STLs …")
         self.btn_stl.setToolTip(

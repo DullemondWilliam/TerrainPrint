@@ -189,7 +189,7 @@ class TestControlsReachTheLib:
 
 
 class TestSavingTheSettings:
-    """What is tuned here is what the Province Viewer surveys a country with.
+    """What is tuned here is what the island editor measures a province with.
 
     The point is not convenience: the two windows measure the same coasts, and
     if they read different parameters they quietly disagree about what a neck is.
@@ -242,7 +242,7 @@ class TestSavingTheSettings:
         monkeypatch.setattr(U, "update_local", lambda key, value: None)
         window.save_settings()
         assert "local" in window.status.text()
-        assert "Province Viewer" in window.status.text()
+        assert "island editor" in window.status.text()
 
 
 class TestAStaleReportIsDropped:

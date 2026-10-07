@@ -3,11 +3,9 @@ seam_editor.py
 
 The seam editor: simplify the border two provinces share, for printing.
 
-One window, two homes.  ``harnesses/UI_shared_border.py`` runs it standalone on
-two files picked by hand; ``UI_border_editor.py`` subclasses it as the page that
-cleans one border of many.  It lives here, rather than in either, so that an app
-never imports a harness, and here rather than in ``lib/`` because ``lib/`` is
-pure geometry with no Qt.
+``harnesses/UI_shared_border.py`` runs it standalone on two files picked by
+hand.  It lives here rather than in ``lib/`` because ``lib/`` is pure geometry
+with no Qt.
 
 The geometry is ``lib.LIB_shared_border``; this is only the picture of it.
 

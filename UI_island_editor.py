@@ -87,14 +87,13 @@ Workflow
    of 675.  At 1:8 000 000 a full run is about a second on Nova Scotia and
    fifteen on Nunavut, and a re-check a fifth of that, with the map panning and
    zooming throughout.  That is what makes this the window where the loop
-   closes: the province viewer can only tell you a neck is at risk, where here
-   you widen it with *Bridge* or the brush and watch the severity come down.
+   closes: here you widen a neck with *Bridge* or the brush and watch the severity come down.
    The marks are cleared the moment the document changes rather than left to go
    stale, because a mark over a coastline that has moved reads as a verdict on
    the one now underneath it.
 
-   What counts as a neck comes from the shared config, so this window, the
-   province viewer and ``harnesses/UI_stress_points.py`` cannot drift into
+   What counts as a neck comes from the shared config, so this window and
+   ``harnesses/UI_stress_points.py`` cannot drift into
    disagreeing about the same coast.
 5. **Save GeoJSON …** — write the province back out, CRS preserved.
 6. **Keyboard** — every button carries a shortcut, named at the foot of its
@@ -262,7 +261,6 @@ BRIDGE_SPAN_MM = (0.0, 200.0, shipped("bridges.max_span_mm"), 2, 0.5)
 #: The narrowest land worth printing, for **Amputate**. Its own knob rather
 #: than the bridge width, because the two are different kinds of number: the
 #: bridge width is a size you build to, this is a limit you measure against.
-#: The province viewer's *Show thin* marks exactly what this value would take.
 MIN_WIDTH_MM = (0.0, 50.0, shipped("thin.width_mm"), 3, 0.05)
 
 #: What the side panel is made wide enough for, measured in the scoreboard's
@@ -295,7 +293,7 @@ ORIGINAL_OPACITY = (0, 100, shipped("island_editor.original_opacity"))
 #: Land too thin to print. A saturated red rather than the palette's softer
 #: ``REMOVE_COLOUR``, because a patch can be a printed millimetre across: what
 #: marks it has to win against the island fill under it at a zoom where it is
-#: only a few pixels wide. The same red the province viewer marks it in.
+#: only a few pixels wide.
 THIN_COLOUR = "#C0392B"
 
 #: Stroke on a thin patch, in points. The fill alone is sub-pixel at province
@@ -317,9 +315,8 @@ THIN_ZOOM_SHARE = 0.15
 #: thinner than its load wants.
 #:
 #: Spelled out here because none of these windows should import another for a
-#: colour -- ``UI_province_viewer`` and ``harnesses/UI_stress_points.py`` are the
-#: other two copies, and ``tests/test_island_editor_stress.py`` holds the three
-#: in step.
+#: colour -- ``harnesses/UI_stress_points.py`` holds the other copy, and
+#: ``tests/test_island_editor_stress.py`` holds the two in step.
 SEVERITY_STOPS = ((0.00, "#0ca30c"),      # good
                   (0.42, "#fab219"),      # warning
                   (0.58, "#ec835a"),      # serious
@@ -344,7 +341,7 @@ STRESS_LINEWIDTH = 1.6
 
 #: The smallest severity worth drawing, as ``(lo, hi, default, decimals, step)``.
 #: From the shared config, like the rest of the stress settings, so the floor is
-#: set once for this window, the province viewer and the harness.
+#: set once for this window and the harness.
 #:
 #: **Zero by default: draw every neck the measurement found.** A floor that
 #: quietly removes the evidence is worse than a busier map -- a sound neck
@@ -372,12 +369,8 @@ STRESS_ZOOM_MM = 16.0
 #: numbers and a reviewable diff.  ``harnesses/UI_stress_points.py`` saves its
 #: own settings the same way and to the same place.
 #:
-#: Three of these keys are read by more than this window, which is the point of
-#: their being in a shared config and is worth knowing before turning them:
-#: ``thin.width_mm`` is also the province viewer's *Show thin*; ``stress.
-#: report_above`` is that window's *Min severity* floor (this one measures at
-#: zero whatever the box says, so saving it moves the viewer's default and not
-#: this window's answer); and ``bridges.width_mm`` is also the width
+#: One of these keys is read by more than this window, which is worth knowing
+#: before turning it: ``bridges.width_mm`` is also the width
 #: ``LIB_stress_points`` calibrates severity against -- "what one bridge of
 #: this width is reckoned to hold" -- so building wider bridges does move every
 #: severity figure, by the same model that put the number there.
@@ -1035,12 +1028,8 @@ class IslandEditor(QMainWindow):
 
         # -- the thin layer, second down the side panel -----------------------
         # *Min width* over in Whole province is this layer's knob as well as
-        # Amputate's: one width, marked and then removed. That is the case for
-        # the layer being here at all -- the province viewer answers "which of
-        # thirteen provinces has a problem", which is not a question you can
-        # ask one file at a time, but "show me what Amputate is about to take"
-        # is, and until now this window answered it by telling you to go and
-        # open the other one.
+        # Amputate's: one width, marked and then removed. The layer answers
+        # "show me what Amputate is about to take".
         self.btn_thin = self._button("Show", self._toggle_thin, enabled=False)
         self.btn_thin.setCheckable(True)
         self.btn_thin.setToolTip(
@@ -1086,8 +1075,7 @@ class IslandEditor(QMainWindow):
         # which is why they are up here together rather than down with the
         # status line or in among the verbs.
         #
-        # This is also the window where the loop closes. The province viewer can
-        # only tell you a neck is at risk; here you widen it with Bridge or the
+        # This is also the window where the loop closes: here you widen a neck with Bridge or the
         # brush and watch the severity come down -- which is why the layer
         # re-measures itself after every edit rather than going quietly stale.
         self.stress_spin = self._spin(*STRESS_SEVERITY,
@@ -1099,7 +1087,7 @@ class IslandEditor(QMainWindow):
             "and the status line's count follows it. Zero draws every neck "
             "found: a floor that hides a sound neck makes it look like the "
             "measurement missed it.\n\n"
-            "Shared with the province viewer and the Stress Points harness.")
+            "Shared with the Stress Points harness.")
         self.stress_spin.setPrefix("≥ ")
         self.stress_spin.valueChanged.connect(self._on_stress_severity)
         self.btn_stress = self._button("Show", self._toggle_stress,
@@ -1180,8 +1168,7 @@ class IslandEditor(QMainWindow):
         # they did while they were stacked above it.
         #
         # Scores first, then Printability, then Stress: what the editing has
-        # cost, then the two judgements, in the order the province viewer reads
-        # them -- this finds narrow land, that finds the narrow land which is
+        # cost, then the two judgements, in that order -- this finds narrow land, that finds the narrow land which is
         # holding something up.
         self.side = QWidget()
         side = QVBoxLayout(self.side)
@@ -2708,7 +2695,7 @@ class IslandEditor(QMainWindow):
         decides what is *drawn* from an answer already in hand, and turning it
         costs nothing.  Everything else -- the pixel, the ceiling, the band, the
         tile, the smallest lobe worth holding up -- comes from the shared
-        config, so this window, the province viewer and the harness cannot drift
+        config, so this window and the harness cannot drift
         into disagreeing about what a neck is.
         """
         return load_stress_params(*settings_files(),

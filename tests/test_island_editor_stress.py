@@ -395,25 +395,19 @@ class TestItDoesNotDisturbTheRest:
 
 
 class TestTheRampAgreesWithItsOtherCopies:
-    """Three copies of one ramp, held in step.
+    """Two copies of one ramp, held in step.
 
-    None of these windows imports another for a colour — a harness is
-    throwaway, a viewer surveys and an editor edits — so this is what stops the
-    three drifting into saying different things about the same number.
+    Neither window imports the other for a colour — a harness is throwaway and
+    an editor edits — so this is what stops the two drifting into saying different things about the same number.
     """
-
-    def test_the_stops_match_the_viewer(self):
-        import UI_province_viewer as V
-        assert M.SEVERITY_STOPS == V.SEVERITY_STOPS
 
     def test_the_stops_match_the_harness(self):
         from harnesses import UI_stress_points as H
         assert M.SEVERITY_STOPS == H.SEVERITY_STOPS
 
     def test_the_anchor_matches(self):
-        import UI_province_viewer as V
         from harnesses import UI_stress_points as H
-        assert M.STRESS_VMAX == V.STRESS_VMAX == H.DEFAULT_VMAX
+        assert M.STRESS_VMAX == H.DEFAULT_VMAX
 
     def test_one_lands_on_the_hue_change(self):
         """With the ramp running to twice the anchor, severity 1.0 sits at the

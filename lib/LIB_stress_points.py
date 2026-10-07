@@ -252,7 +252,7 @@ class StressParams:
     The defaults are the shipped settings and never come from a file, so
     ``StressParams()`` measures the same on every desk.  A window that wants
     the saved settings asks :func:`load_stress_params` for them -- which is how
-    a value tuned in the Stress Points harness reaches the province viewer.
+    a value tuned in the Stress Points harness reaches the island editor.
     """
     scale: float = _shipped("print.scale")
     #: The width resolution. Everything narrower than two pixels is invisible to

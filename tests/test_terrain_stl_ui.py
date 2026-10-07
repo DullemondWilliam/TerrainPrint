@@ -4,7 +4,7 @@ test_terrain_stl_ui.py
 harnesses/UI_terrain_stl.py: build a printable terrain solid from a prepared DEM.
 
 These are pytest-style (not unittest) because they need pytest-qt's ``qapp``
-fixture, as in test_province_viewer.py.
+fixture.
 
 Run with:  python -m pytest tests/test_terrain_stl_ui.py -v
 

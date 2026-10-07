@@ -163,13 +163,6 @@ class TestItIsOnTheMap(FortRupertTestCase):
         self.assertLess(neck.severity, 1.0)
         self.assertFalse(neck.at_risk)
 
-    def test_the_viewers_floor_draws_it(self):
-        import UI_province_viewer as viewer
-        floor = viewer.STRESS_SEVERITY[2]
-        self.assertGreaterEqual(self.report.necks[0].severity, floor,
-                                "the province viewer would not draw the neck "
-                                "this whole file was written about")
-
     def test_the_floor_is_shared_so_it_cannot_drift_back(self):
         """The harness saves the floor along with the measurement, so the two
         windows cannot disagree about which part of the answer to show."""

@@ -4,7 +4,7 @@ test_shared_border_ui.py
 harnesses/UI_shared_border.py: simplify the border two provinces share, for printing.
 
 These are pytest-style (not unittest) because they need pytest-qt's ``qapp``
-fixture, as in test_province_viewer.py.
+fixture.
 
 Run with:  python -m pytest tests/test_shared_border_ui.py -v
 

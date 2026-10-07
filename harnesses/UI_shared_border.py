@@ -30,8 +30,8 @@ reconciled.
 
 Run with:  python harnesses/UI_shared_border.py
 
-The window itself is :class:`ui.seam_editor.SeamEditor`, shared with
-``UI_border_editor.py``; this file only gives it a title and a ``main``.
+The window itself is :class:`ui.seam_editor.SeamEditor`; this file only gives
+it a title and a ``main``.
 
 What the harness is for
 -----------------------

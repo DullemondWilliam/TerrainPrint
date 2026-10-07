@@ -65,8 +65,6 @@ flowchart TD
 ├── requirements.txt                   # Python dependencies
 ├── UI_island_editor.py                # Interactive per-file island editor (start here)
 ├── UI_terrain_editor.py               # National DEM → province STL, the whole pipeline
-├── UI_province_viewer.py              # Every province at once, at print size
-├── UI_border_editor.py                # Clean every shared border, tracking which are done
 ├── harnesses/                         # One throwaway visual harness per lib (UI_*.py)
 ├── docs/USING_DEMTO3D.md              # DEM -> STL is now done in QGIS (DEMto3D plugin)
 ├── lib/                               # Library modules (imported as lib.LIB_*)
@@ -87,7 +85,7 @@ flowchart TD
 │   ├── LIB_terrain_trim.py            # Clip a DEMto3D slab STL to the province coastline
 │   └── LIB_thin_features.py           # Find land too narrow to print (necks, spits, islets)
 ├── ui/                                # Qt widgets shared by more than one window
-│   └── seam_editor.py                 # The seam editor (Border Editor + Shared Border harness)
+│   └── seam_editor.py                 # The seam editor (Shared Border harness)
 ├── tests/                             # All pytest suites (lib + core + app)
 └── README.md                          # This file
 ```
@@ -184,69 +182,7 @@ py -3 UI_clip_geotiff.py dem.tif dummy.geojson dummy.tif --info   # inspect meta
 
 ---
 
-### 5. Border Editor (`UI_border_editor.py`)
-
-Cleans the border every pair of neighbouring provinces shares, one at a time,
-and keeps track of which are done.
-
-```powershell
-py -3 UI_border_editor.py
-```
-
-**Borders page:** *Import Folder …* / *Import Files …* loads the provinces and
-finds every shared seam. Borders are listed as **Not cleaned** or **Cleaned**,
-and drawn red or green on the map. Click two neighbouring provinces (or a border
-in a list) and press *Edit Border →* (or double-click the border).
-
-**Edit Border page:** the seam editor (`ui/seam_editor.py`, also run standalone as `harnesses/UI_shared_border.py`)
-with the same parameters and before/after panels. *Apply and Mark Cleaned*
-writes both provinces into the save folder (default
-`Data/JSonProvinces-Bordered`, under their own file names) and records the
-border in `border_ledger.json` there; *← Borders* goes back without saving.
-
-When a province already has a copy in the save folder, that copy is loaded
-instead, so earlier work carries on. A border counts as cleaned only while the
-files still carry the seam that was recorded, so a re-exported province puts
-its borders back on the Not cleaned list, marked "changed since cleaned".
-
-**Fit check:** every border in the list says whether its printed pieces will
-mesh, and the Edit Border page marks the faults on both panels:
-
-| Mark | Fault |
-|---|---|
-| Red | Land at the seam narrower than *Min width* + 2 × *Edge loss* |
-| Amber | A finger (deeper than it is wide) too thin to survive |
-| Purple | A tab whose head is wider than its neck: it locks the pieces, so they only go in from above and shrinkage piles up at it |
-
-*Edge loss* is what each printed edge loses per side (over-extrusion,
-elephant's foot, clearance; default 0.2 mm). Measure it once on your printer.
-
-**Auto solve:** *Solve Tabs* repairs what the fit check marks, either by
-cutting the offending land off (it goes to the other province) or by filling
-round it (the other province's undercuts beside a locking tab, or a collar
-that brings thin land up to width), whichever leaves fewer problems. It never
-moves the border further than *Max move* (default 3 mm) from where it ran, and
-leaves anything that would need more for the brush. Moved land is outlined in
-green, and the whole solve is one undo step. On Labrador/Québec, simplified,
-it takes 33 problems to 6 in about 12 s.
-
-**Edit by hand:** two tools that move the border.
-
-*Grow A* / *Grow B* turn the map into a brush that hands the
-land under the stroke to that province, so a locking tab or thin finger can be
-pushed back by hand. *Undo* (Ctrl+Z) and *Redo* (Ctrl+Shift+Z or Ctrl+Y)
-step through every edit until another border is opened; Esc leaves the tool.
-
-*Move Vertices* lets you drag a vertex of the seam; the sliver between its old
-and new path changes hands, so the two provinces still meet exactly. Drag on
-the left panel to edit the border as imported, on the right to edit the
-simplified border that will be saved. The two end vertices are pinned (they
-sit on the coast or a third province), a vertex can't be dropped in the sea,
-and a move that would make the border cross itself is refused.
-
----
-
-### 6. Province Joins harness (`harnesses/UI_province_joins.py`)
+### 5. Province Joins harness (`harnesses/UI_province_joins.py`)
 
 Joins every province to its neighbours with butterfly (bowtie) keys pressed
 into slots in the back of the printed pieces, and writes the slotted STLs and
@@ -256,8 +192,8 @@ the keys to print.
 py -3 harnesses/UI_province_joins.py
 ```
 
-**Inputs:** *Provinces …* is the folder the Border Editor saved
-(`Data/JSonProvinces-Bordered`); *STLs …* is the terrain STLs cut from those
+**Inputs:** *Provinces …* is the folder of bordered province
+GeoJSONs (`Data/JSonProvinces-Bordered`); *STLs …* is the terrain STLs cut from those
 same files, each with its `.frame.json` (`Data/STL`). Files pair by name,
 ignoring `_simplified` / `_trimmed` / `_keyed`. *Load* finds every border.
 Pieces built under other terrain settings, and files that do not pair, are

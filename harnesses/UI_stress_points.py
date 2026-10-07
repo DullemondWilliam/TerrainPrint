@@ -24,7 +24,7 @@ Workflow
                             carrying the throat, the load, the width it wants and
                             its severity.
 7. **Save Settings**      — keep the parameters as the defaults, here and in the
-                            Province Viewer's stress layer, so a whole country is
+                            island editor's stress layer, so every province is
                             surveyed with what you tuned on one province rather
                             than with the shipped numbers — and the two windows
                             cannot drift into disagreeing about what a neck is.
@@ -141,8 +141,8 @@ RISK_MARKER_PT = 7.0
 #: What **Save Settings** writes, as ``config key -> the control holding it``.
 #:
 #: These are the parameters that decide what a neck *is*, so they are the ones
-#: worth sharing: saved here, they are what ``UI_province_viewer`` measures a
-#: whole country with next time it is opened, and the two windows cannot drift
+#: worth sharing: saved here, they are what ``UI_island_editor`` measures a
+#: province with next time it is opened, and the two windows cannot drift
 #: into disagreeing about the same coast.  They go to the **local** config, which
 #: is gitignored — the tracked file stays the project's shipped defaults, and a
 #: setting typed into a window is a fact about this desk rather than a change
@@ -512,7 +512,7 @@ class StressPointsTester(QMainWindow):
         Written one key at a time through ``update_local``, which merges into
         the gitignored local config.  ``StressParams`` reads its defaults as the
         block is *built* rather than at import, so the next window to ask --
-        here or in the Province Viewer -- measures with these without anything
+        here or in the island editor -- measures with these without anything
         having to be passed between them.
         """
         saved = []
@@ -523,7 +523,7 @@ class StressPointsTester(QMainWindow):
             saved.append(key.rpartition(".")[2])
         self.status.setText(
             f"Saved {len(saved)} settings to {Path(LOCAL_CONFIG_PATH).name} — "
-            "the Province Viewer's stress layer will measure with them too.")
+            "the island editor's stress layer will measure with them too.")
 
     def reload_settings(self) -> None:
         """Put the controls back to the saved defaults."""

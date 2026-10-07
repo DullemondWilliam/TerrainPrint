@@ -17,11 +17,10 @@ based on the ones that already exist. They all live in `harnesses/`:
 | `UI_province_joins.py` | `LIB_province_joins.cut_all`          | the whole map, not one pair: every border in a list, keys placed by click and drag with undo, one key size map-wide, and a threaded cut that writes keyed STLs and key plates |
 | `UI_shared_border.py`  | `LIB_shared_border.simplify_shared_border` | a *pair* of GeoJSONs and the seam between them; before/after with vertex markers, the original seam ghosted behind the new one, and a Zoom-to-Seam because a border is invisible at full extent |
 
-The **editors and viewers stay in the project root**, not in `harnesses/`:
+The **editors stay in the project root**, not in `harnesses/`:
 `UI_island_editor.py` (the island harnesses folded into one tool with undo/redo),
 `UI_terrain_editor.py` (`LIB_raster_reproject` -> `LIB_geotiff_clip` ->
-`LIB_terrain_stl`, the whole pipeline in one window) and `UI_province_viewer.py`
-(every province at once, at print size). They borrow the patterns below, but they
+`LIB_terrain_stl`, the whole pipeline in one window). They borrow the patterns below, but they
 are kept tools with state, not throwaways — the folder is the dividing line.
 
 Each is a **throwaway inspection tool**, deliberately independent of the main

@@ -5,7 +5,7 @@ UI_terrain_editor.py: reproject, downsample and crop a DEM to a boundary,
 with a live cost preview.
 
 These are pytest-style (not unittest) because they need pytest-qt's ``qapp``
-fixture, as in test_province_viewer.py.
+fixture.
 
 Run with:  python -m pytest tests/test_terrain_editor.py -v
 

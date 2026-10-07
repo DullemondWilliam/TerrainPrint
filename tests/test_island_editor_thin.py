@@ -11,7 +11,7 @@ Run with:  ./.venv/Scripts/python.exe -m pytest tests/test_island_editor_thin.py
 
 The measurement is covered by test_thin_features.py and nothing here re-tests
 it.  What this file guards is what the layer means *in this window*, which is
-the whole reason it is here rather than only in the province viewer:
+the whole reason it is here:
 
 * it is the preview of **Amputate**, and shares that edit's knob — one width,
   marked and then removed, so the two cannot disagree;
@@ -340,12 +340,6 @@ class TestItSitsBesideTheOtherLayers:
         assert not editor.grp_thin.isEnabled()
         editor._set_planning(False)
         assert editor.grp_thin.isEnabled()
-
-    def test_the_red_is_the_viewers_red(self):
-        """The same fault marked the same colour in both windows."""
-        import UI_province_viewer as V
-        assert M.THIN_COLOUR == V.THIN_COLOUR
-        assert M.THIN_ZOOM_SHARE == V.THIN_ZOOM_SHARE
 
 
 if __name__ == "__main__":

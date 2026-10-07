@@ -188,8 +188,8 @@ DEFAULTS = {
         # Where the province pipeline reads and writes, relative to the repo.
         "provinces_in": "Data/JSon-Provinces-Orig",
         "provinces_out": "Data/JSonProvinces-Cleaned",
-        # Where UI_border_editor saves provinces once their shared borders are
-        # cleaned, with the ledger of which borders are done.
+        # Provinces whose shared borders are cleaned, with the ledger of which
+        # borders are done (read by the UI_province_joins harness).
         "provinces_bordered": "Data/JSonProvinces-Bordered",
         # Province terrain STLs (with their .frame.json sidecars) as the
         # terrain editor saves them, and where the UI_province_joins harness writes them back
