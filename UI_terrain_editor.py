@@ -26,7 +26,8 @@ Workflow (stage 3)
                             decimated overview are read, never the whole file,
                             so pointing this at the 7.3 GB ``Canada120m.tif``
                             takes well under a second.
-2. **Import Boundary …**  — load the province GeoJSON.  It is drawn over the DEM
+2. **Add Provinces …**    — load the province GeoJSON(s), on tab 1, and pick
+                            one under **Province**.  It is drawn over the DEM
                             in red, so you can see what is about to be cut
                             before cutting.
 3. **Target CRS**         — the projection the output is built in.  Leave it at
@@ -751,11 +752,6 @@ class TerrainEditorTester(QMainWindow):
             "never printed and get no connectors.")
         self.btn_add_surrounding.clicked.connect(
             lambda: self.add_regions_dialog("surrounding"))
-        self.btn_boundary = QPushButton("Import Boundary …")
-        self.btn_boundary.setToolTip(
-            "Add one province and select it for the STL stage -- the "
-            "single-province run.")
-        self.btn_boundary.clicked.connect(self.import_boundary)
         self.btn_remove = QPushButton("Remove")
         self.btn_remove.clicked.connect(self.remove_selected_region)
         self.region_list = QListWidget()
@@ -763,8 +759,7 @@ class TerrainEditorTester(QMainWindow):
 
         import_bar = QHBoxLayout()
         for widget in (self.btn_raster, self.btn_add_targets,
-                       self.btn_add_surrounding, self.btn_boundary,
-                       self.btn_remove):
+                       self.btn_add_surrounding, self.btn_remove):
             import_bar.addWidget(widget)
         import_bar.addStretch(1)
         import_page = QWidget()
@@ -1768,7 +1763,7 @@ class TerrainEditorTester(QMainWindow):
         self.status.setText(
             f"{self.raster_path.name}: {self.raster_shape[0]}x"
             f"{self.raster_shape[1]} @ {self.raster_res[0]:.0f} m, "
-            f"{self.raster_crs}. Import a boundary to crop against.")
+            f"{self.raster_crs}. Add a province to crop against.")
 
     def _load_raster(self, path: Path) -> None:
         """
@@ -1791,19 +1786,6 @@ class TerrainEditorTester(QMainWindow):
         self.overview = data
         left, bottom, right, top = self.raster_bounds
         self.overview_extent = (left, right, bottom, top)
-
-    def import_boundary(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Import boundary GeoJSON", str(Path.cwd()), GEOJSON_FILTER)
-        if not path:
-            return
-        added = self.add_regions([Path(path)], "target")
-        if not added:
-            return
-        # The single-province run: add it, select it, go straight to stage 3.
-        self.province_combo.setCurrentText(added[0])
-        self.status.setText(f"Boundary: {Path(path).name}. "
-                            + self._cost_text())
 
     def _boundary_geom(self, crs=None):
         """The boundary dissolved to one geometry in ``crs``, buffered."""
@@ -2148,7 +2130,7 @@ class TerrainEditorTester(QMainWindow):
         self.progress.setVisible(busy)
         self.progress.setRange(0, 0) if busy else self.progress.setRange(0, 1)
         self.progress.setValue(0 if busy else 1)
-        for w in (self.btn_raster, self.btn_boundary, self.btn_run,
+        for w in (self.btn_raster, self.btn_run,
                   self.btn_save, self.crs_combo, self.res_spin, self.buf_spin,
                   self.cache_spin, self.chk_touched, self.chk_crop,
                   self.resample_combo, self.exag_spin, self.base_spin,
