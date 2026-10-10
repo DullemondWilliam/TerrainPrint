@@ -21,7 +21,7 @@ import pytest
 import rasterio
 from affine import Affine
 from rasterio.crs import CRS
-from shapely.geometry import Polygon, box
+from shapely.geometry import Point, Polygon, box
 
 import geopandas as gpd
 
@@ -651,6 +651,90 @@ def _owner(definition, lobe):
     reach = lobe.difference(definition.border)
     return [n for n, g in definition.targets.items()
             if reach.intersection(g).area > 1e-3 * lobe.area]
+
+
+class TestCrossingTheBoundary:
+    """A connector must not cross its province's boundary line -- the coast,
+    or a frontier -- or its pocket opens in the side of the printed piece.
+
+    The rule ("escapes") measures how much *area* of the pocket lies outside
+    the province.  These tests hold it to a different question, asked of the
+    line itself: does the pocket touch the province's boundary anywhere but
+    along the corridor it hangs from?
+    """
+
+    #: Three print-mm up the A/B seam from the coast at its south end: a
+    #: connector here is valid square to the corridor, and swung 40 degrees
+    #: towards the coast its mouth crosses it.
+    NEAR_COAST = (A.bounds[2] - 2 * MPM, A.bounds[1] + 3 * MPM)
+
+    @staticmethod
+    def _crosses_the_line(lobe, d) -> bool:
+        p = d.settings.connector_params()
+        pocket = lobe.buffer(p.clearance_mm * p.mpm).difference(d.border)
+        owner = max(d.targets.values(),
+                    key=lambda geom: pocket.intersection(geom).area)
+        # The province's outline, less the corridor edge every pocket meets.
+        line = owner.boundary.difference(d.border.buffer(0.01 * p.mpm))
+        return pocket.intersects(line)
+
+    def test_the_rule_agrees_with_the_line_everywhere(self, defined):
+        """Every corridor edge, every half-millimetre, three ways turned."""
+        from lib.LIB_border_connectors import _rings
+        d, p = defined, defined.settings.connector_params()
+        crossed = inside = 0
+        for ring in _rings(d.border):
+            for s in np.arange(0.0, ring.length, 0.5 * MPM):
+                at = ring.interpolate(s)
+                for angle in (-40.0, 0.0, 40.0):
+                    lobe = lobe_at(d.border, at.x, at.y, p, angle)
+                    if lobe is None:
+                        continue
+                    code = U._own_fault(lobe, d, p, d.land())
+                    if code not in ("", "escapes"):
+                        continue      # broke an earlier rule: not this one's
+                    crosses = self._crosses_the_line(lobe, d)
+                    assert crosses == (code == "escapes"), (at, angle)
+                    crossed += crosses
+                    inside += not crosses
+        assert crossed and inside             # both answers were exercised
+
+    def test_no_defined_connector_crosses_the_line(self, defined):
+        assert defined.lobes
+        for lobe in defined.lobes:
+            assert not self._crosses_the_line(lobe, defined)
+
+    def test_one_placed_across_the_coast_is_red(self, tmp_path, defined):
+        """At the very end of the seam, where it meets the open sea."""
+        window = _edit_window(tmp_path, defined)
+        assert window.add_connector(A.bounds[2] - 2 * MPM,
+                                    A.bounds[1] + 0.3 * MPM)
+        lobe = window.borders.lobes[-1]
+        assert self._crosses_the_line(lobe, window.borders)
+        assert window.borders.faults()[-1] == "escapes"
+        assert U.STANDING_FAULTS["escapes"] in window.status.text()
+
+    def test_turning_one_across_the_coast_turns_it_red(self, tmp_path,
+                                                       defined):
+        window = _edit_window(tmp_path, defined)
+        spot = Point(self.NEAR_COAST)
+        for i in reversed(range(len(window.borders.lobes))):
+            if window.borders.lobes[i].distance(spot) < 10 * MPM:
+                window.delete_connector(i)        # room to work in
+        assert window.add_connector(*self.NEAR_COAST)
+        index = len(window.borders.lobes) - 1
+        assert not any(window.borders.faults())
+        window.select_connector(index)
+
+        window.pose_selected(40.0, 1.0, "Turned a connector.")
+        lobe = window.borders.lobes[index]
+        assert self._crosses_the_line(lobe, window.borders)
+        assert window.borders.faults()[index] == "escapes"
+
+        window.pose_selected(0.0, 1.0, "Turned a connector.")
+        lobe = window.borders.lobes[index]
+        assert not self._crosses_the_line(lobe, window.borders)
+        assert not any(window.borders.faults())
 
 
 class TestPlaceConnector:
