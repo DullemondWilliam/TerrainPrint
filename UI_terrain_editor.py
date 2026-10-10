@@ -110,6 +110,13 @@ question is what survives the nozzle.  Shared arcs then get
 ``seam.min_angle_deg``), and the report measures what is left against the
 printer limits (``seam.nozzle_mm`` / ``seam.spike_angle_deg``).
 
+*The settings are kept.*  Every control on the Borders tab -- the tolerances,
+the seam clean-up, the corridor width, the Connectors tick, and the
+connectors' spacing and shape -- opens on what the config files say and is
+written back to ``project_config.local.json`` as it is turned
+(``SAVED_BORDER_SETTINGS`` lists the keys), so the next launch starts where
+this one left off.
+
 *Simplify, then carve, then cut the terrain.*  ``LIB_border_regions`` wants
 simplified input, and the terrain must be cut by the province *after* the
 corridor came out of it -- otherwise the solid and the border bar overlap by
@@ -186,7 +193,7 @@ from shapely.geometry.polygon import orient
 from shapely.ops import unary_union
 from vispy import scene
 
-from PySide6.QtCore import QObject, Qt, QThread, Signal
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox,
                                QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel,
@@ -216,7 +223,8 @@ from lib.LIB_terrain_stl import (EPSG_METRIC, TerrainParams, _finish,
                                  load_terrain_params, surface_sampler,
                                  terrain_to_stl)
 from lib.LIB_project_config import get as _cfg
-from lib.LIB_project_config import build_params, load_files, settings_files
+from lib.LIB_project_config import (build_params, load_files, settings_files,
+                                     update_local)
 from lib.LIB_project_config import shipped as _shipped
 
 GEOJSON_FILTER = "GeoJSON (*.geojson *.json);;All files (*)"
@@ -313,16 +321,16 @@ class BorderSettings:
     min_segment_mm: float = _shipped("seam.min_segment_mm")
     min_angle_deg: float = _shipped("seam.min_angle_deg")
     width_mm: float = _shipped("borders.width_mm")
-    connectors: bool = True
+    connectors: bool = _shipped("borders.connectors")
     lobe_spacing_mm: float = _shipped("borders.lobe_spacing_mm")
     #: The connector's shape.  Height is the lobe layer, and so the depth of
     #: the pocket it drops into; depth is how far it reaches into the
     #: province; width is the neck at the corridor, and the mouth at the far
     #: end is ``ratio`` times that -- above 1, the wide end is captured.
     lobe_height_mm: float = _shipped("print.dovetail_mm")
-    lobe_depth_mm: float = ConnectorParams.reach_mm
-    lobe_width_mm: float = ConnectorParams.neck_mm
-    lobe_ratio: float = ConnectorParams.mouth_mm / ConnectorParams.neck_mm
+    lobe_depth_mm: float = _shipped("borders.lobe_depth_mm")
+    lobe_width_mm: float = _shipped("borders.lobe_width_mm")
+    lobe_ratio: float = _shipped("borders.lobe_ratio")
     scale: float = _shipped("print.scale")
 
     @property
@@ -346,10 +354,41 @@ _BORDER_SETTINGS_KEYS = {
     "min_segment_mm": "seam.min_segment_mm",
     "min_angle_deg": "seam.min_angle_deg",
     "width_mm": "borders.width_mm",
+    "connectors": "borders.connectors",
     "lobe_spacing_mm": "borders.lobe_spacing_mm",
     "lobe_height_mm": "print.dovetail_mm",
+    "lobe_depth_mm": "borders.lobe_depth_mm",
+    "lobe_width_mm": "borders.lobe_width_mm",
+    "lobe_ratio": "borders.lobe_ratio",
     "scale": "print.scale",
 }
+
+#: The Borders stage's controls, each written back to its config key as it is
+#: turned, so the next launch starts where this one left off.  Written to
+#: ``project_config.local.json`` -- what this desk works at -- leaving the
+#: tracked file the project's shipped numbers, as UI_island_editor does.
+#:
+#: Three keys are read by more than this window: ``seam.min_segment_mm`` and
+#: ``seam.min_angle_deg`` by LIB_shared_border's seam clean-up, and
+#: ``print.dovetail_mm`` -- the connector Height -- as the pocket depth the
+#: terrain Base must clear.
+SAVED_BORDER_SETTINGS = (
+    ("borders.coast_tol_mm", "coast_spin"),
+    ("borders.internal_tol_mm", "internal_spin"),
+    ("seam.min_segment_mm", "min_seg_spin"),
+    ("seam.min_angle_deg", "min_angle_spin"),
+    ("borders.width_mm", "width_spin"),
+    ("borders.connectors", "chk_connectors"),
+    ("borders.lobe_spacing_mm", "spacing_spin"),
+    ("print.dovetail_mm", "lobe_height_spin"),
+    ("borders.lobe_depth_mm", "lobe_depth_spin"),
+    ("borders.lobe_width_mm", "lobe_width_spin"),
+    ("borders.lobe_ratio", "lobe_ratio_spin"),
+)
+
+#: How long after the last turn of a box the settings are written, in ms: one
+#: write for a held arrow key rather than one per step.
+SETTINGS_WRITE_MS = 500
 
 #: The fields of :class:`BorderSettings` that shape a connector, which the
 #: window changes on a defined map without defining it again.
@@ -837,6 +876,13 @@ class TerrainEditorTester(QMainWindow):
         self.borders: BorderDefinition | None = None
         self.bar: BarResult | None = None    #: the border bar, split
         self._outline_cache: dict = {}       #: (name, crs) -> reprojected geom
+        #: Borders settings turned but not yet written, and the timer that
+        #: writes them.  See SAVED_BORDER_SETTINGS.
+        self._pending_settings: dict = {}
+        self._settings_timer = QTimer(self)
+        self._settings_timer.setSingleShot(True)
+        self._settings_timer.setInterval(SETTINGS_WRITE_MS)
+        self._settings_timer.timeout.connect(self._write_settings)
         self._boundary_is_region = False     #: boundary came from the combo?
         # Connector editing: undo/redo hold whole lobe lists, the press is in
         # screen pixels, the drag is the index of the lobe being moved.
@@ -906,7 +952,7 @@ class TerrainEditorTester(QMainWindow):
             "Target/target seams split it evenly; target/surrounding takes it\n"
             "all from the surrounding side.")
         self.chk_connectors = QCheckBox("Connectors")
-        self.chk_connectors.setChecked(True)
+        self.chk_connectors.setChecked(defaults.connectors)
         self.chk_connectors.setToolTip(
             "Place dovetail lobes on the corridor and pockets in the provinces.")
         self.spacing_spin = self._mm_spin(
@@ -1002,6 +1048,7 @@ class TerrainEditorTester(QMainWindow):
         connector_bar.addWidget(self.btn_lobe_undo)
         connector_bar.addWidget(self.btn_lobe_redo)
         connector_bar.addStretch(1)
+        self._wire_saved_settings()
         borders_page = QWidget()
         borders_layout = QVBoxLayout(borders_page)
         borders_layout.addLayout(border_bar)
@@ -2598,7 +2645,38 @@ class TerrainEditorTester(QMainWindow):
             f"Saved {self.result.width} x {self.result.height} px to "
             f"{Path(path).name}.")
 
+    def _wire_saved_settings(self) -> None:
+        """Write each Borders control back to its key as it is turned.
+
+        Wired after the controls took their saved values, so building the
+        window is not mistaken for somebody choosing them.
+        """
+        for key, control in SAVED_BORDER_SETTINGS:
+            widget = getattr(self, control)
+            signal = (widget.toggled if isinstance(widget, QCheckBox)
+                      else widget.valueChanged)
+            signal.connect(lambda value, key=key: self._remember(key, value))
+
+    def _remember(self, key: str, value) -> None:
+        """Note a setting to be written, and restart the clock on writing."""
+        self._pending_settings[key] = (value if isinstance(value, (bool, int))
+                                       else float(value))
+        self._settings_timer.start()
+
+    def _write_settings(self) -> None:
+        """Write what has been turned since the last write, and forget it.
+
+        ``update_local`` merges one key at a time, so this cannot clobber what
+        another window saved; it swallows its own write errors.
+        """
+        pending, self._pending_settings = self._pending_settings, {}
+        for key, value in pending.items():
+            update_local(key, value)
+
     def closeEvent(self, event) -> None:
+        # A box turned in the last half second has not been written yet.
+        self._settings_timer.stop()
+        self._write_settings()
         self._teardown_thread()
         shutil.rmtree(self._tempdir, ignore_errors=True)
         super().closeEvent(event)

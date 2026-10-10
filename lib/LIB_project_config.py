@@ -183,6 +183,14 @@ DEFAULTS = {
         "width_mm": 2.0,
         # Gap between dovetail keys along the corridor.
         "lobe_spacing_mm": 14.0,
+        # Whether the corridor carries dovetail connectors at all.
+        "connectors": True,
+        # The connector's shape (its height is print.dovetail_mm): how far it
+        # reaches into its province, its neck at the corridor edge, and the
+        # width of its far end over the neck -- above 1 the end is captured.
+        "lobe_depth_mm": 3.0,
+        "lobe_width_mm": 1.6,
+        "lobe_ratio": 2.0,
     },
     "paths": {
         # Where the province pipeline reads and writes, relative to the repo.

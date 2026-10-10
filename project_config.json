@@ -1,8 +1,12 @@
 {
   "borders": {
     "coast_tol_mm": 0.3,
+    "connectors": true,
     "internal_tol_mm": 0.5,
+    "lobe_depth_mm": 3.0,
+    "lobe_ratio": 2.0,
     "lobe_spacing_mm": 14.0,
+    "lobe_width_mm": 1.6,
     "width_mm": 2.0
   },
   "bridges": {
