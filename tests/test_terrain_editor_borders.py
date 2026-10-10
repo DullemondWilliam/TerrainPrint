@@ -714,15 +714,77 @@ class TestEditingConnectors:
         assert not window.borders.lobes[0].equals(first)
         assert _owner(window.borders, window.borders.lobes[0]) == ["A"]
 
-    def test_a_refused_edit_changes_nothing_and_says_why(self, tmp_path,
+    def test_an_invalid_add_is_kept_red_and_says_why(self, tmp_path,
+                                                     defined):
+        """Facing a surrounding region it has nothing to key into -- but a
+        connector put by hand stays, red, until it is fixed."""
+        window = _edit_window(tmp_path, defined)
+        assert window.add_connector(*FACING_C)
+        assert len(window.borders.lobes) == len(defined.lobes) + 1
+        assert window.borders.faults()[-1] == "no_province"
+        assert "1 invalid (red)" in window.status.text()
+        assert U.STANDING_FAULTS["no_province"] in window.status.text()
+        assert "1 invalid (red)" in window.border_report.text()
+        window.undo_connectors()
+        assert window.borders.lobes == list(defined.lobes)
+
+    def test_moving_onto_another_is_kept_and_both_go_red(self, tmp_path,
                                                          defined):
         window = _edit_window(tmp_path, defined)
-        before = list(window.borders.lobes)
-        assert not window.add_connector(*FACING_C)
-        assert not window.move_connector(1, *ON_FIRST)
-        assert window.borders.lobes == before
-        assert "not moved" in window.status.text()
-        assert not window.btn_lobe_undo.isEnabled()
+        assert window.move_connector(1, *ON_FIRST)
+        faults = window.borders.faults()
+        assert faults[0] == faults[1] == "crowded"
+        assert sum(1 for code in faults if code) == 2
+
+    def test_a_red_connector_turns_valid_once_fixed(self, tmp_path,
+                                                    defined):
+        window = _edit_window(tmp_path, defined)
+        window.add_connector(*FACING_C)
+        bad = len(window.borders.lobes) - 1
+        assert window.move_connector(bad, *FREE_A)
+        assert not any(window.borders.faults())
+        assert "invalid" not in window.status.text()
+
+    def test_a_red_connector_is_drawn_red(self, tmp_path, defined):
+        from matplotlib.collections import PolyCollection
+        from matplotlib.colors import to_rgba
+        window = _edit_window(tmp_path, defined)
+        window.add_connector(*FACING_C)
+        (layer,) = [a for a in window.ax.collections
+                    if isinstance(a, PolyCollection)]
+        faces = [tuple(f) for f in layer.get_facecolors()]
+        assert faces[-1] == to_rgba(U.INVALID_COLOUR)
+        assert faces[0] == to_rgba(U.RESULT_COLOUR)
+
+    def test_selecting_a_red_connector_says_why(self, tmp_path, defined):
+        window = _edit_window(tmp_path, defined)
+        window.add_connector(*FACING_C)
+        window.select_connector(None)
+        window.select_connector(len(window.borders.lobes) - 1)
+        assert "is invalid (red)" in window.status.text()
+
+    def test_nothing_is_built_from_a_red_connector(self, tmp_path, defined):
+        window = _edit_window(tmp_path, defined)
+        window.add_connector(*FACING_C)
+        window.build_border_bar()
+        assert window._thread is None and window.bar is None
+        assert "not built" in window.status.text()
+
+    def test_define_places_only_valid_connectors(self, defined):
+        assert defined.lobes and not any(defined.faults())
+
+    def test_an_edit_measures_only_what_changed(self, tmp_path, defined,
+                                                monkeypatch):
+        """On all of Canada measuring every connector is a second a click."""
+        window = _edit_window(tmp_path, defined)
+        window.borders.faults()                    # every one measured
+        measured = []
+        real = U._own_fault
+        monkeypatch.setattr(U, "_own_fault", lambda lobe, *a: (
+            measured.append(lobe), real(lobe, *a))[1])
+        window.add_connector(*FREE_A)
+        assert measured and all(lobe is window.borders.lobes[-1]
+                                for lobe in measured)
 
     def test_the_shared_definition_is_not_touched(self, tmp_path, defined):
         n = len(defined.lobes)
@@ -984,10 +1046,18 @@ class TestConnectorShape:
             ))[:2] == pytest.approx(U.lobe_pose(
                 old, defined.border, defined.settings.connector_params())[:2])
 
-    def test_a_shape_that_collides_is_dropped_and_counted(self, defined):
+    def test_a_shape_that_collides_is_kept_red(self, tmp_path, defined):
+        """Grown into each other, the connectors stay where they stood and
+        go red: the shape is undone or changed back, not lost."""
         huge = U.replace(defined.settings, lobe_width_mm=10.0, lobe_ratio=5.0)
         lobes, dropped = U.reshape_connectors(defined, huge)
-        assert dropped > 0 and len(lobes) + dropped == len(defined.lobes)
+        assert dropped == 0 and len(lobes) == len(defined.lobes)
+        window = _edit_window(tmp_path, defined)
+        window.lobe_width_spin.setValue(10.0)
+        window.lobe_ratio_spin.setValue(5.0)
+        assert len(window.borders.lobes) == len(defined.lobes)
+        assert any(window.borders.faults())
+        assert "invalid (red)" in window.status.text()
 
     def test_turning_a_spin_reshapes_the_map(self, tmp_path, defined):
         window = _edit_window(tmp_path, defined)
@@ -1104,13 +1174,14 @@ class TestSelectedConnector:
         assert neck == pytest.approx(p.neck_mm * 1.5)
         assert mouth / neck == pytest.approx(p.mouth_mm / p.neck_mm)
 
-    def test_too_small_to_print_is_refused(self, tmp_path, defined):
+    def test_too_small_to_print_is_kept_red(self, tmp_path, defined):
         window = _edit_window(tmp_path, defined)
         _select(window, 1)
-        assert not window.pose_selected(0.0, 0.2, "x")
-        assert U.FAULTS["thin"] in window.status.text()
-        assert window.borders.lobes[1].equals(defined.lobes[1])
-        assert window.sel_depth_spin.value() == pytest.approx(_reach(window))
+        assert window.pose_selected(0.0, 0.2, "x")
+        assert window.borders.faults()[1] == "thin"
+        assert U.STANDING_FAULTS["thin"] in window.status.text()
+        assert window.sel_depth_spin.value() == pytest.approx(
+            0.2 * _reach(window))
 
     def test_the_angle_is_held_to_45_degrees(self, tmp_path, defined):
         window = _edit_window(tmp_path, defined)

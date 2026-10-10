@@ -158,11 +158,12 @@ neck at the corridor) and **Ratio** (mouth over neck; above 1 the wide end is
 captured) sit in the **Shape** group, beside **Spacing**.  Turned on a defined
 map, they reshape every connector where it stands rather than defining the
 borders again, so hand edits survive; a connector the new shape no longer
-lets stand is dropped and counted, and the change is one Undo step.
+lets stand stays where it was and turns red, and the change is one Undo step.
 **Clearance** and **Height clear.**, in **Fit**, set the fit: the pocket is cut that much
 wider than the connector on every side, and that much deeper than the
 connector layer is tall.  The clearance is also the gap kept between
-neighbouring pockets, so widening it can drop a connector that now crowds one.
+neighbouring pockets, so widening it can turn red a connector that now
+crowds one.
 
 *Connectors can be edited by hand.*  **Edit Connectors** turns the map
 into a tool: click a connector to select it, drag one along the corridor
@@ -172,8 +173,12 @@ deleted only once it is selected -- the **Delete** button or the Del key -- so a
 stray click cannot lose one.  A placed lobe has
 the generated profile and is held to the same rules -- it must reach a province
 to print, and only one -- and its far end must stay a clearance clear of every
-other lobe's, or two pockets run into one; a refused place says why and a drag
-shows it in red before you let go.
+other lobe's, or two pockets run into one.  A connector put, moved, turned or
+sized by hand into a place that breaks a rule is kept all the same and drawn
+red until an edit makes it valid -- a drag shows it red before you let go, and
+the status line says why.  Define drops the ones it would place invalid, and
+nothing is built from a red one: the border bar and a pocketed solid wait
+until every connector they would use is valid.
 
 *A connector can be turned and sized on its own.*  Click (or right-click) one
 to select it.  **Angle** turns it about where it meets the corridor, up to 45° either
@@ -235,6 +240,7 @@ from rasterio.enums import Resampling
 from shapely.affinity import affine_transform
 from shapely.geometry import Point, Polygon
 from shapely.geometry.polygon import orient
+from shapely import STRtree
 from shapely.ops import unary_union
 from vispy import scene
 
@@ -311,6 +317,7 @@ ROLES = ("target", "surrounding")
 SHOW_CHOICES = ["Terrain", "Border bar", "Assembly"]
 DRAG_COLOUR = "#1E8449"       # dark green — where a dragged connector lands
 REFUSED_COLOUR = "#C0392B"    # red — where it cannot
+INVALID_COLOUR = REFUSED_COLOUR   # a connector that breaks a rule, until fixed
 PICKED_COLOUR = "#7D3C98"     # purple — the selected connector and its handle
 #: How near, in screen pixels, a click must be to a connector to pick it.
 PICK_PX = 8
@@ -545,8 +552,18 @@ class BorderDefinition:
     lobes_edited: bool = False     #: moved, added or deleted by hand since
     #: The targets merged into one, and which target geometries it was merged
     #: from (see :meth:`land`).
-    _land: object = field(default=None, repr=False, compare=False)
-    _land_key: tuple = field(default=(), repr=False, compare=False)
+    _land: object = field(default=None, repr=False, compare=False,
+                          init=False)
+    _land_key: tuple = field(default=(), repr=False, compare=False,
+                             init=False)
+    #: Per connector, what it breaks on its own and its reach out of the
+    #: corridor, keyed by the connector itself (see :meth:`faults`).
+    _fault_cache: dict = field(default_factory=dict, repr=False,
+                               compare=False, init=False)
+    _fault_key: tuple = field(default=(), repr=False, compare=False,
+                              init=False)
+    _fault_answer: tuple = field(default=None, repr=False, compare=False,
+                                 init=False)
 
     def land(self):
         """Every target as one geometry, for the connector rules.
@@ -561,6 +578,77 @@ class BorderDefinition:
             self._land = _safe_union(list(self.targets.values()))
             self._land_key = key
         return self._land
+
+    def faults(self) -> list:
+        """Each connector's fault code (a key of ``FAULTS``), or "" for one
+        that may stand -- in the order of :attr:`lobes`.
+
+        Every rule, held against every *other* connector, so two that crowd
+        each other are both at fault.  Kept, because the window asks after
+        every edit and on all of Canada measuring 240 connectors afresh is a
+        second: what each breaks on its own is measured once per connector,
+        the neighbours come from a spatial index, and the whole answer stands
+        until the connectors change.
+        """
+        if self.border is None:
+            return ["" for _ in self.lobes]
+        self._check_fault_key()
+        ids = tuple(map(id, self.lobes))
+        if self._fault_answer is not None and self._fault_answer[0] == ids:
+            return list(self._fault_answer[1])
+        p = self.settings.connector_params()
+        land = self.land()
+        own = []
+        for lobe in self.lobes:
+            hit = self._fault_cache.get(id(lobe))
+            if hit is None or hit[0] is not lobe:
+                hit = (lobe, _own_fault(lobe, self, p, land), None)
+                self._fault_cache[id(lobe)] = hit
+            own.append(hit[1])
+        live = set(ids)
+        for gone in [k for k in self._fault_cache if k not in live]:
+            del self._fault_cache[gone]
+
+        codes = list(own)
+        gap = p.clearance_mm * p.mpm
+        if len(self.lobes) > 1:
+            tree = STRtree(self.lobes)
+            near = [lobe.buffer(gap, quad_segs=1) for lobe in self.lobes]
+            left, right = tree.query(near)
+            for i, j in zip(left.tolist(), right.tolist()):
+                if j <= i:
+                    continue
+                a, b = self.lobes[i], self.lobes[j]
+                if _crowds(a, self._reach(a), b, self._reach(b), gap):
+                    codes[i] = codes[i] or "crowded"
+                    codes[j] = codes[j] or "crowded"
+        self._fault_answer = (ids, codes)
+        return list(codes)
+
+    def _check_fault_key(self) -> None:
+        """Forget every measurement made under other settings, another
+        corridor or other provinces."""
+        key = (self.settings, id(self.border),
+               tuple(id(g) for g in self.targets.values()))
+        if self._fault_key != key:
+            self._fault_cache.clear()
+            self._fault_answer = None
+            self._fault_key = key
+
+    def _passed(self, lobes) -> None:
+        """Note ``lobes`` as breaking no rule of their own: Define has just
+        held each to every rule, so measuring them again would be waste."""
+        self._check_fault_key()
+        for lobe in lobes:
+            self._fault_cache[id(lobe)] = (lobe, "", None)
+
+    def _reach(self, lobe):
+        """``lobe`` outside the corridor, measured once."""
+        hit = self._fault_cache[id(lobe)]
+        if hit[2] is None:
+            hit = (hit[0], hit[1], lobe.difference(self.border))
+            self._fault_cache[id(lobe)] = hit
+        return hit[2]
 
     def province_lobes(self, name) -> list:
         """The lobes that key into target ``name`` -- its pockets."""
@@ -637,6 +725,7 @@ def define_borders(targets: dict, surrounding: dict,
                                s.connector_params())
         result.lobes, result.drop_reasons = _standing_lobes(
             lobes, result, s.connector_params())
+        result._passed(result.lobes)
         result.lobes_dropped = sum(result.drop_reasons.values())
     return result
 
@@ -702,7 +791,7 @@ def _owners(lobe, border, targets) -> int:
 
 def place_connector(definition: BorderDefinition, x: float, y: float,
                     ignore: int | None = None, angle_deg: float = 0.0,
-                    scale: float = 1.0):
+                    scale: float = 1.0, allow_faults: bool = False):
     """
     The connector a click at (x, y) puts on the corridor edge nearest it, and
     why not when it cannot go there: ``(lobe, "")`` or ``(None, reason)``.
@@ -713,6 +802,11 @@ def place_connector(definition: BorderDefinition, x: float, y: float,
     one.  ``ignore`` is the index of the lobe being moved, which may land
     where it already was.  ``angle_deg`` and ``scale`` turn and size it, as
     in :func:`lobe_at`.
+
+    ``allow_faults`` hands the connector back even when it breaks a rule,
+    as ``(lobe, reason)``: placed by hand, it is kept and drawn red until an
+    edit makes it valid.  Only a connector that cannot be built at all is
+    ``(None, reason)``.
     """
     d = definition
     if d.border is None:
@@ -722,12 +816,14 @@ def place_connector(definition: BorderDefinition, x: float, y: float,
     if lobe is None:
         return None, "No connector fits there."
     others = [other for i, other in enumerate(d.lobes) if i != ignore]
-    why = _connector_fault(lobe, d, others, p,
-                           d.land())
+    why = _connector_fault(lobe, d, others, p, d.land())
+    if allow_faults:
+        return lobe, why
     return (None, why) if why else (lobe, "")
 
 
-#: Why a connector cannot stand: fault code -> what a refused click says.
+#: Why a connector cannot stand: fault code -> what a refused placement says
+#: (``place_connector`` without ``allow_faults``).
 FAULTS = {
     "no_province": ("That edge faces no province to print -- a surrounding "
                     "region has nothing to key into."),
@@ -741,6 +837,18 @@ FAULTS = {
     "recrosses": ("It would meet the corridor in two places -- its far end "
                   "runs back into the bar past a bend or a junction."),
     "thin": "Its neck would be too thin to print.",
+}
+
+#: The same, for a connector already placed: what the status line says of a
+#: red one.
+STANDING_FAULTS = {
+    "no_province": "it faces no province to print",
+    "two_provinces": "it reaches into two provinces",
+    "escapes": "its pocket runs out of the province",
+    "crowded": "it runs into another connector",
+    "detached": "too little of its root is in the corridor",
+    "recrosses": "it meets the corridor in two places",
+    "thin": "its neck is too thin to print",
 }
 
 #: The same, as the Borders report counts generated connectors it dropped.
@@ -791,6 +899,21 @@ def _fault(lobe, definition, others, p, land) -> str:
       or a junction the far end can run back into the bar, which fuses the
       connector to the bar there and leaves its pocket with a side open.
     """
+    code = _own_fault(lobe, definition, p, land)
+    if code:
+        return code
+    reach = lobe.difference(definition.border)
+    gap = p.clearance_mm * p.mpm
+    for other in others:
+        if _crowds(lobe, reach, other, other.difference(definition.border)
+                   if _near(lobe, other, gap) else None, gap):
+            return "crowded"
+    return ""
+
+
+def _own_fault(lobe, definition, p, land) -> str:
+    """The first rule ``lobe`` breaks on its own -- every rule but
+    crowding, which needs the others -- or ""."""
     d = definition
     c = lobe.exterior.coords
     neck_m = Point(c[0]).distance(Point(c[3]))
@@ -798,9 +921,11 @@ def _fault(lobe, definition, others, p, land) -> str:
     if neck_m < floor_m * (1 - 1e-6):
         return "thin"
     root_m2 = p.overlap_mm * p.mpm * neck_m          # an unturned root's area
-    if lobe.intersection(d.border).area < _ROOT_HOLD_FRAC * root_m2:
+    in_bar = lobe.intersection(d.border)
+    if in_bar.area < _ROOT_HOLD_FRAC * root_m2:
         return "detached"
-    if _pieces(lobe.intersection(d.border), lobe) > 1             or _pieces(lobe.difference(d.border), lobe) > 1:
+    if _pieces(in_bar, lobe) > 1 \
+            or _pieces(lobe.difference(d.border), lobe) > 1:
         return "recrosses"
     if lobe.intersection(land).area < p.min_overlap_frac * lobe.area:
         return "no_province"
@@ -812,16 +937,24 @@ def _fault(lobe, definition, others, p, land) -> str:
     owner = max(targets, key=lambda geom: pocket.intersection(geom).area)
     if pocket.difference(owner).area > _ESCAPE_FRAC * lobe.area:
         return "escapes"
-    reach = lobe.difference(d.border)
-    near = lobe.buffer(gap).bounds
-    for other in others:
-        ox0, oy0, ox1, oy1 = other.bounds
-        if ox1 < near[0] or ox0 > near[2] or oy1 < near[1] or oy0 > near[3]:
-            continue                       # nowhere near: skip the geometry
-        if lobe.intersects(other) \
-                or reach.distance(other.difference(d.border)) < gap:
-            return "crowded"
     return ""
+
+
+def _near(lobe, other, gap) -> bool:
+    """Whether ``other``'s box comes within ``gap`` of ``lobe``'s: the cheap
+    test that spares the geometry for the many that are nowhere near."""
+    x0, y0, x1, y1 = lobe.bounds
+    ox0, oy0, ox1, oy1 = other.bounds
+    return not (ox1 < x0 - gap or ox0 > x1 + gap
+                or oy1 < y0 - gap or oy0 > y1 + gap)
+
+
+def _crowds(lobe, reach, other, other_reach, gap) -> bool:
+    """Whether two connectors touch, or their pockets come within ``gap``.
+    ``other_reach`` is None when the two are nowhere near."""
+    if other_reach is None:
+        return False
+    return lobe.intersects(other) or reach.distance(other_reach) < gap
 
 
 def reshape_connectors(definition: BorderDefinition,
@@ -833,19 +966,19 @@ def reshape_connectors(definition: BorderDefinition,
     A lobe is rebuilt at its anchor on the corridor edge, turned and sized as
     it was (:func:`lobe_pose`), so a connector put, turned or resized by hand
     stays as it was left.  One the new shape no longer lets stand -- grown into
-    a neighbour, or now reaching into two provinces -- is dropped and counted;
-    the rest keep their order.
+    a neighbour, or now reaching into two provinces -- is kept, and drawn red
+    until it is fixed; only one that cannot be built at all is dropped and
+    counted.  The rest keep their order.
     """
     d = definition
     if d.border is None or not d.lobes:
         return list(d.lobes), 0
     old, new = d.settings.connector_params(), settings.connector_params()
-    land = d.land()
     kept, dropped = [], 0
     for lobe in d.lobes:
         x, y, angle, scale = lobe_pose(lobe, d.border, old)
         reshaped = lobe_at(d.border, x, y, new, angle, scale)
-        if reshaped is None or _connector_fault(reshaped, d, kept, new, land):
+        if reshaped is None:
             dropped += 1
         else:
             kept.append(reshaped)
@@ -1983,6 +2116,9 @@ class TerrainEditorTester(QMainWindow):
             text += f" Corridor {s.width_mm:.2f} mm"
             if s.connectors:
                 text += f", {len(d.lobes)} connector(s)"
+                bad = sum(1 for code in d.faults() if code)
+                if bad:
+                    text += f", {bad} invalid (red)"
                 if d.lobes_edited:
                     text += " (edited by hand)"
                 elif d.lobes_dropped:
@@ -2127,8 +2263,19 @@ class TerrainEditorTester(QMainWindow):
         return self.borders.province_lobes(self.province_combo.currentText())
 
     # -- stage 3: the border bar --------------------------------------------
+    def _invalid_lobes(self, lobes) -> int:
+        """How many of ``lobes`` are red."""
+        faults = dict(zip(map(id, self.borders.lobes), self.borders.faults()))
+        return sum(1 for lobe in lobes if faults.get(id(lobe)))
+
     def build_border_bar(self) -> None:
         if self._thread is not None or self.borders is None:
+            return
+        bad = self._invalid_lobes(self.borders.lobes)
+        if bad:
+            self.status.setText(
+                f"Border bar not built: {bad} connector(s) are invalid (red). "
+                "Move, turn, resize or delete them on the Borders tab first.")
             return
         self._set_busy(True)
         if self.raster_path is None:
@@ -2255,7 +2402,9 @@ class TerrainEditorTester(QMainWindow):
         self.add_connector(x, y)
 
     def add_connector(self, x: float, y: float) -> bool:
-        lobe, why = place_connector(self.borders, x, y)
+        """Add a connector at the edge beside (x, y).  One that breaks a rule
+        is added all the same, and drawn red until it is fixed."""
+        lobe, why = place_connector(self.borders, x, y, allow_faults=True)
         if lobe is None:
             self.status.setText(f"No connector added: {why}")
             return False
@@ -2278,7 +2427,8 @@ class TerrainEditorTester(QMainWindow):
         sized as it was."""
         _, _, angle, scale = self.connector_pose(index)
         lobe, why = place_connector(self.borders, x, y, ignore=index,
-                                    angle_deg=angle, scale=scale)
+                                    angle_deg=angle, scale=scale,
+                                    allow_faults=True)
         if lobe is None:
             self.status.setText(f"Connector not moved: {why}")
             return False
@@ -2294,12 +2444,32 @@ class TerrainEditorTester(QMainWindow):
         return lobe_pose(d.lobes[index], d.border,
                          d.settings.connector_params())
 
+    def _faults_text(self) -> str:
+        """What the status line adds about red connectors: why the selected
+        one is, and how many there are."""
+        if self.borders is None:
+            return ""
+        faults = self.borders.faults()
+        bad = sum(1 for code in faults if code)
+        if not bad:
+            return ""
+        text = f" {bad} invalid (red)"
+        index = self._selected
+        if index is not None and index < len(faults) and faults[index]:
+            text += (f"; this one because "
+                     f"{STANDING_FAULTS[faults[index]]}")
+        return text + "."
+
     def select_connector(self, index: int | None) -> None:
         """Select connector ``index`` (None for none) for turning and sizing."""
         if self.borders is None or index is None \
                 or not 0 <= index < len(self.borders.lobes):
             index = None
         self._selected = index
+        if index is not None and self.borders.faults()[index]:
+            self.status.setText(
+                f"Connector {index + 1} is invalid (red): "
+                f"{STANDING_FAULTS[self.borders.faults()[index]]}.")
         self._sync_selected()
         if self._showing_borders():
             self._draw_lobes()
@@ -2331,7 +2501,7 @@ class TerrainEditorTester(QMainWindow):
         """
         Turn and size the selected connector where it stands, as one Undo
         step -- or, for a key held down (``gesture``), as part of the step
-        the last press began.  Refused, it stays as it was and says why.
+        the last press began.  One that breaks a rule is kept, red.
         """
         index = self._selected
         if index is None or not self.connectors_editable():
@@ -2339,7 +2509,8 @@ class TerrainEditorTester(QMainWindow):
         angle_deg = max(-ANGLE_LIMIT_DEG, min(ANGLE_LIMIT_DEG, angle_deg))
         x, y, _, _ = self.connector_pose(index)
         lobe, why = place_connector(self.borders, x, y, ignore=index,
-                                    angle_deg=angle_deg, scale=scale)
+                                    angle_deg=angle_deg, scale=scale,
+                                    allow_faults=True)
         if lobe is None:
             self.status.setText(f"Connector not changed: {why}")
             self._sync_selected()
@@ -2444,8 +2615,7 @@ class TerrainEditorTester(QMainWindow):
         lobes, dropped = reshape_connectors(self.borders, settings)
         message = "Connectors reshaped."
         if dropped:
-            message += (f" {dropped} dropped: the new shape ran into a "
-                        "neighbour or into two provinces.")
+            message += f" {dropped} dropped: no connector fits there."
         self._lobe_undo.append(self._snapshot())
         self._lobe_redo.clear()
         self.borders.settings = settings
@@ -2500,7 +2670,7 @@ class TerrainEditorTester(QMainWindow):
         self._update_border_controls()
         self.border_report.setText(self._borders_text())
         self.status.setText(f"{message} {len(self.borders.lobes)} "
-                            "connector(s).")
+                            f"connector(s).{self._faults_text()}")
         self._sync_selected()
         if self._showing_borders():
             self._draw_lobes()
@@ -2929,6 +3099,13 @@ class TerrainEditorTester(QMainWindow):
         out_path = self._tempdir / f"{self._stem()}.stl"
         boundary = self.cut_geom()
         lobes = self.province_lobes()
+        bad = self._invalid_lobes(lobes) if lobes else 0
+        if bad:
+            self.status.setText(
+                f"STL not built: {bad} of this province's connectors are "
+                "invalid (red), and a pocket is cut for each. Fix them on the "
+                "Borders tab, or untick Pockets.")
+            return
 
         self._set_busy(True)
         self.status.setText("Meshing and carving pockets …" if lobes
@@ -3256,10 +3433,12 @@ class TerrainEditorTester(QMainWindow):
         if d.lobes:
             # One artist for the lot: a connector is a plain quadrilateral,
             # and 240 patches added one by one were most of an edit's cost.
+            # Red until valid: a connector placed by hand may break a rule.
             lobes = PolyCollection(
                 [np.asarray(lobe.exterior.coords)[:, :2] for lobe in d.lobes],
-                facecolors=RESULT_COLOUR, edgecolors=EDGE_COLOUR,
-                linewidths=0.4)
+                facecolors=[INVALID_COLOUR if code else RESULT_COLOUR
+                            for code in d.faults()],
+                edgecolors=EDGE_COLOUR, linewidths=0.4)
             ax.add_collection(lobes, autolim=False)
             drawn.append(lobes)
         if self._selected is not None and self._selected < len(d.lobes):
