@@ -805,11 +805,12 @@ class TestConnectorMouse:
         self._click(window, FREE_A)
         assert len(window.borders.lobes) == len(defined.lobes) + 1
 
-    def test_click_on_a_connector_deletes_it(self, tmp_path, defined):
+    def test_click_on_a_connector_selects_it(self, tmp_path, defined):
         window = _edit_window(tmp_path, defined)
         self._click(window, defined.lobes[0].centroid.coords[0])
-        assert len(window.borders.lobes) == len(defined.lobes) - 1
-        assert defined.lobes[0] not in window.borders.lobes
+        assert window.borders.lobes == defined.lobes      # nothing deleted
+        assert window._selected == 0
+        assert window.btn_sel_delete.isEnabled()
 
     def test_drag_moves_and_previews(self, tmp_path, defined):
         window = _edit_window(tmp_path, defined)
@@ -983,13 +984,19 @@ class TestSelectedConnector:
         assert window._selected is None
         assert not window.sel_depth_spin.isEnabled()
 
-    def test_a_plain_click_still_deletes(self, tmp_path, defined):
+    def test_only_the_delete_button_deletes(self, tmp_path, defined):
         window = _edit_window(tmp_path, defined)
-        _select(window, 0)
         TestConnectorMouse()._click(window,
                                     defined.lobes[0].centroid.coords[0])
+        _key(window, "delete")
+        _key(window, "backspace")
+        assert len(window.borders.lobes) == len(defined.lobes)
+        assert window._selected == 0
+        window.btn_sel_delete.click()
         assert len(window.borders.lobes) == len(defined.lobes) - 1
+        assert defined.lobes[0] not in window.borders.lobes
         assert window._selected is None
+        assert not window.btn_sel_delete.isEnabled()
 
     def test_the_angle_box_turns_it_where_it_stands(self, tmp_path, defined):
         window = _edit_window(tmp_path, defined)
@@ -1026,7 +1033,7 @@ class TestSelectedConnector:
         window.pose_selected(80.0, 1.0, "x")
         assert abs(window.connector_pose(1)[2]) <= U.ANGLE_LIMIT_DEG + 1e-6
 
-    def test_keys_turn_resize_and_delete(self, tmp_path, defined):
+    def test_keys_turn_and_resize(self, tmp_path, defined):
         window = _edit_window(tmp_path, defined)
         _select(window, 1)
         _key(window, "]")
@@ -1036,9 +1043,6 @@ class TestSelectedConnector:
         _key(window, "+")
         assert window.connector_pose(1)[3] * _reach(window) == pytest.approx(
             _reach(window) + U.DEPTH_STEP_MM)
-        _key(window, "delete")
-        assert len(window.borders.lobes) == len(defined.lobes) - 1
-        assert window._selected is None
 
     def test_a_held_key_is_one_undo_step(self, tmp_path, defined):
         window = _edit_window(tmp_path, defined)

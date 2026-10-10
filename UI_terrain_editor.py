@@ -145,19 +145,21 @@ connector layer is tall.  The clearance is also the gap kept between
 neighbouring pockets, so widening it can drop a connector that now crowds one.
 
 *Connectors can be edited by hand.*  **Edit Connectors** turns the right-hand
-map into a tool: click a connector to delete it, drag one along the corridor to
-move it, click beside the corridor to add one on that side.  A placed lobe has
+map into a tool: click a connector to select it, drag one along the corridor
+to move it, click beside the corridor to add one on that side.  The one way to
+delete a connector is to select it and press the **Delete** button, so a stray
+click cannot lose one.  A placed lobe has
 the generated profile and is held to the same rules -- it must reach a province
 to print, and only one -- and its far end must stay a clearance clear of every
 other lobe's, or two pockets run into one; a refused place says why and a drag
 shows it in red before you let go.
 
-*A connector can be turned and sized on its own.*  Right-click one to select
-it.  **Angle** turns it about where it meets the corridor, up to 45° either
+*A connector can be turned and sized on its own.*  Click (or right-click) one
+to select it.  **Angle** turns it about where it meets the corridor, up to 45° either
 way; **Depth** sets how far it reaches, its neck and mouth growing with it so
 it keeps its shape.  ] and [ turn it 5°, } and { 1°, + and - change the depth
-0.25 mm (a held key is one Undo step), Del deletes it, and dragging the dot at
-its far end swings it round.  A turned connector must keep half its root in
+0.25 mm (a held key is one Undo step), and dragging the dot at its far end
+swings it round.  A turned connector must keep half its root in
 the corridor and a neck of at least two nozzle widths.  Its turn and size are
 read off its own outline, so they survive a move, a reshape from the connector
 row, Undo, and Save Borders (which writes them as ``angle_deg`` and ``scale``).  Every edit is one Undo (Ctrl+Z / Ctrl+Y)
@@ -1143,12 +1145,12 @@ class TerrainEditorTester(QMainWindow):
         self.btn_edit_lobes.setCheckable(True)
         self.btn_edit_lobes.setToolTip(
             "Edit the connectors by hand on the right-hand map:\n"
-            "  click a connector to delete it\n"
+            "  click a connector to select it: turn it, set its depth or\n"
+            "    delete it on the Selected row, or turn and size it with\n"
+            "    ] [ } { + - or by dragging the dot at its far end;\n"
+            "    Esc lets it go\n"
             "  drag a connector to move it along the corridor\n"
             "  click beside the corridor to add one on that side\n"
-            "  right-click a connector to select it: turn it and set its\n"
-            "    depth on the Selected row, with ] [ } { + - and Del, or by\n"
-            "    dragging the dot at its far end; Esc lets it go\n"
             "Ctrl+Z / Ctrl+Y undo and redo. Define Borders places them\n"
             "afresh, discarding what was edited.")
         self.btn_edit_lobes.toggled.connect(self._on_edit_toggled)
@@ -1215,7 +1217,8 @@ class TerrainEditorTester(QMainWindow):
             "Square to the edge and the size the connector row sets.")
         self.btn_sel_reset.clicked.connect(self.reset_selected)
         self.btn_sel_delete = QPushButton("Delete")
-        self.btn_sel_delete.setToolTip("Delete the selected connector (Del).")
+        self.btn_sel_delete.setToolTip(
+            "Delete the selected connector -- the one way to delete one.")
         self.btn_sel_delete.clicked.connect(self.delete_selected)
         selected_bar = QHBoxLayout()
         selected_bar.addWidget(self.sel_label)
@@ -1932,9 +1935,9 @@ class TerrainEditorTester(QMainWindow):
         elif "zoom" in mode:
             self.mpl_toolbar.zoom()
         self.status.setText(
-            "Editing connectors: click one to delete it, drag one to move it, "
-            "click beside the corridor to add one, right-click one to turn "
-            "or resize it.")
+            "Editing connectors: click one to select it (then Delete, or turn "
+            "or resize it), drag one to move it, click beside the corridor to "
+            "add one.")
 
     def connector_at(self, x: float, y: float) -> int | None:
         """The index of the connector under (x, y), nearest first."""
@@ -1951,11 +1954,12 @@ class TerrainEditorTester(QMainWindow):
         return abs(x1 - x0) / width_px * PICK_PX
 
     def click_connectors(self, x: float, y: float) -> None:
-        """A click with the tool on: delete the connector under it, or add one
-        on the corridor edge beside it."""
+        """A click with the tool on: select the connector under it, or add one
+        on the corridor edge beside it.  Never a delete: that is the Delete
+        button's alone, on a connector already selected."""
         index = self.connector_at(x, y)
         if index is not None:
-            self.delete_connector(index)
+            self.select_connector(index)
             return
         p = self.borders.settings.connector_params()
         reach = p.reach_mm * p.mpm + self._pick_distance()
@@ -2121,8 +2125,6 @@ class TerrainEditorTester(QMainWindow):
         key = event.key
         if key == "escape":
             self.select_connector(None)
-        elif key == "delete":
-            self.delete_selected()
         elif key in ("]", "["):
             self.turn_selected(ANGLE_STEP_DEG if key == "]"
                                else -ANGLE_STEP_DEG, gesture=True)
