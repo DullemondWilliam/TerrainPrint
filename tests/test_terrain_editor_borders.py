@@ -984,12 +984,10 @@ class TestSelectedConnector:
         assert window._selected is None
         assert not window.sel_depth_spin.isEnabled()
 
-    def test_only_the_delete_button_deletes(self, tmp_path, defined):
+    def test_a_click_selects_and_delete_deletes(self, tmp_path, defined):
         window = _edit_window(tmp_path, defined)
         TestConnectorMouse()._click(window,
                                     defined.lobes[0].centroid.coords[0])
-        _key(window, "delete")
-        _key(window, "backspace")
         assert len(window.borders.lobes) == len(defined.lobes)
         assert window._selected == 0
         window.btn_sel_delete.click()
@@ -1043,6 +1041,16 @@ class TestSelectedConnector:
         _key(window, "+")
         assert window.connector_pose(1)[3] * _reach(window) == pytest.approx(
             _reach(window) + U.DEPTH_STEP_MM)
+
+    def test_the_delete_key_deletes_the_selected(self, tmp_path, defined):
+        window = _edit_window(tmp_path, defined)
+        _key(window, "delete")                   # nothing selected: nothing
+        assert len(window.borders.lobes) == len(defined.lobes)
+        _select(window, 1)
+        _key(window, "delete")
+        assert len(window.borders.lobes) == len(defined.lobes) - 1
+        assert defined.lobes[1] not in window.borders.lobes
+        assert window._selected is None
 
     def test_a_held_key_is_one_undo_step(self, tmp_path, defined):
         window = _edit_window(tmp_path, defined)

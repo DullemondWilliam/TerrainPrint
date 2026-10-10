@@ -146,9 +146,9 @@ neighbouring pockets, so widening it can drop a connector that now crowds one.
 
 *Connectors can be edited by hand.*  **Edit Connectors** turns the right-hand
 map into a tool: click a connector to select it, drag one along the corridor
-to move it, click beside the corridor to add one on that side.  The one way to
-delete a connector is to select it and press the **Delete** button, so a stray
-click cannot lose one.  A placed lobe has
+to move it, click beside the corridor to add one on that side.  A connector is
+deleted only once it is selected -- the **Delete** button or the Del key -- so a
+stray click cannot lose one.  A placed lobe has
 the generated profile and is held to the same rules -- it must reach a province
 to print, and only one -- and its far end must stay a clearance clear of every
 other lobe's, or two pockets run into one; a refused place says why and a drag
@@ -1148,7 +1148,7 @@ class TerrainEditorTester(QMainWindow):
             "  click a connector to select it: turn it, set its depth or\n"
             "    delete it on the Selected row, or turn and size it with\n"
             "    ] [ } { + - or by dragging the dot at its far end;\n"
-            "    Esc lets it go\n"
+            "    Del deletes it, Esc lets it go\n"
             "  drag a connector to move it along the corridor\n"
             "  click beside the corridor to add one on that side\n"
             "Ctrl+Z / Ctrl+Y undo and redo. Define Borders places them\n"
@@ -1218,7 +1218,7 @@ class TerrainEditorTester(QMainWindow):
         self.btn_sel_reset.clicked.connect(self.reset_selected)
         self.btn_sel_delete = QPushButton("Delete")
         self.btn_sel_delete.setToolTip(
-            "Delete the selected connector -- the one way to delete one.")
+            "Delete the selected connector (Del).")
         self.btn_sel_delete.clicked.connect(self.delete_selected)
         selected_bar = QHBoxLayout()
         selected_bar.addWidget(self.sel_label)
@@ -2125,6 +2125,8 @@ class TerrainEditorTester(QMainWindow):
         key = event.key
         if key == "escape":
             self.select_connector(None)
+        elif key == "delete":
+            self.delete_selected()
         elif key in ("]", "["):
             self.turn_selected(ANGLE_STEP_DEG if key == "]"
                                else -ANGLE_STEP_DEG, gesture=True)
