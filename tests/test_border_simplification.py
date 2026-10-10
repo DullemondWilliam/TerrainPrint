@@ -100,6 +100,18 @@ class TestRemoveReversals(unittest.TestCase):
         xs = [p[0] for p in result]
         self.assertEqual(xs, sorted(xs))
 
+    def test_a_sharp_real_corner_is_kept(self):
+        """Turning by more than a right angle is not doubling back: Victoria
+        Island's NWT/Nunavut line turns 92 degrees, and losing that vertex
+        cut the corner across the NWT's coast."""
+        coords = [(0, 0), (10, -4), (13, 6)]               # a 95-degree turn
+        self.assertEqual(_remove_reversals(coords), coords)
+
+    def test_a_near_hairpin_is_removed(self):
+        """Inside REVERSAL_CORNER_DEG of straight back: a reversal."""
+        coords = [(0, 0), (10, 0), (1, 2), (20, 2)]        # a 13-degree corner
+        self.assertNotIn((10, 0), _remove_reversals(coords))
+
     def test_endpoints_always_kept(self):
         coords = [(5, 0), (4, 0), (3, 0), (2, 0), (1, 0)]   # fully reversed
         result = _remove_reversals(coords)

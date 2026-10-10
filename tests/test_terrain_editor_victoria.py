@@ -6,14 +6,11 @@ split between the Northwest Territories and Nunavut by a boundary with **two
 legs** -- one east along the south of the island, and one
 north-east up the middle of it -- and each leg needs a corridor.
 
-It gets one.  Only the south leg comes out of simplification still shared by
-both provinces, so only it is carved -- and not all the way to the turn: 78%
-of it is covered, 14% of the north-east leg, and 51% of the 642 km seam.  The
-north-east leg is drawn as an internal arc with no corridor along it.
-
-The two tests that say so are marked ``xfail(strict=True)``: the suite stays
-green while the bug stands, and turns red the moment it is fixed, so the marks
-come off with the fix.
+It used to get one.  The seam turns 92 degrees where the legs meet, and
+simplification dropped that vertex as a "reversal": the shortcut crossed the
+NWT's coast, the repaired outline no longer shared the north-east leg, and
+only the south leg was carved (78% of it; 14% of the north-east leg).  See
+``REVERSAL_CORNER_DEG`` in ``LIB_border_simplification``.
 
 The geometry is real: ``victoria_island_nwt.wkt`` and ``victoria_island_nu.wkt``
 were cut from the tracked ``Data/JSon-Provinces-Orig`` files (see their
@@ -93,19 +90,36 @@ class TestTheSeam:
 class TestVictoriaIslandBorders:
 
     def test_the_south_leg_gets_a_corridor(self, defined, legs):
-        """The one border it does get (most of it: see the module docstring)."""
         south, _ = legs
-        assert _covered(south, defined) >= 0.5
+        assert _covered(south, defined) >= MIN_COVER
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "Victoria Island gets one border, not two: simplification leaves the "
-        "north-east leg of the NWT/Nunavut seam unshared, so no corridor is "
-        "carved along it"))
     def test_the_north_east_leg_gets_a_corridor(self, defined, legs):
         _, north_east = legs
         assert _covered(north_east, defined) >= MIN_COVER
 
-    @pytest.mark.xfail(strict=True, reason="as above")
     def test_the_whole_seam_gets_a_corridor(self, defined, legs):
         south, north_east = legs
         assert _covered(south.union(north_east), defined) >= MIN_COVER
+
+    def test_the_turn_between_the_legs_survives_simplification(self, defined,
+                                                               legs):
+        """The vertex the two legs meet at is what was lost."""
+        south, north_east = legs
+        turn = south.intersection(north_east)
+        s = defined.settings
+        assert any(turn.distance(shapely.Point(xy)) < s.internal_tol_mm * s.mpm
+                   for seg in defined.internal_segs for xy in seg)
+
+    def test_the_simplified_outlines_are_valid(self, regions):
+        """Valid before any repair: the repair is what broke the seam."""
+        import geopandas as gpd
+        from lib.LIB_border_simplification import topo_simplify_two_tolerances
+        s = U.BorderSettings()
+        frame = gpd.GeoDataFrame({"name": list(regions)},
+                                 geometry=list(regions.values()),
+                                 crs=U.EPSG_WORKING)
+        simp, _, _ = topo_simplify_two_tolerances(
+            frame, s.coast_tol_mm * s.mpm, s.internal_tol_mm * s.mpm,
+            min_segment_m=s.min_segment_mm * s.mpm,
+            min_angle_deg=s.min_angle_deg)
+        assert all(geom.is_valid for geom in simp.geometry)

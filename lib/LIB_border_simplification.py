@@ -83,12 +83,25 @@ def _condition_arc(coords: list, min_segment_m: float,
     return out
 
 
+#: The corner at a vertex, in degrees, below which the arc counts as doubling
+#: back on itself (0 is straight back, 180 straight on).
+#:
+#: Not 90.  A border can genuinely turn by more than a right angle, and
+#: dropping the vertex it turns at cuts the corner off: the NWT/Nunavut line
+#: on Victoria Island turns 92 degrees at its south end, and with that vertex
+#: gone the shortcut crossed the NWT's own coast, the repaired outline no
+#: longer shared the seam's north-east leg, and that leg got no corridor.
+REVERSAL_CORNER_DEG = 30.0
+
+
 def _remove_reversals(coords: list) -> list:
     """
-    Remove interior vertices that create local reversals in an arc.
+    Remove interior vertices where an arc doubles back on itself.
 
-    A reversal occurs when dot(incoming_vec, outgoing_vec) < 0 — the line
-    briefly travels backwards relative to its local direction.  Iterates until
+    A reversal is a vertex whose corner is sharper than
+    ``REVERSAL_CORNER_DEG`` -- the line runs out and comes back nearly the way
+    it went, which Douglas-Peucker with ``preserve_topology=False`` can leave
+    behind.  A real corner, however sharp a turn, is kept.  Iterates until
     stable so that cascading reversals are fully eliminated.
 
     Endpoints are always preserved.
@@ -96,6 +109,8 @@ def _remove_reversals(coords: list) -> list:
     if len(coords) <= 2:
         return coords
 
+    # cos of the turn (180 - corner): a dot product below this is a reversal.
+    limit = -np.cos(np.radians(REVERSAL_CORNER_DEG))
     prev_len = -1
     while len(coords) != prev_len:
         prev_len = len(coords)
@@ -107,7 +122,8 @@ def _remove_reversals(coords: list) -> list:
             C = pts[i + 1]
             v1 = B - A
             v2 = C - B
-            if np.dot(v1, v2) >= 0:
+            norm = np.linalg.norm(v1) * np.linalg.norm(v2)
+            if norm == 0 or np.dot(v1, v2) >= limit * norm:
                 keep.append(i)
         keep.append(len(pts) - 1)
         coords = [coords[k] for k in keep]
