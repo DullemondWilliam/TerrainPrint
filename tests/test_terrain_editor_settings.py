@@ -35,6 +35,8 @@ TURNED = {
     "borders.lobe_depth_mm": 4.5,
     "borders.lobe_width_mm": 2.2,
     "borders.lobe_ratio": 1.6,
+    "borders.clearance_mm": 0.35,
+    "borders.height_clearance_mm": 0.15,
 }
 
 

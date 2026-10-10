@@ -135,6 +135,10 @@ captured) sit on the connectors row with **Spacing**.  Turned on a defined
 map, they reshape every connector where it stands rather than defining the
 borders again, so hand edits survive; a connector the new shape no longer
 lets stand is dropped and counted, and the change is one Undo step.
+**Clearance** and **Height clear.** set the fit: the pocket is cut that much
+wider than the connector on every side, and that much deeper than the
+connector layer is tall.  The clearance is also the gap kept between
+neighbouring pockets, so widening it can drop a connector that now crowds one.
 
 *Connectors can be edited by hand.*  **Edit Connectors** turns the right-hand
 map into a tool: click a connector to delete it, drag one along the corridor to
@@ -331,6 +335,10 @@ class BorderSettings:
     lobe_depth_mm: float = _shipped("borders.lobe_depth_mm")
     lobe_width_mm: float = _shipped("borders.lobe_width_mm")
     lobe_ratio: float = _shipped("borders.lobe_ratio")
+    #: The fit in the pocket: how much wider than the connector it is cut on
+    #: every side, and how much deeper than the connector layer is tall.
+    clearance_mm: float = _shipped("borders.clearance_mm")
+    height_clearance_mm: float = _shipped("borders.height_clearance_mm")
     scale: float = _shipped("print.scale")
 
     @property
@@ -343,7 +351,9 @@ class BorderSettings:
             *settings_files(), scale=self.scale,
             spacing_mm=self.lobe_spacing_mm, dovetail_mm=self.lobe_height_mm,
             reach_mm=self.lobe_depth_mm, neck_mm=self.lobe_width_mm,
-            mouth_mm=self.lobe_width_mm * self.lobe_ratio)
+            mouth_mm=self.lobe_width_mm * self.lobe_ratio,
+            clearance_mm=self.clearance_mm,
+            height_clearance_mm=self.height_clearance_mm)
 
 
 
@@ -360,6 +370,8 @@ _BORDER_SETTINGS_KEYS = {
     "lobe_depth_mm": "borders.lobe_depth_mm",
     "lobe_width_mm": "borders.lobe_width_mm",
     "lobe_ratio": "borders.lobe_ratio",
+    "clearance_mm": "borders.clearance_mm",
+    "height_clearance_mm": "borders.height_clearance_mm",
     "scale": "print.scale",
 }
 
@@ -384,16 +396,19 @@ SAVED_BORDER_SETTINGS = (
     ("borders.lobe_depth_mm", "lobe_depth_spin"),
     ("borders.lobe_width_mm", "lobe_width_spin"),
     ("borders.lobe_ratio", "lobe_ratio_spin"),
+    ("borders.clearance_mm", "lobe_clear_spin"),
+    ("borders.height_clearance_mm", "lobe_height_clear_spin"),
 )
 
 #: How long after the last turn of a box the settings are written, in ms: one
 #: write for a held arrow key rather than one per step.
 SETTINGS_WRITE_MS = 500
 
-#: The fields of :class:`BorderSettings` that shape a connector, which the
-#: window changes on a defined map without defining it again.
+#: The fields of :class:`BorderSettings` that shape a connector -- and its
+#: fit, since the clearance is also the gap kept between neighbouring pockets
+#: -- which the window changes on a defined map without defining it again.
 SHAPE_FIELDS = ("lobe_height_mm", "lobe_depth_mm", "lobe_width_mm",
-                "lobe_ratio")
+                "lobe_ratio", "clearance_mm", "height_clearance_mm")
 
 
 def load_border_settings(*config_files, **overrides):
@@ -753,6 +768,12 @@ def build_terrain(raster, boundary, out_path, params, lobes=None,
             f"{EPSG_WORKING} and re-run the crop.")
     connector = connector or load_connector_params(*settings_files(),
                                                    scale=params.scale)
+    if connector.pocket_depth_mm >= params.base_height_mm:
+        raise ValueError(
+            f"The pockets are {connector.pocket_depth_mm:g} mm deep (Height "
+            f"plus Height clear.), which cuts through the "
+            f"{params.base_height_mm:g} mm Base. Raise the Base or make the "
+            "connectors shallower.")
     mesh = notch_province(result.mesh, lobes, *result.origin_m, connector)
     _finish(mesh, result, params)
     _validate(result, raster)          # FR-4.7 again: the boolean can break it
@@ -989,6 +1010,17 @@ class TerrainEditorTester(QMainWindow):
             "pieces together; 2 is a 1.6 mm neck opening to 3.2 mm.")
         self.lobe_ratio_spin.setSingleStep(0.1)
         self.lobe_ratio_spin.setSuffix(" ×")
+        self.lobe_clear_spin = self._mm_spin(
+            defaults.clearance_mm, 0.0, 2.0,
+            "How much wider than the connector its pocket is cut, on every\n"
+            "side, so a printed connector drops in. Also the gap kept between\n"
+            "neighbouring pockets (borders.clearance_mm).")
+        self.lobe_height_clear_spin = self._mm_spin(
+            defaults.height_clearance_mm, 0.0, 2.0,
+            "How much deeper than the connector layer is tall its pocket is\n"
+            "cut, so the bar sits flat on the bed rather than on the\n"
+            "connectors. Height plus this must stay under the terrain Base\n"
+            "(borders.height_clearance_mm).")
         for widget in self._shape_spins():
             widget.setKeyboardTracking(False)
             widget.valueChanged.connect(self._on_connector_shape)
@@ -1041,7 +1073,9 @@ class TerrainEditorTester(QMainWindow):
                               ("Height:", self.lobe_height_spin),
                               ("Depth:", self.lobe_depth_spin),
                               ("Width:", self.lobe_width_spin),
-                              ("Ratio:", self.lobe_ratio_spin)):
+                              ("Ratio:", self.lobe_ratio_spin),
+                              ("Clearance:", self.lobe_clear_spin),
+                              ("Height clear.:", self.lobe_height_clear_spin)):
             connector_bar.addWidget(QLabel(label))
             connector_bar.addWidget(widget)
         connector_bar.addWidget(self.btn_edit_lobes)
@@ -1794,7 +1828,8 @@ class TerrainEditorTester(QMainWindow):
 
     def _shape_spins(self) -> tuple:
         return (self.lobe_height_spin, self.lobe_depth_spin,
-                self.lobe_width_spin, self.lobe_ratio_spin)
+                self.lobe_width_spin, self.lobe_ratio_spin,
+                self.lobe_clear_spin, self.lobe_height_clear_spin)
 
     def _shape_values(self) -> dict:
         return dict(zip(SHAPE_FIELDS,

@@ -62,12 +62,17 @@ class ConnectorParams:
     mouth_mm:     float = 3.2             # dovetail width at the far end (wide -> locks)
     reach_mm:     float = 3.0             # how far a lobe reaches into the province
     overlap_mm:   float = 0.8             # how far the lobe root sinks into the corridor
-    clearance_mm: float = 0.2             # slide gap added to the province pocket
+    clearance_mm: float = _shipped("borders.clearance_mm")   # pocket oversize, per side
+    height_clearance_mm: float = _shipped("borders.height_clearance_mm")  # pocket extra depth
     min_overlap_frac: float = 0.15        # drop lobes barely touching a province
 
     @property
     def mpm(self) -> float:               # metres per print-mm
         return self.scale / 1000.0
+
+    @property
+    def pocket_depth_mm(self) -> float:   # the lobe layer plus its headroom
+        return self.dovetail_mm + self.height_clearance_mm
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +84,8 @@ class ConnectorParams:
 _CONNECTORPARAMS_KEYS = {
     "thickness_mm": "print.border_thickness_mm",
     "dovetail_mm": "print.dovetail_mm",
+    "clearance_mm": "borders.clearance_mm",
+    "height_clearance_mm": "borders.height_clearance_mm",
     "scale": "print.scale",
 }
 
@@ -366,12 +373,13 @@ def build_border_mesh(border_geom_m, lobes_m, p: ConnectorParams, top_mm=None):
 # Province pockets  (carved into the underside during terrain generation)
 # ---------------------------------------------------------------------------
 def pocket_cutters(lobes_m, x0_m, y0_m, p: ConnectorParams):
-    """Cutter prisms (local print-mm, z in [-0.1, dovetail_mm]) for one province."""
+    """Cutter prisms (local print-mm, z in [-0.1, pocket_depth_mm]) for one
+    province: each lobe grown by ``clearance_mm`` per side."""
     cutters = []
     for lobe in lobes_m:
         lobe_c  = lobe.buffer(p.clearance_mm * p.mpm)    # pocket slightly oversized
         poly_mm = _to_mm(lobe_c, p.mpm, x0_m, y0_m)
-        c = _extrude(poly_mm, -0.1, p.dovetail_mm)
+        c = _extrude(poly_mm, -0.1, p.pocket_depth_mm)
         if c is not None:
             cutters.append(c)
     return cutters
@@ -393,7 +401,7 @@ def notch_province(mesh, lobes_m, x0_m, y0_m, p: ConnectorParams):
     for lobe in lobes_m:
         lobe_c = lobe.buffer(p.clearance_mm * p.mpm)     # pocket slightly oversized
         cutter = _extrude_man(_to_mm(lobe_c, p.mpm, x0_m, y0_m),
-                              -0.1, p.dovetail_mm)
+                              -0.1, p.pocket_depth_mm)
         if cutter is not None:
             tool = cutter if tool is None else tool + cutter
     if tool is None:

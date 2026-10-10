@@ -181,11 +181,15 @@ class ButterflyKeysTester(QMainWindow):
         self.clear_spin = self._mm_spin(
             defaults.clearance_mm, 0.0, 2.0,
             "Slot oversize per side, so a printed key presses in.")
+        self.height_clear_spin = self._mm_spin(
+            defaults.height_clearance_mm, 0.0, 2.0,
+            "The key is printed this much shorter than its slots are deep,\n"
+            "so it seats below the base instead of standing proud of it.")
         self.spacing_spin = self._mm_spin(
             defaults.spacing_mm, 2.0, 200.0,
             "Pitch Auto Place uses along the seam.")
         for spin in (self.depth_spin, self.neck_spin, self.mouth_spin,
-                     self.reach_spin, self.clear_spin):
+                     self.reach_spin, self.clear_spin, self.height_clear_spin):
             spin.valueChanged.connect(self._params_changed)
         params_bar = QHBoxLayout()
         for label, widget in (("Depth:", self.depth_spin),
@@ -193,6 +197,7 @@ class ButterflyKeysTester(QMainWindow):
                               ("Mouth:", self.mouth_spin),
                               ("Reach:", self.reach_spin),
                               ("Clearance:", self.clear_spin),
+                              ("Height clear.:", self.height_clear_spin),
                               ("Spacing:", self.spacing_spin)):
             params_bar.addWidget(QLabel(label))
             params_bar.addWidget(widget)
@@ -291,6 +296,7 @@ class ButterflyKeysTester(QMainWindow):
                                mouth_mm=self.mouth_spin.value(),
                                reach_mm=self.reach_spin.value(),
                                clearance_mm=self.clear_spin.value(),
+                               height_clearance_mm=self.height_clear_spin.value(),
                                spacing_mm=self.spacing_spin.value())
 
     # -- import -------------------------------------------------------------

@@ -191,6 +191,11 @@ DEFAULTS = {
         "lobe_depth_mm": 3.0,
         "lobe_width_mm": 1.6,
         "lobe_ratio": 2.0,
+        # The connector's fit in its province pocket: the pocket is this much
+        # wider than the connector on every side, and this much deeper than
+        # the connector layer is tall.
+        "clearance_mm": 0.2,
+        "height_clearance_mm": 0.0,
     },
     "paths": {
         # Where the province pipeline reads and writes, relative to the repo.
@@ -221,6 +226,9 @@ DEFAULTS = {
         # Slot oversize per side, so a printed key presses in. The same 0.2 mm
         # as seam.edge_loss_mm, for the same reason.
         "clearance_mm": 0.2,
+        # The key is printed this much shorter than its slots are deep, so it
+        # seats below the base instead of standing proud of it.
+        "height_clearance_mm": 0.1,
         # Pitch Auto Place spaces keys at along a seam.
         "spacing_mm": 14.0,
         # Extra keys printed on the plates: a key under a centimetre is easy

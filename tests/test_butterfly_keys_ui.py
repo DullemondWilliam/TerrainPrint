@@ -166,3 +166,16 @@ class TestCutting:
         window._set_busy(False)
         assert window.btn_cut.isEnabled() and window.btn_a.isEnabled()
         assert not window.btn_save.isEnabled()
+
+
+class TestKeyFit:
+
+    def test_the_height_clearance_is_the_key_that_is_cut(self, window):
+        window.height_clear_spin.setValue(0.3)
+        assert window.params().height_clearance_mm == pytest.approx(0.3)
+        assert window.params().key_height_mm == pytest.approx(
+            window.depth_spin.value() - 0.3)
+
+    def test_it_opens_on_the_configured_value(self):
+        assert U.ButterflyKeysTester().height_clear_spin.value() == \
+            pytest.approx(K.KeyParams().height_clearance_mm)

@@ -138,6 +138,10 @@ KEY_SETTINGS = (
      "base (terrain.base_mm), or the slot opens on the terrain side."),
     ("clearance_mm", "keys.clearance_mm", "Clearance:", 0.0, 2.0, 2,
      "Slot oversize per side, so a printed key presses in."),
+    ("height_clearance_mm", "keys.height_clearance_mm", "Height clear.:",
+     0.0, 2.0, 2,
+     "The key is printed this much shorter than its slots are deep, so it\n"
+     "seats below the base instead of standing proud of it."),
     ("spacing_mm", "keys.spacing_mm", "Spacing:", 2.0, 300.0, 1,
      "Pitch Auto Place spaces keys at along a border."),
 )
@@ -431,9 +435,9 @@ class ProvinceJoinsTester(QMainWindow):
             "Extra keys printed on the plates: a small key is easy to lose.")
         self.spares_spin.valueChanged.connect(
             lambda value: self._on_key_setting("keys.spares", value))
-        row = len(KEY_SETTINGS) // 2
-        grid.addWidget(QLabel("Spares:"), row, 0)
-        grid.addWidget(self.spares_spin, row, 1)
+        row, col = divmod(len(KEY_SETTINGS), 2)    # the next free cell
+        grid.addWidget(QLabel("Spares:"), row, col * 2)
+        grid.addWidget(self.spares_spin, row, col * 2 + 1)
         self.key_label = _note_label()
         key_box = _box("Key (print-mm)", grid, self.key_label)
 

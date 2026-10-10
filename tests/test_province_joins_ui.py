@@ -166,6 +166,26 @@ class TestKeySize:
         assert config.get("keys.spares", config=merged) == 9
         assert U.ProvinceJoinsTester().key_spins["neck_mm"].value() == 2.4
 
+    def test_height_clearance_is_a_saved_setting(self, window):
+        window.key_spins["height_clearance_mm"].setValue(0.25)
+        assert window.params().height_clearance_mm == 0.25
+        assert window.params().key_height_mm == pytest.approx(
+            window.params().depth_mm - 0.25)
+        assert config.get("keys.height_clearance_mm",
+                          config=config.load_files(
+                              *config.settings_files())) == 0.25
+
+    def test_spares_has_a_cell_of_its_own(self, window):
+        from PySide6.QtWidgets import QGridLayout
+        grid = next(g for g in window.findChildren(QGridLayout)
+                    if g.indexOf(window.spares_spin) >= 0)
+        assert grid.indexOf(window.key_spins["height_clearance_mm"]) >= 0
+        cells = set()
+        for i in range(grid.count()):
+            cell = grid.getItemPosition(i)[:2]
+            assert cell not in cells
+            cells.add(cell)
+
     def test_a_key_that_cannot_lock_blocks_cutting(self, window):
         window.key_spins["neck_mm"].setValue(window.params().mouth_mm + 1.0)
         assert window.params_error and not window.btn_cut.isEnabled()

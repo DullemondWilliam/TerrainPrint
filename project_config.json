@@ -1,7 +1,9 @@
 {
   "borders": {
+    "clearance_mm": 0.2,
     "coast_tol_mm": 0.3,
     "connectors": true,
+    "height_clearance_mm": 0.0,
     "internal_tol_mm": 0.5,
     "lobe_depth_mm": 3.0,
     "lobe_ratio": 2.0,
@@ -33,6 +35,7 @@
   },
   "keys": {
     "clearance_mm": 0.2,
+    "height_clearance_mm": 0.1,
     "mouth_mm": 3.2,
     "neck_mm": 1.6,
     "reach_mm": 3.0,

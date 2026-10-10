@@ -381,7 +381,8 @@ class JoinPlan:
         if params is not None:
             data["params"] = {name: getattr(params, name) for name in
                               ("depth_mm", "neck_mm", "mouth_mm", "reach_mm",
-                               "clearance_mm", "spacing_mm", "spares", "scale")}
+                               "clearance_mm", "height_clearance_mm",
+                               "spacing_mm", "spares", "scale")}
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")

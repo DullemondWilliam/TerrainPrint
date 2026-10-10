@@ -96,7 +96,7 @@ class KeyParams:
     clearance_mm: float = _shipped("keys.clearance_mm")   #: slot oversize, per side
     #: The key is printed this much shorter than the slot is deep, so it seats
     #: below the base instead of standing proud of it.
-    height_clearance_mm: float = 0.1
+    height_clearance_mm: float = _shipped("keys.height_clearance_mm")
     spacing_mm: float = _shipped("keys.spacing_mm")   #: auto-placement pitch
     #: Extra keys laid out on the plates beyond those placed.
     spares: int = _shipped("keys.spares")
@@ -132,8 +132,10 @@ class KeyParams:
                              "otherwise nothing is captured behind the waist.")
         if self.reach_mm <= 0 or self.spacing_mm <= 0:
             raise ValueError("reach_mm and spacing_mm must be positive.")
-        if self.clearance_mm < 0 or self.spares < 0:
-            raise ValueError("clearance_mm and spares cannot be negative.")
+        if self.clearance_mm < 0 or self.height_clearance_mm < 0 \
+                or self.spares < 0:
+            raise ValueError("clearance_mm, height_clearance_mm and spares "
+                             "cannot be negative.")
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +151,7 @@ _KEYPARAMS_KEYS = {
     "mouth_mm": "keys.mouth_mm",
     "reach_mm": "keys.reach_mm",
     "clearance_mm": "keys.clearance_mm",
+    "height_clearance_mm": "keys.height_clearance_mm",
     "spacing_mm": "keys.spacing_mm",
     "spares": "keys.spares",
 }

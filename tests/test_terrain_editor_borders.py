@@ -458,6 +458,35 @@ class TestPockets:
         removed = plain.volume_mm3 - keyed.volume_mm3
         assert removed == pytest.approx(expected, rel=0.02)
 
+    def test_clearances_size_the_pocket(self, tmp_path, defined):
+        """Wider by Clearance per side, deeper by Height clear."""
+        from dataclasses import replace
+        from shapely.ops import unary_union
+        dem = _write_dem(tmp_path)
+        province = defined.targets["A"]
+        lobes = defined.province_lobes("A")
+        params = replace(defined.settings, clearance_mm=0.4,
+                         height_clearance_mm=0.3).connector_params()
+        assert (params.clearance_mm, params.height_clearance_mm) == (0.4, 0.3)
+        plain = U.build_terrain(dem, province, None, self._params())
+        keyed = U.build_terrain(dem, province, None, self._params(), lobes,
+                                params)
+        pocket_m2 = unary_union(
+            [lobe.buffer(0.4 * MPM) for lobe in lobes]
+        ).intersection(province).area
+        expected = pocket_m2 / MPM ** 2 * (params.dovetail_mm + 0.3)
+        removed = plain.volume_mm3 - keyed.volume_mm3
+        assert removed == pytest.approx(expected, rel=0.02)
+
+    def test_a_pocket_through_the_base_is_refused(self, tmp_path, defined):
+        from dataclasses import replace
+        params = replace(defined.settings,
+                         height_clearance_mm=1.5).connector_params()
+        with pytest.raises(ValueError, match="cuts through"):
+            U.build_terrain(_write_dem(tmp_path), defined.targets["A"], None,
+                            self._params(), defined.province_lobes("A"),
+                            params)
+
     def test_pockets_refuse_a_crop_in_another_crs(self, tmp_path, defined):
         dem = _write_dem(tmp_path, crs="EPSG:3979")
         with pytest.raises(ValueError, match="Pockets need"):
