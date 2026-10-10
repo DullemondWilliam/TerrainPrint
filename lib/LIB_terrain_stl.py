@@ -458,6 +458,45 @@ def _surface_mm(elev, valid, params):
     return height
 
 
+def surface_sampler(raster, params=None):
+    """
+    A function ``(xs_m, ys_m) -> print-mm heights`` over ``raster``'s surface.
+
+    The heights are the ones :func:`terrain_to_stl` would give the top of a
+    solid meshed from the same raster -- the same pixel-centre grid, linearly
+    interpolated between centres, through the same elevation -> mm rule -- so
+    a piece built beside the solid (the border bar) can stand as tall as the
+    ground it meets.  Points are in the raster's CRS; off the raster, or on
+    nodata, the ground is at the floor (the bare base).
+    """
+    params = params or TerrainParams()
+    with rasterio.open(str(raster)) as src:
+        transform, nodata = src.transform, src.nodata
+        elev = src.read(params.band).astype("float64")
+    valid = np.ones(elev.shape, dtype=bool) if nodata is None else (elev != nodata)
+    valid &= ~np.isnan(elev)
+    height = _surface_mm(elev, valid, params)
+    rows, cols = height.shape
+    # Pad with the bare base so points past the outermost centres fall to it.
+    padded = np.pad(height, 1, constant_values=params.base_height_mm)
+    inverse = ~transform
+
+    def sample(xs_m, ys_m):
+        col, row = inverse * (np.asarray(xs_m, dtype="float64"),
+                              np.asarray(ys_m, dtype="float64"))
+        # Pixel centres sit at +0.5; +1 more for the pad.
+        c = np.clip(np.asarray(col) + 0.5, 0.0, cols + 1.0)
+        r = np.clip(np.asarray(row) + 0.5, 0.0, rows + 1.0)
+        c0 = np.minimum(np.floor(c).astype(int), cols)
+        r0 = np.minimum(np.floor(r).astype(int), rows)
+        fc, fr = c - c0, r - r0
+        top = padded[r0, c0] * (1 - fc) + padded[r0, c0 + 1] * fc
+        bottom = padded[r0 + 1, c0] * (1 - fc) + padded[r0 + 1, c0 + 1] * fc
+        return top * (1 - fr) + bottom * fr
+
+    return sample
+
+
 def _faces(cols, rows, n):
     """
     Index arrays for the closed shell.

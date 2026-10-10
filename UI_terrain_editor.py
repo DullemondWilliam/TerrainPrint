@@ -141,6 +141,15 @@ places them afresh and discards the edits.  **Save Borders** writes them to
 ``connectors.geojson``, which ``build_border_from_dir`` uses in place of
 generating its own.
 
+*The bar stands as tall as the terrain.*  With a DEM imported, **Build Border
+STL** warps it to ``crs.working`` over the corridor at the crop's **Res** and
+**Resample**, and lifts the bar's top onto it through the solid's own
+elevation -> mm rule (**Exag**, **Base**, **Floor**) -- so where the bar meets
+a solid, both are the height of the ground there.  It never drops below
+``print.border_thickness_mm``, which the connector layer needs; with no DEM the
+top is flat at that thickness.  Changing any of those settings stales a draped
+bar.
+
 *The bed split cannot yet see connectors.*  ``split_to_bed`` cuts the bar
 without knowing where the lobes are (FR-3.11 is not enforced), so the status
 line counts the connectors a cut went through rather than letting a split lobe
@@ -204,7 +213,8 @@ from lib.LIB_raster_reproject import (ReprojectParams, bounds_for,
 from lib.LIB_raster_reproject import _output_grid as _warp_grid
 from lib.LIB_terrain_stl import (EPSG_METRIC, TerrainParams, _finish,
                                  _triangle_count, _validate, _write,
-                                 load_terrain_params, terrain_to_stl)
+                                 load_terrain_params, surface_sampler,
+                                 terrain_to_stl)
 from lib.LIB_project_config import get as _cfg
 from lib.LIB_project_config import build_params, load_files, settings_files
 from lib.LIB_project_config import shipped as _shipped
@@ -597,23 +607,28 @@ class BarResult:
     mpm: float = 0.0
     lobes: int = 0
     lobes_cut: int = 0             #: connectors a bed split went through
+    draped: bool = False           #: top follows the terrain, not flat
 
 
 def build_bar(definition: BorderDefinition, bed_mm=None,
-              margin_mm=None) -> BarResult:
+              margin_mm=None, surface=None) -> BarResult:
     """
     The border bar (corridor + lobe layer), then split to the bed.
 
     Built by ``build_border_mesh`` with or without lobes, so the bar always sits
     in one local frame whose metres origin is known -- which is what lets the
     3D panel lay a terrain solid beside it.
+
+    ``surface`` -- ``(xs_m, ys_m) -> print-mm``, from :func:`bar_surface` --
+    drapes the bar's top over the terrain so it stands as tall as the solids
+    either side of it; without one the top is flat at the bar's thickness.
     """
     if definition.border is None:
         raise ValueError("No corridor to print: the targets share no border "
                          "and touch no surrounding region.")
     params = definition.settings.connector_params()
     lobes = definition.lobes
-    mesh = build_border_mesh(definition.border, lobes, params)
+    mesh = build_border_mesh(definition.border, lobes, params, surface)
     if mesh is None:
         raise ValueError("The corridor is too thin to extrude; widen it.")
     # build_border_pieces puts print-mm (0, 0) at the bottom-left of the
@@ -625,9 +640,34 @@ def build_bar(definition: BorderDefinition, bed_mm=None,
         mesh, _cfg("print.bed_mm") if bed_mm is None else bed_mm,
         _cfg("print.bed_margin_mm") if margin_mm is None else margin_mm)
     result = BarResult(mesh=mesh, pieces=pieces, origin_m=origin,
-                       mpm=params.mpm, lobes=len(lobes))
+                       mpm=params.mpm, lobes=len(lobes),
+                       draped=surface is not None)
     result.lobes_cut = _lobes_cut(pieces, lobes, origin, params.mpm)
     return result
+
+
+def bar_surface(raster, corridor, warp: ReprojectParams,
+                terrain: TerrainParams, warp_path):
+    """
+    The terrain's height over the corridor, for :func:`build_bar` to drape on.
+
+    The DEM is warped to the working CRS -- where the corridor is -- over the
+    corridor's extent, at the resolution and resampling the crop uses, then
+    read through the solid's own elevation -> mm rule.  So the bar's top meets
+    each solid at the height that solid has at the seam, whichever province's
+    crop it came from.
+    """
+    pad = 2 * max(warp.dst_res_m, 1.0)
+    params = replace(warp, bounds=bounds_for(corridor, EPSG_WORKING, pad))
+    reproject_geotiff(raster, EPSG_WORKING, warp_path, params)
+    return surface_sampler(warp_path, terrain)
+
+
+def build_draped_bar(definition: BorderDefinition, raster, warp, terrain,
+                     warp_path) -> BarResult:
+    """:func:`build_bar` with its top draped over ``raster``."""
+    return build_bar(definition, surface=bar_surface(
+        raster, definition.border, warp, terrain, warp_path))
 
 
 def _footprint(mesh):
@@ -1137,12 +1177,17 @@ class TerrainEditorTester(QMainWindow):
 
         # -- third row: the border bar --------------------------------------
         # Built once for the whole map, not per province, so it has its own
-        # row and its own result; nothing on the rows above stales it.
+        # row and its own result.  Draped, it stands on the terrain heights
+        # the rows above set, so those stale it too.
         self.btn_build_bar = QPushButton("Build Border STL")
         self.btn_build_bar.setToolTip(
             "Extrude the corridor (and its connector layer), then split it\n"
             f"to the {_cfg('print.bed_mm'):.0f} mm bed (print.bed_mm, "
-            "print.bed_margin_mm).")
+            "print.bed_margin_mm).\n"
+            "With a DEM imported the top is draped over the terrain, read\n"
+            "at the Res / Resample / Exag / Base / Floor the solids use, so\n"
+            "it stands as tall as the solids either side. Without one it is\n"
+            "flat at print.border_thickness_mm.")
         self.btn_build_bar.clicked.connect(self.build_border_bar)
         self.btn_build_bar.setEnabled(False)
         self.btn_save_bar = QPushButton("Save Border Pieces …")
@@ -1558,9 +1603,26 @@ class TerrainEditorTester(QMainWindow):
         if self._thread is not None or self.borders is None:
             return
         self._set_busy(True)
-        self.status.setText("Extruding the border and splitting it to the "
-                            "bed …")
-        self._launch(CallWorker(build_bar, self.borders), self._on_bar)
+        if self.raster_path is None:
+            self.status.setText("Extruding the border and splitting it to the "
+                                "bed …")
+            self._launch(CallWorker(build_bar, self.borders), self._on_bar)
+            return
+        self.status.setText("Draping the border over the DEM, extruding it "
+                            "and splitting it to the bed …")
+        self._launch(CallWorker(build_draped_bar, self.borders,
+                                str(self.raster_path), self._bar_warp(),
+                                self._terrain_params(),
+                                str(self._tempdir / "border_surface.tif")),
+                     self._on_bar)
+
+    def _bar_warp(self) -> ReprojectParams:
+        """The warp the bar's surface is read through: the crop's own
+        resolution and resampling, so the bar and the solids agree."""
+        return ReprojectParams(
+            dst_res_m=self.res_spin.value(),
+            resampling=Resampling[self.resample_combo.currentText()],
+            gdal_cache_mb=int(self.cache_spin.value()))
 
     def _on_bar(self, bar) -> None:
         self._teardown_thread()
@@ -1570,9 +1632,12 @@ class TerrainEditorTester(QMainWindow):
     def apply_bar(self, bar: BarResult) -> None:
         self.bar = bar
         self._update_border_controls()
-        w, h, _ = bar.mesh.extents
-        text = (f"Border bar {w:.0f} x {h:.0f} mm, {bar.lobes} connector(s), "
-                f"split into {len(bar.pieces)} bed piece(s).")
+        w, h, d = bar.mesh.extents
+        top = (f"top draped over the terrain, up to {d:.1f} mm"
+               if bar.draped else
+               f"flat {d:.1f} mm top -- import a DEM to drape it")
+        text = (f"Border bar {w:.0f} x {h:.0f} mm, {top}, {bar.lobes} "
+                f"connector(s), split into {len(bar.pieces)} bed piece(s).")
         if bar.lobes_cut:
             # FR-3.11 is not enforced by the splitter; never let it pass quietly.
             text += (f" WARNING: {bar.lobes_cut} connector(s) cut by a split "
@@ -2044,6 +2109,8 @@ class TerrainEditorTester(QMainWindow):
         self.stl_result = None
         self.btn_save_stl.setEnabled(False)
         self.btn_build.setEnabled(self.result is not None)
+        if self.bar is not None and self.bar.draped:
+            self._invalidate_bar()    # it stands on the same terrain heights
         self._refresh_3d()
         if self.raster_path is not None:
             self.status.setText(self._cost_text())

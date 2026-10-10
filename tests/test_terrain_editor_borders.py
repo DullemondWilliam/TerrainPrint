@@ -364,6 +364,58 @@ def _write_dem(tmp_path, crs=WORK, res=3200.0):
     return path
 
 
+#: Steep enough that a flat bar would sit millimetres below the solids.
+DRAPE_PARAMS = dict(scale=SCALE, expect_crs=None, z_exaggeration=100.0)
+
+
+@pytest.fixture(scope="module")
+def draped(defined, tmp_path_factory):
+    tmp = tmp_path_factory.mktemp("draped")
+    return U.build_draped_bar(defined, _write_dem(tmp),
+                              U.ReprojectParams(dst_res_m=3200.0),
+                              U.TerrainParams(**DRAPE_PARAMS),
+                              tmp / "surface.tif")
+
+
+class TestDrapedBar:
+    """The bar's top stands as tall as the solids either side of it."""
+
+    def test_pieces_stay_printable(self, draped):
+        assert draped.draped and draped.pieces
+        for piece in draped.pieces:
+            assert piece.is_watertight and piece.volume > 0
+
+    def test_rises_above_the_flat_bar(self, draped, bar):
+        assert not bar.draped
+        assert draped.mesh.extents[2] > bar.mesh.extents[2] + 1.0
+        assert draped.origin_m == bar.origin_m
+
+    def test_meets_the_solid_at_its_height(self, tmp_path, defined, draped):
+        """Along A's east edge the bar's top is the solid's top."""
+        solid = U.build_terrain(_write_dem(tmp_path), defined.targets["A"],
+                                None, U.TerrainParams(**DRAPE_PARAMS)).mesh
+        # The DEM rises only eastward, so each edge is one height along it.
+        east = solid.vertices[solid.vertices[:, 0] > solid.bounds[1][0] - 1e-3]
+        seam_x = (defined.targets["A"].bounds[2] - draped.origin_m[0]) / MPM
+        v = draped.mesh.vertices
+        bar_edge = v[np.abs(v[:, 0] - seam_x) < 1e-3]
+        assert len(bar_edge)
+        assert bar_edge[:, 2].max() == pytest.approx(east[:, 2].max(),
+                                                     abs=0.1)
+
+    def test_terrain_settings_stale_a_draped_bar(self, tmp_path, defined,
+                                                 draped, bar):
+        window = _window(tmp_path)
+        window.apply_borders(defined)
+        window.apply_bar(bar)
+        window.exag_spin.setValue(window.exag_spin.value() + 5.0)
+        assert window.bar is bar           # flat: the terrain is not under it
+        window.apply_bar(draped)
+        assert "draped" in window.status.text()
+        window.exag_spin.setValue(window.exag_spin.value() + 5.0)
+        assert window.bar is None and not window.btn_save_bar.isEnabled()
+
+
 class TestPockets:
 
     def _params(self):

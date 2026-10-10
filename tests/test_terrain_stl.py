@@ -27,7 +27,8 @@ from shapely.geometry import Polygon, box
 
 import geopandas as gpd
 
-from lib.LIB_terrain_stl import (TerrainParams, _triangle_count, terrain_to_stl)
+from lib.LIB_terrain_stl import (TerrainParams, _triangle_count,
+                                 surface_sampler, terrain_to_stl)
 
 PRINT_CRS = CRS.from_epsg(3347)        # the project's print CRS
 OTHER_CRS = CRS.from_epsg(3979)        # the DEM's native CRS
@@ -170,6 +171,33 @@ class TestSlab:
         res = terrain_to_stl(_write_dem(tmp_path), params=_params())
         assert res.spacing_mm == pytest.approx(1.0)
         assert res.grid == (COLS, ROWS)
+
+
+class TestSurfaceSampler:
+    """Heights a piece beside the solid stands to -- the solid's own."""
+
+    def test_matches_the_solid_at_its_vertices(self, tmp_path):
+        res = terrain_to_stl(_write_dem(tmp_path), params=_params())
+        sample = surface_sampler(_write_dem(tmp_path), _params())
+        top = res.mesh.vertices[: COLS * ROWS]
+        xs = res.origin_m[0] + top[:, 0] * MPM
+        ys = res.origin_m[1] + top[:, 1] * MPM
+        assert sample(xs, ys) == pytest.approx(top[:, 2])
+
+    def test_interpolates_between_centres(self, tmp_path):
+        sample = surface_sampler(_write_dem(tmp_path), _params())
+        west, north = ORIGIN
+        # Halfway between the centres of columns 4 and 5: 450 m.
+        x, y = west + 5.0 * RES, north - 5.5 * RES
+        assert sample([x], [y])[0] == pytest.approx(450.0 * EXAG / MPM + BASE)
+
+    def test_off_the_raster_and_nodata_are_the_bare_base(self, tmp_path):
+        data = _elevation()
+        data[:, 10] = NODATA
+        sample = surface_sampler(_write_dem(tmp_path, data=data), _params())
+        west, north = ORIGIN
+        assert sample([west - 50 * RES, west + 10.5 * RES],
+                      [north + 50 * RES, north - 5.5 * RES]) ==             pytest.approx([BASE, BASE])
 
 
 class TestCut:

@@ -25,6 +25,7 @@ from pathlib import Path
 
 import numpy as np
 import manifold3d as m3d
+import shapely
 import geopandas as gpd
 from shapely.geometry import Polygon, MultiPolygon, LineString, Point
 from shapely.affinity import affine_transform
@@ -273,7 +274,41 @@ def _lobe_on_ring(ring, s, border_geom_m, p: ConnectorParams):
 # ---------------------------------------------------------------------------
 # Border piece  (2 mm bar + 1 mm dovetail lobes)
 # ---------------------------------------------------------------------------
-def build_border_pieces(border_geom_m, lobes_m, p: ConnectorParams):
+def _drape(man, z_top, top_mm, x0, y0, p: ConnectorParams):
+    """
+    Lift the top face of a prism (its vertices at ``z_top``) onto ``top_mm``.
+
+    ``top_mm(xs_m, ys_m)`` gives the print-mm height of the ground beside the
+    bar, so the bar's top follows the terrain solids either side of it; it never
+    drops below ``p.thickness_mm``, which the connector layer needs.
+    """
+    if man is None or top_mm is None:
+        return man
+
+    def lift(verts):
+        verts = np.array(verts, dtype="float64")
+        top = verts[:, 2] >= z_top - 1e-6
+        if top.any():
+            heights = top_mm(x0 + verts[top, 0] * p.mpm,
+                             y0 + verts[top, 1] * p.mpm)
+            verts[top, 2] = np.maximum(p.thickness_mm, heights)
+        return verts
+
+    return man.warp_batch(lift)
+
+
+def _densify(poly_mm, step_mm):
+    """Extra outline vertices every ``step_mm``, for a drape to bend at."""
+    return shapely.segmentize(poly_mm, step_mm) if step_mm else poly_mm
+
+
+#: Outline spacing of a draped top, print-mm: fine enough to follow the
+#: terrain's relief along the corridor without bloating the mesh.
+DRAPE_STEP_MM = 0.5
+
+
+def build_border_pieces(border_geom_m, lobes_m, p: ConnectorParams,
+                        top_mm=None):
     """
     Watertight stepped solids in print-mm – one per connected border part.
 
@@ -281,7 +316,12 @@ def build_border_pieces(border_geom_m, lobes_m, p: ConnectorParams):
     non-manifold soup, and sub-printable slivers triangulate badly, so parts
     below ``MIN_PART_AREA_MM2`` are dropped.  All pieces share one local origin
     so they stay in correct relative position.
+
+    ``top_mm(xs_m, ys_m) -> print-mm`` drapes the bar's top over the terrain
+    (see :func:`LIB_terrain_stl.surface_sampler`) instead of leaving it flat at
+    ``thickness_mm``, so it meets the solids either side at their height.
     """
+    step = DRAPE_STEP_MM if top_mm is not None else 0.0
     bottom_m = _safe_union([border_geom_m] + list(lobes_m)) if lobes_m else border_geom_m
     minx, miny = bottom_m.bounds[0], bottom_m.bounds[1]
     min_area_m = MIN_PART_AREA_MM2 * (p.mpm ** 2)
@@ -294,15 +334,18 @@ def build_border_pieces(border_geom_m, lobes_m, p: ConnectorParams):
 
         # No lobes on this part → plain full-height prism, no union needed.
         if top_part.is_empty or top_part.area >= part.area * 0.999:
-            man = _extrude_man(_to_mm(part, p.mpm, minx, miny), 0.0, p.thickness_mm)
+            man = _extrude_man(_densify(_to_mm(part, p.mpm, minx, miny), step),
+                               0.0, p.thickness_mm)
+            man = _drape(man, p.thickness_mm, top_mm, minx, miny, p)
         else:
             # Stay in manifold space for the union – round-tripping through
             # trimesh between operations loses watertightness.  The layers are
             # overlapped slightly so the union sees intersecting solids rather
             # than coplanar touching faces.
             bottom = _extrude_man(_to_mm(part, p.mpm, minx, miny), 0.0, p.dovetail_mm)
-            top    = _extrude_man(_to_mm(top_part, p.mpm, minx, miny),
+            top    = _extrude_man(_densify(_to_mm(top_part, p.mpm, minx, miny), step),
                                   p.dovetail_mm - _LAYER_OVERLAP_MM, p.thickness_mm)
+            top    = _drape(top, p.thickness_mm, top_mm, minx, miny, p)
             man = bottom if top is None else (top if bottom is None else bottom + top)
 
         solid = _man_to_trimesh(man)
@@ -311,9 +354,9 @@ def build_border_pieces(border_geom_m, lobes_m, p: ConnectorParams):
     return pieces
 
 
-def build_border_mesh(border_geom_m, lobes_m, p: ConnectorParams):
+def build_border_mesh(border_geom_m, lobes_m, p: ConnectorParams, top_mm=None):
     """All border pieces combined into a single mesh (for one STL export)."""
-    pieces = build_border_pieces(border_geom_m, lobes_m, p)
+    pieces = build_border_pieces(border_geom_m, lobes_m, p, top_mm)
     if not pieces:
         return None
     return pieces[0] if len(pieces) == 1 else trimesh.util.concatenate(pieces)
