@@ -26,6 +26,7 @@ from shapely.geometry import Polygon, box
 import geopandas as gpd
 
 import UI_terrain_editor as U
+from lib.LIB_border_connectors import lobe_at
 from lib.LIB_project_config import get as cfg
 
 pytestmark = pytest.mark.usefixtures("qapp")
@@ -536,6 +537,68 @@ class TestAssembly:
         window.show_combo.setCurrentText("Assembly")
         assert window._solid_meshes == []
         assert "needs both" in window.solid_title.text()
+
+
+# -- where Define puts connectors ---------------------------------------------
+
+def _pocket(lobe, d):
+    p = d.settings.connector_params()
+    return lobe.buffer(p.clearance_mm * MPM).difference(d.border)
+
+
+def _assert_standing(d):
+    """Every connector's pocket inside one province; no two touching."""
+    p = d.settings.connector_params()
+    targets = list(d.targets.values())
+    for lobe in d.lobes:
+        pocket = _pocket(lobe, d)
+        owner = max(targets, key=lambda g: pocket.intersection(g).area)
+        assert pocket.difference(owner).area < 1e-3 * lobe.area
+    for i, a in enumerate(d.lobes):
+        for b in d.lobes[i + 1:]:
+            assert not a.intersects(b)
+            assert a.difference(d.border).distance(
+                b.difference(d.border)) >= p.clearance_mm * MPM - 1e-6
+
+
+class TestAutoPlacement:
+
+    def test_every_connector_stays_in_its_province(self, defined):
+        assert defined.lobes
+        _assert_standing(defined)
+
+    def test_crowded_connectors_are_dropped_not_overlapped(self):
+        """Spaced closer than they are wide, every other one must go."""
+        d = U.define_borders({"A": A, "B": B}, {"C": C},
+                             U.BorderSettings(lobe_spacing_mm=2.0))
+        assert d.lobes
+        assert d.drop_reasons.get("crowded", 0) > 0
+        assert d.lobes_dropped == sum(d.drop_reasons.values())
+        _assert_standing(d)
+
+    def test_a_pocket_off_the_coast_is_refused(self, defined):
+        """The A/B seam's south end meets open sea: a connector there would
+        put half its pocket in the water."""
+        lobe, why = U.place_connector(defined, A.bounds[2] - 2 * MPM,
+                                      A.bounds[1] + 0.3 * MPM)
+        assert lobe is None and why == U.FAULTS["escapes"]
+
+    def test_each_rule_is_counted_by_its_own_reason(self, defined):
+        p = defined.settings.connector_params()
+        free = lobe_at(defined.border, A.bounds[2] - 2 * MPM,
+                       A.bounds[1] + 50 * MPM, p)
+        coast = lobe_at(defined.border, A.bounds[2] - 2 * MPM,
+                        A.bounds[1] + 0.3 * MPM, p)
+        kept, reasons = U._standing_lobes([free, free, coast], defined, p)
+        assert kept == [free]
+        assert reasons == {"crowded": 1, "escapes": 1}
+
+    def test_the_report_says_why(self, tmp_path):
+        d = U.define_borders({"A": A, "B": B}, {"C": C},
+                             U.BorderSettings(lobe_spacing_mm=2.0))
+        window = _window(tmp_path)
+        window.apply_borders(d)
+        assert "ran into another connector" in window.border_report.text()
 
 
 # -- editing connectors by hand ----------------------------------------------

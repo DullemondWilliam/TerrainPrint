@@ -126,7 +126,11 @@ into the corridor.
 
 *A connector belongs to one province.*  A lobe whose far end lands in two
 targets (near a triple junction) has no single pocket to key into, so it is
-dropped and counted (FR-3.7).
+dropped and counted (FR-3.7).  So is one whose pocket would run out of its
+province -- past the coast at a seam's end, or into a neighbour -- and one
+that would touch another connector or bring its pocket within a clearance of
+another's.  Placed by Define, by hand or by a reshape, every connector is held
+to these same rules, and the report says how many each one dropped.
 
 *Connectors have a shape.*  **Height** (the lobe layer, and so the pocket
 depth), **Depth** (how far a lobe reaches into its province), **Width** (its
@@ -276,6 +280,10 @@ CLICK_SLOP_PX = 4
 #: A lobe counts as reaching into a region past this fraction of its own area,
 #: so a lobe grazing a neighbour's corner at float precision is not an owner.
 _OWNER_FRAC = 1e-3
+#: How much of a pocket, as a fraction of its lobe's area, may lie outside its
+#: province before it counts as running out: only the slivers where the
+#: carved province edge and the corridor edge disagree by rounding.
+_ESCAPE_FRAC = 1e-3
 
 
 def _height_colors(mesh):
@@ -441,7 +449,9 @@ class BorderDefinition:
     #: internal tolerance it can cut across a *different* arc -- an island's
     #: coast beside the seam (3.4 mm² of NWT/Nunavut at 0.5 mm).
     overlap_mm2: float = 0.0
-    lobes_dropped: int = 0         #: lobes reaching into two targets (FR-3.7)
+    lobes_dropped: int = 0         #: generated lobes the rules refused
+    #: Why: fault code (see ``FAULTS``) -> how many.
+    drop_reasons: dict = field(default_factory=dict)
     lobes_edited: bool = False     #: moved, added or deleted by hand since
 
     def province_lobes(self, name) -> list:
@@ -517,8 +527,9 @@ def define_borders(targets: dict, surrounding: dict,
         lobes = generate_lobes(result.border,
                                _safe_union(list(result.targets.values())),
                                s.connector_params())
-        result.lobes, result.lobes_dropped = _owned_lobes(
-            lobes, result.border, list(result.targets.values()))
+        result.lobes, result.drop_reasons = _standing_lobes(
+            lobes, result, s.connector_params())
+        result.lobes_dropped = sum(result.drop_reasons.values())
     return result
 
 
@@ -552,15 +563,25 @@ def _resolve_overlaps(simplified: dict, names: list, originals: dict) -> float:
     return total
 
 
-def _owned_lobes(lobes, border, targets):
-    """Keep the lobes whose far end lands in exactly one target (FR-3.7)."""
-    kept, dropped = [], 0
+def _standing_lobes(lobes, definition, p: ConnectorParams):
+    """
+    The generated ``lobes`` that may stand, in order, and why the rest may
+    not: ``(kept, {fault code: count})``.
+
+    Each is held to the rules a hand-placed connector is (:func:`_fault`)
+    against the ones already kept, so no two pockets run together and none
+    leaves the province it keys into.  First come, first kept: along a seam
+    that is the order they were spaced in.
+    """
+    land = _safe_union(list(definition.targets.values()))
+    kept, reasons = [], {}
     for lobe in lobes:
-        if _owners(lobe, border, targets) == 1:
-            kept.append(lobe)
+        code = _fault(lobe, definition, kept, p, land)
+        if code:
+            reasons[code] = reasons.get(code, 0) + 1
         else:
-            dropped += 1
-    return kept, dropped
+            kept.append(lobe)
+    return kept, reasons
 
 
 def _owners(lobe, border, targets) -> int:
@@ -596,22 +617,66 @@ def place_connector(definition: BorderDefinition, x: float, y: float,
     return (None, why) if why else (lobe, "")
 
 
+#: Why a connector cannot stand: fault code -> what a refused click says.
+FAULTS = {
+    "no_province": ("That edge faces no province to print -- a surrounding "
+                    "region has nothing to key into."),
+    "two_provinces": ("It would reach into two provinces, with no one pocket "
+                      "to key into."),
+    "escapes": ("Its pocket would run out of the province -- past the coast "
+                "or into a neighbour."),
+    "crowded": "It would run into another connector.",
+}
+
+#: The same, as the Borders report counts generated connectors it dropped.
+FAULT_COUNTS = {
+    "no_province": "faced no province",
+    "two_provinces": "reached into two provinces",
+    "escapes": "ran out of their province",
+    "crowded": "ran into another connector",
+}
+
+
 def _connector_fault(lobe, definition, others, p, land) -> str:
     """Why ``lobe`` cannot stand beside ``others``, or "" when it can.
     ``land`` is the union of the targets, passed in so a caller checking
     many lobes builds it once."""
+    code = _fault(lobe, definition, others, p, land)
+    return FAULTS[code] if code else ""
+
+
+def _fault(lobe, definition, others, p, land) -> str:
+    """
+    The code (a key of ``FAULTS``) of the first rule ``lobe`` breaks beside
+    ``others``, or "" when it breaks none.
+
+    * It must reach a province to print, and only one (FR-3.7).
+    * Its pocket -- the lobe grown by the clearance, outside the corridor --
+      must lie inside that one province: a pocket that crosses the coast or a
+      frontier opens in the side of the piece.
+    * It must not touch another connector, and its pocket must stay a
+      clearance clear of every other's, or two pockets run into one.
+    """
     d = definition
     if lobe.intersection(land).area < p.min_overlap_frac * lobe.area:
-        return ("That edge faces no province to print -- a surrounding "
-                "region has nothing to key into.")
-    if _owners(lobe, d.border, list(d.targets.values())) != 1:
-        return ("It would reach into two provinces, with no one pocket to "
-                "key into.")
-    reach = lobe.difference(d.border)
+        return "no_province"
+    targets = list(d.targets.values())
+    if _owners(lobe, d.border, targets) != 1:
+        return "two_provinces"
     gap = p.clearance_mm * p.mpm
+    pocket = lobe.buffer(gap).difference(d.border)
+    owner = max(targets, key=lambda geom: pocket.intersection(geom).area)
+    if pocket.difference(owner).area > _ESCAPE_FRAC * lobe.area:
+        return "escapes"
+    reach = lobe.difference(d.border)
+    near = lobe.buffer(gap).bounds
     for other in others:
-        if reach.distance(other.difference(d.border)) < gap:
-            return "It would run into another connector."
+        ox0, oy0, ox1, oy1 = other.bounds
+        if ox1 < near[0] or ox0 > near[2] or oy1 < near[1] or oy0 > near[3]:
+            continue                       # nowhere near: skip the geometry
+        if lobe.intersects(other) \
+                or reach.distance(other.difference(d.border)) < gap:
+            return "crowded"
     return ""
 
 
@@ -1545,8 +1610,9 @@ class TerrainEditorTester(QMainWindow):
                 if d.lobes_edited:
                     text += " (edited by hand)"
                 elif d.lobes_dropped:
-                    text += (f" ({d.lobes_dropped} dropped: they reached "
-                             "into two provinces)")
+                    why = ", ".join(f"{n} {FAULT_COUNTS[code]}" for code, n
+                                    in d.drop_reasons.items())
+                    text += f" ({d.lobes_dropped} dropped: {why})"
             text += "."
         return text + " Save them, or build the STLs on tab 3."
 
