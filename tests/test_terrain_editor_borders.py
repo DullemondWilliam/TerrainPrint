@@ -876,13 +876,23 @@ class TestConnectorShape:
     def test_connectors_have_a_row_of_their_own(self, tmp_path):
         window = _window(tmp_path)
         rows = window.tabs.widget(1).layout()
-        first, second = rows.itemAt(0).layout(), rows.itemAt(1).layout()
-        for widget in (window.btn_edit_lobes, window.lobe_height_spin,
-                       window.lobe_depth_spin, window.lobe_width_spin,
-                       window.lobe_ratio_spin, window.spacing_spin):
-            assert second.indexOf(widget) >= 0
-            assert first.indexOf(widget) < 0
-        assert first.indexOf(window.btn_define) >= 0
+        first, second, third = (rows.itemAt(i).layout() for i in range(3))
+
+        def holds(row, widget):
+            """Whether ``row`` holds ``widget``, inside one of its groups."""
+            return any(row.itemAt(i).widget() is not None
+                       and row.itemAt(i).widget().isAncestorOf(widget)
+                       for i in range(row.count()))
+
+        for widget in (window.lobe_height_spin, window.lobe_depth_spin,
+                       window.lobe_width_spin, window.lobe_ratio_spin,
+                       window.spacing_spin):
+            assert holds(second, widget)
+            assert not holds(first, widget)
+        assert holds(first, window.btn_define)
+        # Editing by hand sits with the connector it selects.
+        assert holds(third, window.btn_edit_lobes)
+        assert holds(third, window.sel_angle_spin)
 
     def test_reshaping_keeps_every_connector_where_it_stood(self, defined):
         wider = U.replace(defined.settings, lobe_width_mm=2.0,

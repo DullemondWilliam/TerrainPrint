@@ -52,6 +52,18 @@ Workflow (stage 3)
 The whole run is here: national DEM in, printable province solid out, without
 leaving the window or touching QGIS.
 
+Keyboard
+--------
+The window follows ``docs/UI_GUIDE.md``: every button carries a key, named at
+the foot of its tooltip, and a key is live exactly when its button is.
+Ctrl+O imports the DEM, Ctrl+P / Ctrl+Shift+P add provinces / surrounding,
+Shift+Del removes a region; D defines the borders, E edits connectors, R
+resets and Del deletes the selected one; C reproject-and-crops, S builds the
+STL and B the border bar; Ctrl+S, Ctrl+Shift+S, Ctrl+B and Ctrl+Shift+B save
+the STL, the GeoTIFF, the borders and the border pieces.  Home, Alt+Left /
+Alt+Right, P and Z work the map's view, and the arrow keys pan it (Shift for
+a long stride, Ctrl for a nudge).
+
 Run with:  python UI_terrain_editor.py
 
 Like the other UI_* harnesses this stays independent of the main ``app`` window
@@ -111,8 +123,8 @@ question is what survives the nozzle.  Shared arcs then get
 printer limits (``seam.nozzle_mm`` / ``seam.spike_angle_deg``).
 
 *The settings are kept.*  Every control on the Borders tab -- the tolerances,
-the seam clean-up, the corridor width, the Connectors tick, and the
-connectors' spacing and shape -- opens on what the config files say and is
+the seam clean-up, the corridor width, the Connectors group's Place tick,
+and the connectors' spacing and shape -- opens on what the config files say and is
 written back to ``project_config.local.json`` as it is turned
 (``SAVED_BORDER_SETTINGS`` lists the keys), so the next launch starts where
 this one left off.
@@ -135,11 +147,11 @@ to these same rules, and the report says how many each one dropped.
 *Connectors have a shape.*  **Height** (the lobe layer, and so the pocket
 depth), **Depth** (how far a lobe reaches into its province), **Width** (its
 neck at the corridor) and **Ratio** (mouth over neck; above 1 the wide end is
-captured) sit on the connectors row with **Spacing**.  Turned on a defined
+captured) sit in the **Shape** group, beside **Spacing**.  Turned on a defined
 map, they reshape every connector where it stands rather than defining the
 borders again, so hand edits survive; a connector the new shape no longer
 lets stand is dropped and counted, and the change is one Undo step.
-**Clearance** and **Height clear.** set the fit: the pocket is cut that much
+**Clearance** and **Height clear.**, in **Fit**, set the fit: the pocket is cut that much
 wider than the connector on every side, and that much deeper than the
 connector layer is tall.  The clearance is also the gap kept between
 neighbouring pockets, so widening it can drop a connector that now crowds one.
@@ -161,8 +173,9 @@ it keeps its shape.  ] and [ turn it 5°, } and { 1°, + and - change the depth
 0.25 mm (a held key is one Undo step), and dragging the dot at its far end
 swings it round.  A turned connector must keep half its root in
 the corridor and a neck of at least two nozzle widths.  Its turn and size are
-read off its own outline, so they survive a move, a reshape from the connector
-row, Undo, and Save Borders (which writes them as ``angle_deg`` and ``scale``).  Every edit is one Undo (Ctrl+Z / Ctrl+Y)
+read off its own outline, so they survive a move, a reshape from the Shape
+group, Undo, and Save Borders (which writes them as ``angle_deg`` and
+``scale``).  Every edit is one Undo (Ctrl+Z; Ctrl+Shift+Z or Ctrl+Y redoes)
 step and stales the border bar and a pocketed solid.  **Define Borders**
 places them afresh and discards the edits.  **Save Borders** writes them to
 ``connectors.geojson``, which ``build_border_from_dir`` uses in place of
@@ -214,13 +227,13 @@ from shapely.geometry.polygon import orient
 from shapely.ops import unary_union
 from vispy import scene
 
-from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox,
-                               QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel,
-                               QListWidget, QMainWindow, QMessageBox,
-                               QProgressBar, QPushButton, QSizePolicy,
-                               QTabWidget, QVBoxLayout, QWidget)
+                               QDoubleSpinBox, QFileDialog, QFrame, QGroupBox,
+                               QHBoxLayout, QLabel, QListWidget, QMainWindow,
+                               QMessageBox, QProgressBar, QPushButton,
+                               QSizePolicy, QTabWidget, QVBoxLayout, QWidget)
 
 from lib.LIB_border_connectors import (CONNECTORS_NAME, ConnectorParams,
                                        _polys, _repair, _safe_union,
@@ -312,6 +325,37 @@ _OWNER_FRAC = 1e-3
 #: province before it counts as running out: only the slivers where the
 #: carved province edge and the corridor edge disagree by rounding.
 _ESCAPE_FRAC = 1e-3
+
+# -- the window's chrome (docs/UI_GUIDE.md) ---------------------------------
+#: How many points larger than the interface default the status line runs.
+STATUS_POINT_BUMP = 2
+#: How far one arrow-key press pans, as a fraction of the visible span; Shift
+#: crosses the view in two presses, Ctrl nudges.
+PAN_STEP = 0.10
+PAN_STEP_COARSE = 0.50
+PAN_STEP_FINE = 0.02
+
+#: The navigation tools worth keeping, the tooltips worth rewording, and the
+#: keys they answer to -- the same as the island editor's.  Module level
+#: because a class-body comprehension cannot see its own class attributes.
+_NAV_KEEP = ("Home", "Back", "Forward", "Pan", "Zoom")
+_NAV_TIPS = {"Back": "Back to the previous view (this is not Undo)",
+             "Forward": "Forward to the next view (this is not Redo)"}
+_NAV_KEYS = {"Home": "Home", "Back": "Alt+Left", "Forward": "Alt+Right",
+             "Pan": "P", "Zoom": "Z"}
+
+
+class MapToolbar(NavigationToolbar):
+    """
+    Matplotlib's navigation toolbar, minus the tools that fight this window.
+
+    ``Subplots`` and ``Customize`` edit the axes the window lays out, and
+    ``Save`` writes a PNG beside three buttons that save real outputs.
+    """
+
+    toolitems = [(text, _NAV_TIPS.get(text, tip), image, callback)
+                 for text, tip, image, callback in NavigationToolbar.toolitems
+                 if text in _NAV_KEEP]
 
 
 def _height_colors(mesh):
@@ -971,7 +1015,6 @@ class TerrainEditorTester(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Terrain Editor — Visual Tester")
         self.resize(1250, 720)
 
         # -- state ----------------------------------------------------------
@@ -1023,70 +1066,95 @@ class TerrainEditorTester(QMainWindow):
 
         central = QWidget()
         root = QVBoxLayout(central)
+        root.setContentsMargins(8, 6, 8, 4)   # give the canvas the spare pixels
+        root.setSpacing(4)
+
+        # The canvas is built ahead of the controls, as in the island editor:
+        # every button hands the keyboard back to it (see ``_button``).
+        # Deliberately NOT sharex/sharey. Once a warp is in play the panels are
+        # in different CRSs — Newfoundland sits at x ~1.5e6 in EPSG:3979 and
+        # ~7.1e6 in EPSG:3347 — so shared limits would drive the result clean off
+        # the canvas. They are linked explicitly instead, and only when the two
+        # panels really are in the same frame (see _link_views).
+        self.figure = Figure(figsize=(11, 6))
+        self.canvas = FigureCanvasQTAgg(self.figure)
+        # Embedded, the canvas keeps Qt's NoFocus: the map keys and the arrow
+        # pan would never reach it.
+        self.canvas.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.ax_before = self.figure.add_subplot(1, 2, 1)
+        self.ax_after = self.figure.add_subplot(1, 2, 2)
+        self._reset_axes("Import a GeoTIFF to begin", "")
+        self.mpl_toolbar = MapToolbar(self.canvas, self)
+        self.canvas.mpl_connect("scroll_event", self._on_scroll)
+        self.canvas.mpl_connect("button_press_event", self._on_press)
+        self.canvas.mpl_connect("motion_notify_event", self._on_motion)
+        self.canvas.mpl_connect("button_release_event", self._on_release)
+        self.canvas.mpl_connect("key_press_event", self._on_key)
 
         # -- stage 1: import -------------------------------------------------
-        self.btn_raster = QPushButton("Import GeoTIFF …")
-        self.btn_raster.clicked.connect(self.import_geotiff)
-        self.btn_add_targets = QPushButton("Add Provinces …")
+        self.btn_raster = self._button("Import GeoTIFF …", self.import_geotiff)
+        self.btn_raster.setToolTip(
+            "Open the DEM. Only its metadata and a small overview are read, "
+            "so even the 7.3 GB Canada120m.tif opens in under a second.")
+        self.btn_add_targets = self._button(
+            "Add Provinces …", lambda: self.add_regions_dialog("target"))
         self.btn_add_targets.setToolTip(
             "Provinces to print. Several at once; each file is one region.")
-        self.btn_add_targets.clicked.connect(
-            lambda: self.add_regions_dialog("target"))
-        self.btn_add_surrounding = QPushButton("Add Surrounding …")
+        self.btn_add_surrounding = self._button(
+            "Add Surrounding …", lambda: self.add_regions_dialog("surrounding"))
         self.btn_add_surrounding.setToolTip(
-            "Context regions (US states, unprinted provinces). They shape the\n"
-            "borders -- the corridor is carved from their side -- but are\n"
+            "Context regions (US states, unprinted provinces). They shape the "
+            "borders -- the corridor is carved from their side -- but are "
             "never printed and get no connectors.")
-        self.btn_add_surrounding.clicked.connect(
-            lambda: self.add_regions_dialog("surrounding"))
-        self.btn_remove = QPushButton("Remove")
-        self.btn_remove.clicked.connect(self.remove_selected_region)
+        self.btn_remove = self._button("Remove", self.remove_selected_region)
+        self.btn_remove.setToolTip("Drop the region selected in the list.")
         self.region_list = QListWidget()
         self.region_list.setMaximumHeight(90)
 
-        import_bar = QHBoxLayout()
-        for widget in (self.btn_raster, self.btn_add_targets,
-                       self.btn_add_surrounding, self.btn_remove):
-            import_bar.addWidget(widget)
-        import_bar.addStretch(1)
+        self.grp_dem = self._group("DEM", self.btn_raster)
+        self.grp_regions = self._group(
+            "Regions", self.btn_add_targets, self.btn_add_surrounding,
+            self.btn_remove)
         import_page = QWidget()
         import_layout = QVBoxLayout(import_page)
-        import_layout.addLayout(import_bar)
+        import_layout.addLayout(self._row(self.grp_dem, self.grp_regions))
         import_layout.addWidget(self.region_list)
 
         # -- stage 2: borders ------------------------------------------------
         defaults = load_border_settings(*settings_files())
         self.coast_spin = self._mm_spin(
             defaults.coast_tol_mm, 0.0, 20.0,
-            "Simplification tolerance for arcs one region holds alone --\n"
-            "coasts and frontiers with nothing printed beyond (print-mm).")
+            "Simplification tolerance for arcs one region holds alone -- "
+            "coasts and frontiers with nothing printed beyond, in printed "
+            "millimetres (borders.coast_tol_mm).")
         self.internal_spin = self._mm_spin(
             defaults.internal_tol_mm, 0.0, 20.0,
-            "Simplification tolerance for arcs two regions share (print-mm).\n"
-            "Both sides use the one arc, so a seam cannot open a gap.")
+            "Simplification tolerance for arcs two regions share, in printed "
+            "millimetres. Both sides use the one arc, so a seam cannot open a "
+            "gap (borders.internal_tol_mm).")
         self.min_seg_spin = self._mm_spin(
             defaults.min_segment_mm, 0.0, 5.0,
-            "Seam clean-up: collapse shared-arc runs shorter than this.\n"
-            "Douglas-Peucker keeps a tight zigzag inside its corridor; this\n"
-            "removes it. 0 skips the pass (seam.min_segment_mm).")
+            "Collapse shared-arc runs shorter than this. Douglas-Peucker keeps "
+            "a tight zigzag inside its corridor; this removes it. 0 skips the "
+            "pass (seam.min_segment_mm).")
         self.min_angle_spin = self._spin(
             0.0, 90.0, defaults.min_angle_deg, 0,
-            "Seam clean-up: drop shared-arc corners sharper than this.\n"
-            "A needle prints as a spur on one side and a slot on the other.\n"
-            "0 skips the pass (seam.min_angle_deg).")
-        self.min_angle_spin.setSuffix("°")
+            "Drop shared-arc corners sharper than this. A needle prints as a "
+            "spur on one side and a slot on the other. 0 skips the pass "
+            "(seam.min_angle_deg).")
         self.width_spin = self._mm_spin(
             defaults.width_mm, 0.1, 20.0,
-            "Corridor width carved between regions -- the border bar's width.\n"
-            "Target/target seams split it evenly; target/surrounding takes it\n"
-            "all from the surrounding side.")
-        self.chk_connectors = QCheckBox("Connectors")
+            "Corridor width carved between regions -- the border bar's width. "
+            "Target/target seams split it evenly; target/surrounding takes it "
+            "all from the surrounding side (borders.width_mm).")
+        self.chk_connectors = QCheckBox("Place")
         self.chk_connectors.setChecked(defaults.connectors)
         self.chk_connectors.setToolTip(
-            "Place dovetail lobes on the corridor and pockets in the provinces.")
+            "Place dovetail connectors on the corridor and pockets in the "
+            "provinces when the borders are defined.")
         self.spacing_spin = self._mm_spin(
             defaults.lobe_spacing_mm, 2.0, 100.0,
-            "Gap between dovetail keys along the corridor.")
+            "Gap between connectors along the corridor.")
         for widget in (self.coast_spin, self.internal_spin, self.min_seg_spin,
                        self.min_angle_spin, self.width_spin,
                        self.spacing_spin):
@@ -1099,153 +1167,152 @@ class TerrainEditorTester(QMainWindow):
         thickness = _cfg("print.border_thickness_mm")
         self.lobe_height_spin = self._mm_spin(
             defaults.lobe_height_mm, 0.2, max(0.3, thickness - 0.2),
-            "Height of the connector layer under the border bar -- and so\n"
-            "the depth of the pocket it drops into in the province's back.\n"
-            f"Under the {thickness:.1f} mm bar (print.border_thickness_mm); "
-            "keep it\nunder the terrain Base, or the pocket cuts through.")
+            "Height of the connector layer under the border bar -- and so the "
+            "depth of the pocket it drops into in the province's back. Under "
+            f"the {thickness:.1f} mm bar (print.border_thickness_mm); keep it "
+            "under the terrain Base, or the pocket cuts through.")
         self.lobe_depth_spin = self._mm_spin(
             defaults.lobe_depth_mm, 0.5, 20.0,
-            "How far each connector reaches into its province from the\n"
+            "How far each connector reaches into its province from the "
             "corridor edge.")
         self.lobe_width_spin = self._mm_spin(
             defaults.lobe_width_mm, 0.4, 20.0,
-            "Width of the connector's neck, at the corridor edge -- its\n"
+            "Width of the connector's neck, at the corridor edge -- its "
             "narrowest, and so the part that must survive printing.")
         self.lobe_ratio_spin = self._spin(
             1.05, 5.0, defaults.lobe_ratio, 2,
-            "Width at the far end over the width at the neck. Above 1 the\n"
-            "wide end is captured behind the neck, which is what locks the\n"
+            "Width at the far end over the width at the neck. Above 1 the "
+            "wide end is captured behind the neck, which is what locks the "
             "pieces together; 2 is a 1.6 mm neck opening to 3.2 mm.")
         self.lobe_ratio_spin.setSingleStep(0.1)
-        self.lobe_ratio_spin.setSuffix(" ×")
         self.lobe_clear_spin = self._mm_spin(
             defaults.clearance_mm, 0.0, 2.0,
-            "How much wider than the connector its pocket is cut, on every\n"
-            "side, so a printed connector drops in. Also the gap kept between\n"
+            "How much wider than the connector its pocket is cut, on every "
+            "side, so a printed connector drops in. Also the gap kept between "
             "neighbouring pockets (borders.clearance_mm).")
         self.lobe_height_clear_spin = self._mm_spin(
             defaults.height_clearance_mm, 0.0, 2.0,
-            "How much deeper than the connector layer is tall its pocket is\n"
-            "cut, so the bar sits flat on the bed rather than on the\n"
-            "connectors. Height plus this must stay under the terrain Base\n"
+            "How much deeper than the connector layer is tall its pocket is "
+            "cut, so the bar sits flat on the bed rather than on the "
+            "connectors. Height plus this must stay under the terrain Base "
             "(borders.height_clearance_mm).")
         for widget in self._shape_spins():
             widget.setKeyboardTracking(False)
             widget.valueChanged.connect(self._on_connector_shape)
-        self.btn_define = QPushButton("Define Borders")
-        self.btn_define.clicked.connect(self.define)
-        self.btn_define.setEnabled(False)
-        self.btn_save_borders = QPushButton("Save Borders …")
+        self.btn_define = self._button("Define Borders", self.define,
+                                       enabled=False)
+        self.btn_define.setToolTip(
+            "Simplify every outline in one topology, carve the corridor and "
+            "place the connectors. Places them afresh, discarding any edited "
+            "by hand.")
+        self.btn_save_borders = self._button("Save Borders …",
+                                             self.save_borders, enabled=False)
         self.btn_save_borders.setToolTip(
-            "borders.geojson + name_<province>.geojson, the layout the\n"
+            "Write borders.geojson and name_<province>.geojson, the layout the "
             "dovetail tools read (build_border_from_dir).")
-        self.btn_save_borders.clicked.connect(self.save_borders)
-        self.btn_save_borders.setEnabled(False)
-        self.btn_edit_lobes = QPushButton("Edit Connectors")
+        self.btn_edit_lobes = self._button("Edit Connectors", None,
+                                           enabled=False)
         self.btn_edit_lobes.setCheckable(True)
         self.btn_edit_lobes.setToolTip(
             "Edit the connectors by hand on the right-hand map:\n"
             "  click a connector to select it: turn it, set its depth or\n"
-            "    delete it on the Selected row, or turn and size it with\n"
+            "    delete it under Selected connector, or turn and size it with\n"
             "    ] [ } { + - or by dragging the dot at its far end;\n"
             "    Del deletes it, Esc lets it go\n"
             "  drag a connector to move it along the corridor\n"
-            "  click beside the corridor to add one on that side\n"
-            "Ctrl+Z / Ctrl+Y undo and redo. Define Borders places them\n"
-            "afresh, discarding what was edited.")
+            "  click beside the corridor to add one on that side\n\n"
+            "Define Borders places them afresh, discarding what was edited.")
         self.btn_edit_lobes.toggled.connect(self._on_edit_toggled)
-        self.btn_edit_lobes.setEnabled(False)
-        self.btn_lobe_undo = QPushButton("Undo")
-        self.btn_lobe_undo.clicked.connect(self.undo_connectors)
-        self.btn_lobe_redo = QPushButton("Redo")
-        self.btn_lobe_redo.clicked.connect(self.redo_connectors)
-        QShortcut(QKeySequence.Undo, self, activated=self.undo_connectors)
-        QShortcut(QKeySequence.Redo, self, activated=self.redo_connectors)
+        self.btn_lobe_undo = self._button("Undo", self.undo_connectors)
+        self.btn_lobe_undo.setToolTip("Step back through the connector edits.")
+        self.btn_lobe_redo = self._button("Redo", self.redo_connectors)
+        self.btn_lobe_redo.setToolTip(
+            "Step forward again through the connector edits.")
         self.border_report = QLabel("Add provinces on the Import tab.")
         self.border_report.setWordWrap(True)
-        self.border_report.setStyleSheet("color:#555;")
 
-        border_bar = QHBoxLayout()
-        for label, widget in (("Coast:", self.coast_spin),
-                              ("Internal:", self.internal_spin),
-                              ("Min seg:", self.min_seg_spin),
-                              ("Min angle:", self.min_angle_spin),
-                              ("Width:", self.width_spin)):
-            border_bar.addWidget(QLabel(label))
-            border_bar.addWidget(widget)
-        border_bar.addWidget(self.btn_define)
-        border_bar.addWidget(self.btn_save_borders)
-        border_bar.addStretch(1)
-        # A row of its own for the connectors: where they go, what shape they
-        # are, and the tool that moves them by hand.
-        connector_bar = QHBoxLayout()
-        connector_bar.addWidget(self.chk_connectors)
-        for label, widget in (("Spacing:", self.spacing_spin),
-                              ("Height:", self.lobe_height_spin),
-                              ("Depth:", self.lobe_depth_spin),
-                              ("Width:", self.lobe_width_spin),
-                              ("Ratio:", self.lobe_ratio_spin),
-                              ("Clearance:", self.lobe_clear_spin),
-                              ("Height clear.:", self.lobe_height_clear_spin)):
-            connector_bar.addWidget(QLabel(label))
-            connector_bar.addWidget(widget)
-        connector_bar.addWidget(self.btn_edit_lobes)
-        connector_bar.addWidget(self.btn_lobe_undo)
-        connector_bar.addWidget(self.btn_lobe_redo)
-        connector_bar.addStretch(1)
-        # The one connector right-clicked: its own turn and depth.
-        self.sel_label = QLabel("Selected: none")
+        # The one connector selected: its own turn and depth.
+        self.sel_label = QLabel("none")
+        # Its text changes on every pick, so it holds the width of the widest
+        # thing it can say rather than sliding the spins along.
+        self.sel_label.setFixedWidth(max(
+            self.sel_label.fontMetrics().horizontalAdvance(text)
+            for text in ("none", "connector 8888")) + 4)
         self.sel_angle_spin = self._spin(
             -ANGLE_LIMIT_DEG, ANGLE_LIMIT_DEG, 0.0, 1,
-            "Turn the selected connector about where it meets the corridor\n"
+            "Turn the selected connector about where it meets the corridor "
             "(0 is square to the edge). ] / [ turn it "
             f"{ANGLE_STEP_DEG:g}°, }} / {{ {FINE_ANGLE_STEP_DEG:g}°; "
             "or drag the dot at its far end.")
         self.sel_angle_spin.setSingleStep(ANGLE_STEP_DEG)
-        self.sel_angle_spin.setSuffix("°")
         self.sel_depth_spin = self._mm_spin(
             defaults.lobe_depth_mm, 0.5, 20.0,
-            "How far the selected connector reaches into its province.\n"
-            "Its neck and mouth grow with it, so it keeps its shape.\n"
-            f"+ / - change it by {DEPTH_STEP_MM:g} mm.")
+            "How far the selected connector reaches into its province. Its "
+            "neck and mouth grow with it, so it keeps its shape. + / - change "
+            f"it by {DEPTH_STEP_MM:g} mm.")
         self.sel_depth_spin.setSingleStep(DEPTH_STEP_MM)
         for spin in (self.sel_angle_spin, self.sel_depth_spin):
             spin.setKeyboardTracking(False)
             spin.valueChanged.connect(self._on_selected_spins)
-        self.btn_sel_reset = QPushButton("Reset")
+        self.btn_sel_reset = self._button("Reset", self.reset_selected,
+                                          enabled=False)
         self.btn_sel_reset.setToolTip(
-            "Square to the edge and the size the connector row sets.")
-        self.btn_sel_reset.clicked.connect(self.reset_selected)
-        self.btn_sel_delete = QPushButton("Delete")
-        self.btn_sel_delete.setToolTip(
-            "Delete the selected connector (Del).")
-        self.btn_sel_delete.clicked.connect(self.delete_selected)
-        selected_bar = QHBoxLayout()
-        selected_bar.addWidget(self.sel_label)
-        for label, widget in (("Angle:", self.sel_angle_spin),
-                              ("Depth:", self.sel_depth_spin)):
-            selected_bar.addWidget(QLabel(label))
-            selected_bar.addWidget(widget)
-        selected_bar.addWidget(self.btn_sel_reset)
-        selected_bar.addWidget(self.btn_sel_delete)
-        selected_bar.addStretch(1)
-        for widget in (self.sel_angle_spin, self.sel_depth_spin,
-                       self.btn_sel_reset, self.btn_sel_delete):
-            widget.setEnabled(False)          # until one is right-clicked
-        self._wire_saved_settings()
+            "Square to the edge and the size the Shape group sets.")
+        self.btn_sel_delete = self._button("Delete", self.delete_selected,
+                                           enabled=False)
+        self.btn_sel_delete.setToolTip("Delete the selected connector.")
+        for widget in (self.sel_angle_spin, self.sel_depth_spin):
+            widget.setEnabled(False)          # until one is selected
+
+        self.grp_simplify = self._group(
+            "Simplify", "Coast (mm)", self.coast_spin,
+            "Internal (mm)", self.internal_spin)
+        self.grp_seams = self._group(
+            "Seam clean-up", "Min seg (mm)", self.min_seg_spin,
+            "Min angle (°)", self.min_angle_spin)
+        self.grp_corridor = self._group(
+            "Corridor", "Width (mm)", self.width_spin)
+        self.grp_borders = self._group(
+            "Borders", self.btn_define, self.btn_save_borders)
+        self.grp_connectors = self._group(
+            "Connectors", self.chk_connectors, "Spacing (mm)",
+            self.spacing_spin)
+        self.grp_shape = self._group(
+            "Shape", "Height (mm)", self.lobe_height_spin,
+            "Depth (mm)", self.lobe_depth_spin,
+            "Width (mm)", self.lobe_width_spin,
+            "Ratio", self.lobe_ratio_spin)
+        self.grp_fit = self._group(
+            "Fit", "Clearance (mm)", self.lobe_clear_spin,
+            "Height clear. (mm)", self.lobe_height_clear_spin)
+        self.grp_by_hand = self._group(
+            "By hand", self.btn_edit_lobes, self.btn_lobe_undo,
+            self.btn_lobe_redo)
+        self.grp_selected = self._group(
+            "Selected connector", self.sel_label,
+            "Angle (°)", self.sel_angle_spin,
+            "Depth (mm)", self.sel_depth_spin,
+            self.btn_sel_reset, self.btn_sel_delete)
+
+        # Row 1 defines the borders; row 2 is the connectors on them, a row
+        # of their own: where they go and what shape they are; row 3 is the
+        # editing by hand, and the one connector it has selected.
         borders_page = QWidget()
         borders_layout = QVBoxLayout(borders_page)
-        borders_layout.addLayout(border_bar)
-        borders_layout.addLayout(connector_bar)
-        borders_layout.addLayout(selected_bar)
+        borders_layout.addLayout(self._row(
+            self.grp_simplify, self.grp_seams, self.grp_corridor,
+            self.grp_borders))
+        borders_layout.addLayout(self._row(
+            self.grp_connectors, self.grp_shape, self.grp_fit))
+        borders_layout.addLayout(self._row(self.grp_by_hand,
+                                           self.grp_selected))
         borders_layout.addWidget(self.border_report)
 
         # -- stage 3: STL -- the original harness ----------------------------
-        toolbar = QHBoxLayout()
         self.province_combo = QComboBox()
         self.province_combo.setMinimumContentsLength(14)
         self.province_combo.setToolTip(
-            "The province the crop and the solid are built for. Once borders\n"
+            "The province the crop and the solid are built for. Once borders "
             "are defined it is cut to the province with the corridor removed.")
         self.province_combo.currentTextChanged.connect(self._select_province)
 
@@ -1253,31 +1320,31 @@ class TerrainEditorTester(QMainWindow):
         self.crs_combo.setEditable(True)
         self.crs_combo.addItems(CRS_CHOICES)
         self.crs_combo.setToolTip(
-            "CRS the output is built in.\nEPSG:3347 is this project's print CRS "
-            "— the one the borders and dovetails\nare built in. Leaving the DEM "
-            "in EPSG:3979 misplaces a province by ~5 mm.")
+            "CRS the output is built in. EPSG:3347 is this project's print "
+            "CRS — the one the borders and dovetails are built in. Leaving the "
+            "DEM in EPSG:3979 misplaces a province by ~5 mm.")
         self.crs_combo.currentTextChanged.connect(self._invalidate_raster)
 
         # 0 m means "native resolution" — the libs' own convention.
         # Seeded from terrain.spacing_mm through the scale: 0.4 mm at 1:8M is
         # 3200 m, so the default Res is the configured print pitch, not a magic
         # number that could drift from the meshing stage's idea of spacing.
+        # It keeps its suffix: "native" and "3200 m/px" must read alike.
         self.res_spin = self._spin(
             0.0, 100_000.0,
             _cfg("terrain.spacing_mm") * _cfg("print.scale") / 1000.0, 0,
-                                   "Metres per pixel; 0 = the DEM's native "
-                                   "resolution.\n1:8,000,000 with a 0.4 mm "
-                                   "nozzle wants ~3200 m.")
+            "Ground metres per output pixel; 0 is the DEM's native "
+            "resolution. 1:8,000,000 with a 0.4 mm nozzle wants ~3200 m.")
         self.res_spin.setSingleStep(100.0)
         self.res_spin.setSpecialValueText("native")
         self.res_spin.setSuffix(" m/px")
         self.res_spin.valueChanged.connect(self._invalidate_raster)
 
-        self.buf_spin = self._spin(0.0, 100_000.0, 0.0, 0,
-                                   "Grow the boundary outward before cutting, "
-                                   "to keep a coastal lip")
+        self.buf_spin = self._spin(
+            0.0, 100_000.0, 0.0, 0,
+            "Grow the boundary outward before cutting, to keep a coastal lip. "
+            "Locked at 0 once borders are defined: outward is the corridor.")
         self.buf_spin.setSingleStep(100.0)
-        self.buf_spin.setSuffix(" m")
         self.buf_spin.valueChanged.connect(self._invalidate_raster)
 
         self.resample_combo = QComboBox()
@@ -1296,206 +1363,181 @@ class TerrainEditorTester(QMainWindow):
 
         self.chk_touched = QCheckBox("All-touched")
         self.chk_touched.setToolTip(
-            "Keep pixels the boundary merely touches, not only those it covers")
+            "Keep pixels the boundary merely touches, not only those it covers.")
         self.chk_touched.toggled.connect(self._invalidate_raster)
         self.chk_crop = QCheckBox("Crop")
         self.chk_crop.setChecked(True)
         self.chk_crop.setToolTip(
-            "Crop to the boundary's bounding box.\nUntick to keep the DEM's "
+            "Crop to the boundary's bounding box. Untick to keep the DEM's "
             "full extent, which shows where the province sits in it.")
         self.chk_crop.toggled.connect(self._invalidate_raster)
 
-        self.cache_spin = self._spin(0.0, 8192.0, 0.0, 0,
-                                     "Cap GDAL's block cache for the run.\n"
-                                     "0 leaves GDAL's default (5% of RAM); on "
-                                     "a striped DEM that is the difference\n"
-                                     "between a ~1.9 GB and a ~256 MB peak.")
+        # Keeps its suffix, like Res: "default" and "256 MB" must read alike.
+        self.cache_spin = self._spin(
+            0.0, 8192.0, 0.0, 0,
+            "Cap GDAL's block cache for the run. 0 leaves GDAL's default (5% "
+            "of RAM); on a striped DEM that is the difference between a "
+            "~1.9 GB and a ~256 MB peak.")
         self.cache_spin.setSingleStep(64.0)
         self.cache_spin.setSpecialValueText("default")
         self.cache_spin.setSuffix(" MB")
 
-        self.btn_run = QPushButton("Reproject + Crop")
-        self.btn_run.clicked.connect(self.run)
-        self.btn_run.setEnabled(False)
-        self.btn_save = QPushButton("Save GeoTIFF …")
-        self.btn_save.clicked.connect(self.save_geotiff)
-        self.btn_save.setEnabled(False)
+        self.btn_run = self._button("Reproject + Crop", self.run,
+                                    enabled=False)
+        self.btn_run.setToolTip(
+            "Warp the DEM to the CRS and Res, and cut it to the province, off "
+            "the UI thread. Changing any setting in this group stales the "
+            "result and the solid built from it.")
+        self.btn_save = self._button("Save GeoTIFF …", self.save_geotiff,
+                                     enabled=False)
+        self.btn_save.setToolTip(
+            "Keep the cropped raster: a copy of exactly the file inspected.")
 
-        toolbar.addWidget(QLabel("Province:"))
-        toolbar.addWidget(self.province_combo)
-        toolbar.addWidget(QLabel("CRS:"))
-        toolbar.addWidget(self.crs_combo)
-        toolbar.addWidget(QLabel("Res:"))
-        toolbar.addWidget(self.res_spin)
-        toolbar.addWidget(QLabel("Buffer:"))
-        toolbar.addWidget(self.buf_spin)
-        toolbar.addWidget(QLabel("Resample:"))
-        toolbar.addWidget(self.resample_combo)
-        toolbar.addWidget(self.chk_touched)
-        toolbar.addWidget(self.chk_crop)
-        toolbar.addWidget(QLabel("Cache:"))
-        toolbar.addWidget(self.cache_spin)
-        toolbar.addWidget(self.btn_run)
-        toolbar.addWidget(self.btn_save)
-        toolbar.addStretch(1)
-
-        # -- second row: the mesh stage -------------------------------------
-        # A second row rather than one long one: these controls act on a
+        # A row of its own for the mesh stage: these controls act on a
         # different stage with a different invalidation rule, and putting them
         # beside the raster controls would imply they re-warp the DEM.
-        mesh_bar = QHBoxLayout()
         saved = load_terrain_params(*settings_files())
         self.exag_spin = self._spin(
             1.0, 200.0, saved.z_exaggeration, 1,
-            "Vertical exaggeration (terrain.exaggeration).\n"
-            "At 1:8,000,000 true scale (x1) is 0.20 mm of relief on\n"
-            "Newfoundland — invisible. Share one value across a whole map.")
+            "Vertical exaggeration (terrain.exaggeration). At 1:8,000,000 "
+            "true scale (x1) is 0.20 mm of relief on Newfoundland — "
+            "invisible. Share one value across a whole map.")
         self.exag_spin.setSingleStep(5.0)
         self.exag_spin.valueChanged.connect(self._invalidate_mesh)
 
         self.base_spin = self._spin(
             0.1, 50.0, saved.base_height_mm, 2,
-            "Solid base under the terrain (terrain.base_mm).\n"
-            "Must exceed the dovetail pocket depth, or the pocket cuts\n"
-            "through the bottom of the piece.")
+            "Solid base under the terrain (terrain.base_mm). Must exceed the "
+            "dovetail pocket depth, or the pocket cuts through the bottom of "
+            "the piece.")
         self.base_spin.setSingleStep(0.5)
-        self.base_spin.setSuffix(" mm")
         self.base_spin.valueChanged.connect(self._invalidate_mesh)
 
         self.floor_spin = self._spin(
             -1000.0, 9000.0, saved.floor_m, 0,
-            "Elevation the base measures from (terrain.floor_m).\n"
-            "Share one value across a map, or neighbouring pieces step\n"
-            "at the seam.")
+            "Elevation the base measures from (terrain.floor_m). Share one "
+            "value across a map, or neighbouring pieces step at the seam.")
         self.floor_spin.setSingleStep(50.0)
-        self.floor_spin.setSuffix(" m")
         self.floor_spin.valueChanged.connect(self._invalidate_mesh)
 
         self.chk_cut = QCheckBox("Cut coastline")
         self.chk_cut.setChecked(True)
         self.chk_cut.setToolTip(
-            "Cut the solid to the boundary.\n"
-            "Untick for the rectangular slab DEMto3D produces, to compare\n"
-            "old and new pieces.")
+            "Cut the solid to the boundary. Untick for the rectangular slab "
+            "DEMto3D produces, to compare old and new pieces.")
         self.chk_cut.toggled.connect(self._invalidate_mesh)
 
         self.chk_pockets = QCheckBox("Pockets")
         self.chk_pockets.setChecked(True)
         self.chk_pockets.setToolTip(
-            "Carve the dovetail pockets this province's connectors key into.\n"
+            "Carve the dovetail pockets this province's connectors key into. "
             "Needs borders defined with connectors, and the crop in "
             f"{EPSG_WORKING}.")
         self.chk_pockets.toggled.connect(self._invalidate_mesh)
 
-        self.btn_build = QPushButton("Build STL")
-        self.btn_build.clicked.connect(self.build_stl)
-        self.btn_build.setEnabled(False)
-        self.btn_save_stl = QPushButton("Save STL …")
-        self.btn_save_stl.clicked.connect(self.save_stl)
-        self.btn_save_stl.setEnabled(False)
+        self.btn_build = self._button("Build STL", self.build_stl,
+                                      enabled=False)
+        self.btn_build.setToolTip(
+            "Mesh the cropped raster into a watertight solid.")
+        self.btn_save_stl = self._button("Save STL …", self.save_stl,
+                                         enabled=False)
+        self.btn_save_stl.setToolTip("Keep the solid as an STL.")
 
-        mesh_bar.addWidget(QLabel("Mesh:"))
-        mesh_bar.addWidget(QLabel("Exag:"))
-        mesh_bar.addWidget(self.exag_spin)
-        mesh_bar.addWidget(QLabel("Base:"))
-        mesh_bar.addWidget(self.base_spin)
-        mesh_bar.addWidget(QLabel("Floor:"))
-        mesh_bar.addWidget(self.floor_spin)
-        mesh_bar.addWidget(self.chk_cut)
-        mesh_bar.addWidget(self.chk_pockets)
-        mesh_bar.addWidget(self.btn_build)
-        mesh_bar.addWidget(self.btn_save_stl)
-        mesh_bar.addStretch(1)
-
-        # -- third row: the border bar --------------------------------------
         # Built once for the whole map, not per province, so it has its own
-        # row and its own result.  Draped, it stands on the terrain heights
-        # the rows above set, so those stale it too.
-        self.btn_build_bar = QPushButton("Build Border STL")
+        # group and its own result.  Draped, it stands on the terrain heights
+        # the groups above set, so those stale it too.
+        self.btn_build_bar = self._button("Build Border STL",
+                                          self.build_border_bar, enabled=False)
         self.btn_build_bar.setToolTip(
-            "Extrude the corridor (and its connector layer), then split it\n"
-            f"to the {_cfg('print.bed_mm'):.0f} mm bed (print.bed_mm, "
-            "print.bed_margin_mm).\n"
-            "With a DEM imported the top is draped over the terrain, read\n"
-            "at the Res / Resample / Exag / Base / Floor the solids use, so\n"
-            "it stands as tall as the solids either side. Without one it is\n"
-            "flat at print.border_thickness_mm.")
-        self.btn_build_bar.clicked.connect(self.build_border_bar)
-        self.btn_build_bar.setEnabled(False)
-        self.btn_save_bar = QPushButton("Save Border Pieces …")
-        self.btn_save_bar.clicked.connect(self.save_border_pieces)
-        self.btn_save_bar.setEnabled(False)
-        self.show_combo = QComboBox()
-        self.show_combo.addItems(SHOW_CHOICES)
-        self.show_combo.setToolTip(
-            "What the 3D panel shows. Assembly lays the solid beside the bar\n"
-            "in one frame, where a pocket that missed its lobe is visible.")
-        self.show_combo.currentTextChanged.connect(self._refresh_3d)
+            "Extrude the corridor (and its connector layer), then split it to "
+            f"the {_cfg('print.bed_mm'):.0f} mm bed (print.bed_mm, "
+            "print.bed_margin_mm).\n\n"
+            "With a DEM imported the top is draped over the terrain, read at "
+            "the Res / Resample / Exag / Base / Floor the solids use, so it "
+            "stands as tall as the solids either side. Without one it is flat "
+            "at print.border_thickness_mm.")
+        self.btn_save_bar = self._button("Save Border Pieces …",
+                                         self.save_border_pieces, enabled=False)
+        self.btn_save_bar.setToolTip(
+            "Write each bed-sized piece of the border bar as its own STL.")
 
-        bar_row = QHBoxLayout()
-        bar_row.addWidget(QLabel("Border:"))
-        bar_row.addWidget(self.btn_build_bar)
-        bar_row.addWidget(self.btn_save_bar)
-        bar_row.addWidget(QLabel("3D:"))
-        bar_row.addWidget(self.show_combo)
-        bar_row.addStretch(1)
+        self.grp_province = self._group("Province", self.province_combo)
+        # The raster stage in two groups: the frame and pitch it is warped
+        # to, then how it is cut -- and the run, which ends with the cut.
+        self.grp_warp = self._group(
+            "Warp", "CRS", self.crs_combo, "Res", self.res_spin,
+            "Resample", self.resample_combo, "Cache", self.cache_spin)
+        self.grp_cut = self._group(
+            "Cut", "Buffer (m)", self.buf_spin, self.chk_touched,
+            self.chk_crop, self.btn_run, self.btn_save)
+        self.grp_solid = self._group(
+            "Solid", "Exag", self.exag_spin, "Base (mm)", self.base_spin,
+            "Floor (m)", self.floor_spin, self.chk_cut, self.chk_pockets,
+            self.btn_build, self.btn_save_stl)
+        self.grp_bar = self._group(
+            "Border bar", self.btn_build_bar, self.btn_save_bar)
 
         stl_page = QWidget()
         stl_layout = QVBoxLayout(stl_page)
-        stl_layout.addLayout(toolbar)
-        stl_layout.addLayout(mesh_bar)
-        stl_layout.addLayout(bar_row)
+        stl_layout.addLayout(self._row(self.grp_province, self.grp_warp))
+        stl_layout.addLayout(self._row(self.grp_cut))
+        stl_layout.addLayout(self._row(self.grp_solid, self.grp_bar))
 
         self.tabs = QTabWidget()
         self.tabs.addTab(import_page, "1 · Import")
         self.tabs.addTab(borders_page, "2 · Borders")
         self.tabs.addTab(stl_page, "3 · STL")
         self.tabs.setTabEnabled(1, False)
-        self.tabs.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        self.tabs.setSizePolicy(QSizePolicy.Policy.Preferred,
+                                QSizePolicy.Policy.Maximum)
         self.tabs.currentChanged.connect(self._on_tab)
         root.addWidget(self.tabs)
 
-        # -- map: before | after --------------------------------------------
-        # Deliberately NOT sharex/sharey. Once a warp is in play the panels are
-        # in different CRSs — Newfoundland sits at x ~1.5e6 in EPSG:3979 and
-        # ~7.1e6 in EPSG:3347 — so shared limits would drive the result clean off
-        # the canvas. They are linked explicitly instead, and only when the two
-        # panels really are in the same frame (see _link_views).
-        self.figure = Figure(figsize=(11, 6))
-        self.canvas = FigureCanvasQTAgg(self.figure)
-        self.ax_before = self.figure.add_subplot(1, 2, 1)
-        self.ax_after = self.figure.add_subplot(1, 2, 2)
-        self._reset_axes("Import a GeoTIFF to begin", "")
-
-        self.mpl_toolbar = NavigationToolbar(self.canvas, self)
-        self.canvas.mpl_connect("scroll_event", self._on_scroll)
-        self.canvas.mpl_connect("button_press_event", self._on_press)
-        self.canvas.mpl_connect("motion_notify_event", self._on_motion)
-        self.canvas.mpl_connect("button_release_event", self._on_release)
-        self.canvas.mpl_connect("key_press_event", self._on_key)
-        self.canvas.setFocusPolicy(Qt.StrongFocus)    # so the keys reach it
-
+        # -- the maps: before | after, and the 3D panel ----------------------
         # DEM + cropped raster on the left, the finished solid on the right.
         # The 3-D panel is vispy, not mplot3d: a province is ~200k triangles and
         # matplotlib re-sorts every one of them on each rotate.
         panels = QHBoxLayout()
-        left = QVBoxLayout()
-        left.addWidget(self.mpl_toolbar)
-        left.addWidget(self.canvas, stretch=1)
-        panels.addLayout(left, stretch=2)
+        panels.setContentsMargins(0, 0, 0, 0)
+        panels.setSpacing(8)
+        panels.addWidget(self.canvas, stretch=2)
 
         self.solid_canvas, self.solid_view = self._make_scene()
         self.solid_title = QLabel("3D preview")
-        self.solid_title.setStyleSheet("color:#555;")
         right = QVBoxLayout()
+        right.setContentsMargins(0, 0, 0, 0)
+        right.setSpacing(4)
         right.addWidget(self.solid_title)
         right.addWidget(self.solid_canvas.native, stretch=1)
         panels.addLayout(right, stretch=1)
         root.addLayout(panels, stretch=1)
 
+        # -- under the maps: what they say, and how they are looked at -------
+        # The view tools belong to the maps, not to any stage, so they sit
+        # against them, on the status line's row rather than one of their own:
+        # height taken here comes straight off the maps.
+        self.show_combo = QComboBox()
+        self.show_combo.addItems(SHOW_CHOICES)
+        self.show_combo.setToolTip(
+            "What the 3D panel shows. Assembly lays the solid beside the bar "
+            "in one frame, where a pocket that missed its lobe is visible.")
+        self.show_combo.currentTextChanged.connect(self._refresh_3d)
+
         self.status = QLabel("No DEM loaded.")
-        self.status.setStyleSheet("color:#555;")
-        root.addWidget(self.status)
+        self._emphasise(self.status)
+        # May shrink below its text, or a long report would set the window's
+        # minimum width from the bottom row.
+        self.status.setMinimumWidth(0)
+        self.status.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                  QSizePolicy.Policy.Preferred)
+        foot = QHBoxLayout()
+        foot.setContentsMargins(0, 0, 0, 0)
+        foot.setSpacing(4)
+        foot.addWidget(self.status, stretch=1)
+        for widget in (self.mpl_toolbar, self._separator(), QLabel("3D view"),
+                       self.show_combo):
+            foot.addWidget(widget)
+        root.addLayout(foot)
 
         self.progress = QProgressBar()
         self.progress.setTextVisible(False)
@@ -1503,6 +1545,39 @@ class TerrainEditorTester(QMainWindow):
         root.addWidget(self.progress)
 
         self.setCentralWidget(central)
+
+        # Arrow keys pan the maps, bound to the canvas so that Up/Down still
+        # step a focused spin box (see ``_bind_pan``).
+        for key, (dx, dy) in ((Qt.Key.Key_Left, (-1, 0)),
+                              (Qt.Key.Key_Right, (1, 0)),
+                              (Qt.Key.Key_Down, (0, -1)),
+                              (Qt.Key.Key_Up, (0, 1))):
+            for modifier, step in ((0, PAN_STEP),
+                                   (Qt.Modifier.SHIFT.value, PAN_STEP_COARSE),
+                                   (Qt.Modifier.CTRL.value, PAN_STEP_FINE)):
+                self._bind_pan(modifier | key.value, dx * step, dy * step)
+
+        # Every sequence the platform lists for undo/redo, not just the first:
+        # on Windows StandardKey.Redo is Ctrl+Y alone.
+        self._bind(QKeySequence.StandardKey.Undo, self.undo_connectors,
+                   "Ctrl+Z")
+        self._bind(QKeySequence.StandardKey.Redo, self.redo_connectors,
+                   "Ctrl+Shift+Z", "Ctrl+Y")
+        # …and keep the text entries from swallowing them (see eventFilter).
+        for entry in (self.coast_spin, self.internal_spin, self.min_seg_spin,
+                      self.min_angle_spin, self.width_spin, self.spacing_spin,
+                      *self._shape_spins(), self.sel_angle_spin,
+                      self.sel_depth_spin, self.res_spin, self.buf_spin,
+                      self.cache_spin, self.exag_spin, self.base_spin,
+                      self.floor_spin, self.crs_combo.lineEdit()):
+            entry.installEventFilter(self)
+
+        # Wired last, so that building the window is not mistaken for
+        # somebody choosing the values the controls were built on.
+        self._wire_saved_settings()
+        self._wire_shortcuts()
+        self._update_border_controls()
+        self._update_title()
 
     @staticmethod
     def _make_scene():
@@ -1527,11 +1602,173 @@ class TerrainEditorTester(QMainWindow):
 
     @classmethod
     def _mm_spin(cls, value, lo, hi, tip) -> QDoubleSpinBox:
-        """A print-mm length, to the 0.05 mm a 0.4 mm nozzle can mean."""
+        """A print-mm length, to the 0.05 mm a 0.4 mm nozzle can mean.
+
+        No suffix: the unit is in the label beside it (docs/UI_GUIDE.md §3).
+        """
         spin = cls._spin(lo, hi, value, 2, tip)
         spin.setSingleStep(0.05)
-        spin.setSuffix(" mm")
         return spin
+
+    def _button(self, text, slot, enabled=True) -> QPushButton:
+        b = QPushButton(text)
+        if slot is not None:
+            b.clicked.connect(slot)
+        # Hand the keyboard back to the map once the button has done its work,
+        # so the arrow keys pan rather than walk the focus along the row.
+        b.clicked.connect(lambda *_: self.canvas.setFocus())
+        b.setEnabled(enabled)
+        return b
+
+    @staticmethod
+    def _group(title: str, *contents) -> QGroupBox:
+        """A titled box of controls, the title naming what they act on.
+
+        Bare strings become labels, so a group reads in source the way it
+        reads on screen. The box is also the enable handle for everything
+        inside it (see ``_set_busy``).
+        """
+        box = QGroupBox(title)
+        row = QHBoxLayout(box)
+        row.setContentsMargins(8, 2, 8, 4)
+        row.setSpacing(4)
+        for item in contents:
+            row.addWidget(QLabel(item) if isinstance(item, str) else item)
+        return box
+
+    @staticmethod
+    def _row(*groups) -> QHBoxLayout:
+        """One row of groups, packed to the left."""
+        row = QHBoxLayout()
+        for group in groups:
+            row.addWidget(group)
+        row.addStretch(1)
+        return row
+
+    def _groups(self) -> tuple:
+        """Every group of controls, on every tab."""
+        return (self.grp_dem, self.grp_regions, self.grp_simplify,
+                self.grp_seams, self.grp_corridor, self.grp_borders,
+                self.grp_connectors, self.grp_shape, self.grp_fit,
+                self.grp_by_hand, self.grp_selected, self.grp_province,
+                self.grp_warp, self.grp_cut, self.grp_solid, self.grp_bar)
+
+    @staticmethod
+    def _separator() -> QFrame:
+        """A vertical rule, so a row's parts are divided, not just spaced."""
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.VLine)
+        line.setFrameShadow(QFrame.Shadow.Sunken)
+        return line
+
+    @staticmethod
+    def _emphasise(label: QLabel) -> None:
+        """Make a label carry: larger than the chrome, at full palette contrast.
+
+        No colour is set: a hardcoded grey is legible on one theme only.
+        """
+        font = label.font()
+        size = font.pointSizeF()
+        if size > 0:
+            font.setPointSizeF(size + STATUS_POINT_BUMP)
+        else:                            # a font defined in pixels, not points
+            font.setPixelSize(font.pixelSize() + STATUS_POINT_BUMP * 2)
+        label.setFont(font)
+
+    # -- keyboard -----------------------------------------------------------
+    def eventFilter(self, obj, event):
+        """Stop a focused entry from claiming undo/redo for its own text.
+
+        A ``QLineEdit`` (and every spin box edits through one) accepts the
+        ``ShortcutOverride`` for Ctrl+Z, so with one focused the key would
+        roll back a typed digit instead of the last connector edit.
+        """
+        if event.type() == QEvent.Type.ShortcutOverride and (
+                event.matches(QKeySequence.StandardKey.Undo)
+                or event.matches(QKeySequence.StandardKey.Redo)):
+            return True
+        return super().eventFilter(obj, event)
+
+    def _bind(self, standard_key, slot, *extra) -> None:
+        """Wire ``slot`` to the platform bindings for ``standard_key`` plus
+        ``extra`` literal sequences, skipping duplicates."""
+        seqs = list(QKeySequence.keyBindings(standard_key))
+        seqs += [QKeySequence(s) for s in extra]
+        seen = set()
+        for seq in seqs:
+            text = seq.toString()
+            if text in seen:
+                continue
+            seen.add(text)
+            QShortcut(seq, self, activated=slot)
+
+    def _wire_shortcuts(self) -> None:
+        """Give every button a key, and say so in its tooltip.
+
+        One table, so what else has claimed a key is answerable at a glance.
+        The keys hang on the buttons, so a disabled button is a dead key and
+        a button on a tab not showing cannot be fired.  File actions take
+        modified keys; the work of each stage takes the initial that tells it
+        apart.  Undo and Redo are annotated but not rebound (see ``_bind``).
+        """
+        for widget, sequence in (
+                (self.btn_raster, "Ctrl+O"),
+                (self.btn_add_targets, "Ctrl+P"),
+                (self.btn_add_surrounding, "Ctrl+Shift+P"),
+                (self.btn_remove, "Shift+Del"),
+                (self.btn_define, "D"),
+                (self.btn_save_borders, "Ctrl+B"),
+                (self.btn_edit_lobes, "E"),
+                (self.btn_sel_reset, "R"),
+                (self.btn_sel_delete, QKeySequence.StandardKey.Delete),
+                (self.btn_run, "C"),
+                (self.btn_save, "Ctrl+Shift+S"),
+                (self.btn_build, "S"),
+                (self.btn_save_stl, "Ctrl+S"),
+                (self.btn_build_bar, "B"),
+                (self.btn_save_bar, "Ctrl+Shift+B"),
+        ):
+            widget.setShortcut(QKeySequence(sequence))
+            self._hint(widget, widget.shortcut())
+        self._hint(self.btn_lobe_undo, QKeySequence.StandardKey.Undo)
+        self._hint(self.btn_lobe_redo, "Ctrl+Shift+Z")
+        for action in self.mpl_toolbar.actions():
+            sequence = _NAV_KEYS.get(action.text())
+            if sequence is not None:
+                action.setShortcut(QKeySequence(sequence))
+                self._hint(action, action.shortcut())
+
+    @staticmethod
+    def _hint(widget, sequence) -> None:
+        """Append ``sequence`` to ``widget``'s tooltip, as the desktop spells it."""
+        keys = QKeySequence(sequence).toString(
+            QKeySequence.SequenceFormat.NativeText)
+        tip = widget.toolTip()
+        tail = "Shortcut: " + keys
+        widget.setToolTip(f"{tip}\n\n{tail}" if tip else tail)
+
+    def _bind_pan(self, sequence, fx: float, fy: float) -> None:
+        """Pan by ``(fx, fy)`` of the view on a key, while the canvas has focus."""
+        shortcut = QShortcut(QKeySequence(sequence), self.canvas,
+                             activated=lambda: self._pan_by(fx, fy))
+        shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+
+    def _pan_by(self, fx: float, fy: float) -> None:
+        """Pan both panels by a fraction of their own span.
+
+        Each by its own, because the two may be in different CRSs; while they
+        share a frame the same fraction keeps them aligned.
+        """
+        for ax in (self.ax_before, self.ax_after):
+            (x0, x1), (y0, y1) = ax.get_xlim(), ax.get_ylim()
+            dx, dy = (x1 - x0) * fx, (y1 - y0) * fy
+            ax.set_xlim(x0 + dx, x1 + dx)
+            ax.set_ylim(y0 + dy, y1 + dy)
+        self.canvas.draw_idle()
+
+    def _update_title(self) -> None:
+        name = self.raster_path.name if self.raster_path else "(no file)"
+        self.setWindowTitle(f"Terrain Editor — {name}")
 
     # -- stage 1: regions ---------------------------------------------------
     def add_regions_dialog(self, role: str) -> None:
@@ -2020,7 +2257,7 @@ class TerrainEditorTester(QMainWindow):
             self._draw_borders(preserve_view=True)
 
     def _sync_selected(self) -> None:
-        """The Selected row shows the selected connector, or is greyed."""
+        """Selected connector shows the selected connector, or is greyed."""
         d = self.borders
         if self._selected is not None and (
                 d is None or self._selected >= len(d.lobes)):
@@ -2431,6 +2668,7 @@ class TerrainEditorTester(QMainWindow):
             data = ds.read(1, out_shape=shape, resampling=Resampling.nearest,
                            masked=True)
         self.raster_path = path
+        self._update_title()
         self.overview = data
         left, bottom, right, top = self.raster_bounds
         self.overview_extent = (left, right, bottom, top)
@@ -2780,21 +3018,10 @@ class TerrainEditorTester(QMainWindow):
         self.progress.setVisible(busy)
         self.progress.setRange(0, 0) if busy else self.progress.setRange(0, 1)
         self.progress.setValue(0 if busy else 1)
-        for w in (self.btn_raster, self.btn_run,
-                  self.btn_save, self.crs_combo, self.res_spin, self.buf_spin,
-                  self.cache_spin, self.chk_touched, self.chk_crop,
-                  self.resample_combo, self.exag_spin, self.base_spin,
-                  self.floor_spin, self.chk_cut, self.btn_build,
-                  self.btn_save_stl, self.btn_add_targets,
-                  self.btn_add_surrounding, self.btn_remove,
-                  self.province_combo, self.coast_spin, self.internal_spin,
-                  self.min_seg_spin, self.min_angle_spin, self.width_spin,
-                  self.chk_connectors, self.spacing_spin, self.chk_pockets,
-                  *self._shape_spins(),
-                  self.btn_define, self.btn_save_borders, self.btn_build_bar,
-                  self.btn_save_bar, self.btn_edit_lobes, self.btn_lobe_undo,
-                  self.btn_lobe_redo):
-            w.setEnabled(not busy)
+        # The groups are the enable handles: each control keeps its own flag
+        # underneath, so unlocking a group gives back what it had.
+        for group in self._groups():
+            group.setEnabled(not busy)
         if not busy:      # re-apply the preconditions the blanket enable ignored
             self.btn_run.setEnabled(
                 self.raster_path is not None and self.boundary is not None)
