@@ -605,6 +605,29 @@ class TestAutoPlacement:
         assert kept == [free]
         assert reasons == {"recrosses": 1}
 
+    def test_define_refuses_a_connector_across_the_border_line(self,
+                                                               defined):
+        """Turned 45 degrees, a connector's root corner reaches past the A/B
+        line: Define drops it, but by hand it may stand."""
+        p = defined.settings.connector_params()
+        turned = lobe_at(defined.border, A.bounds[2] - 2 * MPM,
+                         A.bounds[1] + 25 * MPM, p, 45.0)
+        assert turned.intersects(defined.border_line())
+        kept, reasons = U._standing_lobes([turned], defined, p)
+        assert kept == [] and reasons == {"crosses_line": 1}
+        x, y, angle, scale = U.lobe_pose(turned, defined.border, p)
+        lobe, why = U.place_connector(defined, x, y, angle_deg=angle,
+                                      scale=scale, allow_faults=True)
+        assert lobe is not None and why == ""
+
+    def test_the_border_line_leaves_out_the_surrounding_frontier(self,
+                                                                 defined):
+        """Every connector's root crosses the A/C frontier by design: that
+        corridor is wholly on C's side."""
+        line = defined.border_line()
+        assert line.distance(Point(7_200 * KM, 1_400 * KM)) > 50 * KM
+        assert line.distance(Point(A.bounds[2], 1_200 * KM)) < MPM
+
     def test_each_rule_is_counted_by_its_own_reason(self, defined):
         p = defined.settings.connector_params()
         free = lobe_at(defined.border, A.bounds[2] - 2 * MPM,

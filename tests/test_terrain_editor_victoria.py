@@ -149,19 +149,28 @@ def _crossing(definition) -> list:
 
 class TestVictoriaIslandConnectors:
     """A connector keys one territory into the bar, from its own side of the
-    border line.  One that crosses the line reaches into the other
-    territory's half of the corridor, where it is no part of the piece it
-    is printed with.
+    border line.
 
-    On Victoria Island one does: in the inside corner of the bend, on the NWT
-    side, a connector hung from the north-east leg's edge swings its root
-    across the south leg's corridor and over the line.  None of the rules
-    sees it -- it meets the corridor in one piece (the two legs' corridors
-    join at the corner), and its far end is all in the NWT.
-
-    The tests that say what should happen are ``xfail(strict=True)``: green
-    while the bug stands, red the moment it is fixed.
+    On Victoria Island one did not: in the inside corner of the bend, on the
+    NWT side, Define hung a connector from the north-east leg's edge that
+    swung its root over the south leg's line.  None of the rules every
+    connector is held to saw it -- it met the corridor in one piece (the two
+    legs' corridors join at the corner), and its far end was all in the NWT.
+    Define now refuses a connector that crosses the line.  By hand the same
+    graze stays allowed: a turned connector's root crosses it by design.
     """
+
+    def _corner_connector(self, defined):
+        """The connector Define would have placed in the corner: of those it
+        generates that cross the line, the one at the bend.  (The other, at
+        the south leg's west end, breaks a rule of its own first.)"""
+        from lib.LIB_border_connectors import generate_lobes
+        p = defined.settings.connector_params()
+        line = _border_line(defined)
+        candidates = [lobe for lobe in generate_lobes(defined.border,
+                                                      defined.land(), p)
+                      if lobe.intersects(line)]
+        return min(candidates, key=shapely.Point(TURN).distance)
 
     def test_connectors_are_placed_on_both_sides(self, defined):
         owners = {name for lobe in defined.lobes
@@ -169,26 +178,25 @@ class TestVictoriaIslandConnectors:
                   if lobe.difference(defined.border).intersects(geom)}
         assert owners == {"NWT", "NU"}
 
-    def test_the_corner_connector_crosses_today(self, defined):
-        """Pins the case down, so the xfails below cannot pass vacuously:
-        the one crossing is the NWT connector in the corner of the bend.
-        Comes out with the fix, along with the two xfail marks."""
-        crossing = _crossing(defined)
-        assert len(crossing) == 1
-        lobe = defined.lobes[crossing[0]]
-        assert lobe.distance(shapely.Point(TURN)) < 4 * defined.settings.mpm
-        assert lobe.difference(defined.border).intersects(
-            defined.targets["NWT"])
-
-    @pytest.mark.xfail(strict=True, reason=(
-        "A connector in the inside corner of Victoria Island's bend crosses "
-        "the NWT/Nunavut border line, and no rule refuses it"))
     def test_define_places_no_connector_across_the_border_line(self,
                                                                defined):
         assert _crossing(defined) == []
 
-    @pytest.mark.xfail(strict=True, reason="as above")
-    def test_a_connector_across_the_border_line_is_red(self, defined):
-        """Put there by hand, it must at least be marked invalid."""
-        lobe = defined.lobes[_crossing(defined)[0]]
-        assert defined.faults()[defined.lobes.index(lobe)] != ""
+    def test_the_corner_connector_is_the_one_refused(self, defined):
+        """So the test above cannot pass for want of a candidate: the one
+        crossing the line is in the corner of the bend, on the NWT side, and
+        the report counts it."""
+        lobe = self._corner_connector(defined)
+        assert lobe.distance(shapely.Point(TURN)) < 4 * defined.settings.mpm
+        assert lobe.difference(defined.border).intersects(
+            defined.targets["NWT"])
+        assert defined.drop_reasons.get("crosses_line") == 1
+
+    def test_put_there_by_hand_it_is_allowed(self, defined):
+        """The graze is the same one a turned connector makes by design."""
+        x, y, angle, scale = U.lobe_pose(self._corner_connector(defined),
+                                         defined.border,
+                                         defined.settings.connector_params())
+        lobe, why = U.place_connector(defined, x, y, angle_deg=angle,
+                                      scale=scale, allow_faults=True)
+        assert lobe is not None and why == ""

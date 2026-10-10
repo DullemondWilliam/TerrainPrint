@@ -151,6 +151,10 @@ another's, and one that would meet the corridor in two places -- near a bend
 or a junction its far end can run back into the bar.  Placed by Define, by
 hand or by a reshape, every connector is held
 to these same rules, and the report says how many each one dropped.
+Define holds the ones it places to one more: none may cross the border line
+between two printed provinces, as one in the inside corner of Victoria
+Island's bend did.  By hand that graze is allowed -- a connector turned past
+about 18 degrees puts its root corner over the line by design.
 
 *Connectors have a shape.*  **Height** (the lobe layer, and so the pocket
 depth), **Depth** (how far a lobe reaches into its province), **Width** (its
@@ -258,7 +262,7 @@ from lib.LIB_border_connectors import (CONNECTORS_NAME, ConnectorParams,
                                        load_connector_params, lobe_at,
                                        lobe_pose,
                                        notch_province)
-from lib.LIB_border_regions import build_border_regions
+from lib.LIB_border_regions import build_border_regions, shared_borderlines
 from lib.LIB_border_simplification import topo_simplify_two_tolerances
 from lib.LIB_border_split import split_to_bed
 from lib.LIB_shared_border import _count_short, _count_spikes
@@ -564,6 +568,10 @@ class BorderDefinition:
                               init=False)
     _fault_answer: tuple = field(default=None, repr=False, compare=False,
                                  init=False)
+    _line: object = field(default=None, repr=False, compare=False,
+                          init=False)
+    _line_key: tuple = field(default=None, repr=False, compare=False,
+                             init=False)
 
     def land(self):
         """Every target as one geometry, for the connector rules.
@@ -641,6 +649,21 @@ class BorderDefinition:
         self._check_fault_key()
         for lobe in lobes:
             self._fault_cache[id(lobe)] = (lobe, "", None)
+
+    def border_line(self):
+        """The border line between the printed provinces -- the shared
+        edges of their simplified outlines, which the corridor between two
+        of them is carved along -- or None where none touch.  Merged once,
+        like :meth:`land`.  A frontier with a surrounding region is not part
+        of it: that corridor lies wholly on the surrounding side, and every
+        connector's root crosses its line by design."""
+        key = tuple(id(self.simplified.get(n)) for n in self.targets)
+        if self._line_key != key:
+            self._line = shared_borderlines(
+                [self.simplified[n] for n in self.targets
+                 if self.simplified.get(n) is not None])
+            self._line_key = key
+        return self._line
 
     def _reach(self, lobe):
         """``lobe`` outside the corridor, measured once."""
@@ -769,11 +792,21 @@ def _standing_lobes(lobes, definition, p: ConnectorParams):
     against the ones already kept, so no two pockets run together and none
     leaves the province it keys into.  First come, first kept: along a seam
     that is the order they were spaced in.
+
+    And to one more, here only: it must not cross the border line between
+    two printed provinces.  In the inside corner of a bend -- Victoria
+    Island's NWT/Nunavut seam has one -- a connector hung from one leg can
+    swing its root over the other leg's line.  By hand the same graze is
+    allowed: a connector turned past about 18 degrees puts its root corner
+    over the line by design, and the bar it sits in is one piece.
     """
     land = definition.land()
+    line = definition.border_line()
     kept, reasons = [], {}
     for lobe in lobes:
         code = _fault(lobe, definition, kept, p, land)
+        if not code and line is not None and lobe.intersects(line):
+            code = "crosses_line"
         if code:
             reasons[code] = reasons.get(code, 0) + 1
         else:
@@ -859,6 +892,7 @@ FAULT_COUNTS = {
     "crowded": "ran into another connector",
     "detached": "came loose from the bar",
     "recrosses": "met the corridor in two places",
+    "crosses_line": "crossed the border line between two provinces",
     "thin": "were too thin to print",
 }
 
