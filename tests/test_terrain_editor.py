@@ -286,14 +286,14 @@ class TestTwoStageInvalidation:
         assert window.result is crop
 
     def test_a_second_crop_after_a_change_does_not_crash(self, tmp_path):
-        """A changed setting clears the after panel; the colorbar on it must
-        go first, or the next crop's redraw dies inside matplotlib."""
+        """A changed setting redraws the map; the colorbar on it must go
+        first, or the next crop's redraw dies inside matplotlib."""
         window = _loaded(tmp_path)
         _run_clip(window)
         window.buf_spin.setValue(100.0)
         _run_clip(window)
         assert window._colorbar is not None
-        assert len(window.figure.axes) == 3       # two panels + one colorbar
+        assert len(window.figure.axes) == 2       # the map + one colorbar
 
     def test_busy_restores_both_stages_preconditions(self, tmp_path):
         window = _loaded(tmp_path, target_crs=DEM_CRS)
@@ -430,22 +430,39 @@ class TestReprojection:
         assert window.target_crs() is None
         assert "not recognised" in window.status.text()
 
-    def test_panels_are_not_linked_across_a_projection_change(self, tmp_path):
-        """Shared limits would drive the warped result off the canvas."""
+    def test_the_view_is_not_kept_across_a_projection_change(self, tmp_path):
+        """Limits in the DEM's CRS would point the warped crop off the map."""
         window = _loaded(tmp_path, target_crs=PRINT_CRS)
+        window._draw_map(preserve_view=False)
+        before_x = window.ax.get_xlim()
         _run_clip(window)
-        before_x = window.ax_before.get_xlim()
-        after_x = window.ax_after.get_xlim()
-        assert after_x[0] != pytest.approx(before_x[0], abs=1000)
+        window._draw_map()
+        crop_x = window.ax.get_xlim()
+        assert crop_x[0] != pytest.approx(before_x[0], abs=1000)
+        left, _, right, _ = window.result.bounds_m
+        assert crop_x[0] <= left and right <= crop_x[1]
 
-    def test_panels_are_linked_when_the_frames_agree(self, tmp_path):
+    def test_the_view_is_kept_when_the_frames_agree(self, tmp_path):
         window = _loaded(tmp_path, target_crs=DEM_CRS)
-        _run_clip(window)
-        xlim = window.ax_before.get_xlim()
-        # Guard against the trivial pass: two undrawn axes both sit at (0, 1),
+        window._draw_map(preserve_view=False)
+        xlim = window.ax.get_xlim()
+        # Guard against the trivial pass: an undrawn axes sits at (0, 1),
         # which would satisfy the equality below while showing nothing.
         assert xlim[1] - xlim[0] > 1000.0
-        assert window.ax_after.get_xlim() == pytest.approx(xlim)
+        _run_clip(window)
+        window._draw_map()
+        assert window.ax.get_xlim() == pytest.approx(xlim)
+
+    def test_one_map_shows_the_latest_state(self, tmp_path):
+        """No before | after pair: the DEM until the crop, the crop after."""
+        window = _loaded(tmp_path)
+        window._draw_map()
+        assert len(window.figure.axes) == 2       # the map + its colorbar
+        assert window.ax.get_title().startswith("DEM overview")
+        _run_clip(window)
+        window._draw_map()
+        assert window.ax.get_title().startswith("Cropped")
+        assert len(window.ax.images) == 1         # the crop, not the DEM too
 
 
 class TestDownsample:
@@ -564,7 +581,7 @@ class TestInvalidation:
         window.res_spin.setValue(2 * RES)
         assert window.result is None
         assert not window.btn_save.isEnabled()
-        assert window.ax_after.get_title() == "Not yet run"
+        assert window.ax.get_title().startswith("DEM overview")
 
     def test_checkbox_change_invalidates_the_result(self, tmp_path):
         window = _loaded(tmp_path)
@@ -607,7 +624,8 @@ class TestDisplay:
         data, step = window._for_display(result.data)
         assert step == 1
         assert data.shape == result.data.shape
-        assert "shown 1:" not in window.ax_after.get_title()
+        window._draw_map()
+        assert "shown 1:" not in window.ax.get_title()
 
     def test_large_clip_is_strided_and_says_so(self):
         window = U.TerrainEditorTester()
@@ -634,35 +652,35 @@ class TestDisplay:
     def test_first_draw_ignores_preserve_view(self, tmp_path):
         """A never-drawn panel has no view to keep, only misleading defaults."""
         window = _loaded(tmp_path, target_crs=DEM_CRS)
-        assert window._before_drawn is False
-        window._draw_before(preserve_view=True)
-        xlim = window.ax_before.get_xlim()
+        window._view_crs = None                   # nothing drawn yet
+        window._draw_map(preserve_view=True)
+        xlim = window.ax.get_xlim()
         # Must be the DEM's metric extent, not matplotlib's default (0, 1).
         assert xlim[1] - xlim[0] > 1000.0
-        assert window._before_drawn is True
+        assert window._view_crs is not None
 
     def test_later_draws_do_keep_the_view(self, tmp_path):
         window = _loaded(tmp_path, target_crs=DEM_CRS)
-        window._draw_before()
-        window.ax_before.set_xlim(ORIGIN[0], ORIGIN[0] + 500.0)
-        window._draw_before(preserve_view=True)
-        assert window.ax_before.get_xlim() == pytest.approx(
+        window._draw_map()
+        window.ax.set_xlim(ORIGIN[0], ORIGIN[0] + 500.0)
+        window._draw_map(preserve_view=True)
+        assert window.ax.get_xlim() == pytest.approx(
             (ORIGIN[0], ORIGIN[0] + 500.0))
 
     def test_outline_drawn_without_geopandas_plotting(self, tmp_path):
         window = _loaded(tmp_path)
-        window._draw_before()
+        window._draw_map()
         # One ring for a box; drawn as a Line2D, not a geopandas patch.
-        assert len(window.ax_before.lines) == 1
-        assert len(window.ax_before.images) == 1      # the DEM overview
+        assert len(window.ax.lines) == 1
+        assert len(window.ax.images) == 1      # the DEM overview
 
     def test_outline_handles_a_multipolygon(self, tmp_path):
         from shapely.geometry import MultiPolygon
         pair = MultiPolygon([_metric_box(10, 10, 40, 40),
                              _metric_box(60, 60, 90, 90)])
         window = _loaded(tmp_path, boundary=pair)
-        window._draw_before()
-        assert len(window.ax_before.lines) == 2
+        window._draw_map()
+        assert len(window.ax.lines) == 2
 
 
 class TestSave:

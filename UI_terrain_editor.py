@@ -62,7 +62,13 @@ resets and Del deletes the selected one; C reproject-and-crops, S builds the
 STL and B the border bar; Ctrl+S, Ctrl+Shift+S, Ctrl+B and Ctrl+Shift+B save
 the STL, the GeoTIFF, the borders and the border pieces.  Home, Alt+Left /
 Alt+Right, P and Z work the map's view, and the arrow keys pan it (Shift for
-a long stride, Ctrl for a nudge).
+a long stride, Ctrl for a nudge).  Left-drag pans the map too, and the wheel
+zooms it.
+
+There is one map, and it shows the latest state of the stage on screen: the
+regions as imported until the borders are defined and the borders after; the
+DEM until the crop has run and the crop after.  The view is kept while the
+CRS stays the same.
 
 Run with:  python UI_terrain_editor.py
 
@@ -97,7 +103,7 @@ change invalidates only the solid.
 Three things differ from the 2-D geometry harnesses, all forced by the input
 being a **very large raster**:
 
-*Nothing is ever read whole.*  The before panel is a decimated overview (GDAL
+*Nothing is ever read whole.*  The map shows a decimated overview (GDAL
 seeks past the scanlines it does not need, so a full-Canada overview costs
 ~0.4 s); the warp streams through a ``WarpedVRT`` and the clip in row bands.
 
@@ -105,9 +111,9 @@ seeks past the scanlines it does not need, so a full-Canada overview costs
 GeoTIFFs, so the harness runs straight to a temporary file and Save copies it.
 What you inspect is byte-for-byte what you save.
 
-*The after panel may be showing you less than you saved.*  A native-resolution
+*The map may be showing you less than you saved.*  A native-resolution
 province is a 400 MB array; matplotlib is handed a strided-down copy above
-``MAX_DISPLAY_PX``.  The panel title says so whenever it happens, because a
+``MAX_DISPLAY_PX``.  The map's title says so whenever it happens, because a
 harness that quietly showed a coarser image than it wrote would be lying about
 the thing it exists to check.
 
@@ -156,9 +162,10 @@ wider than the connector on every side, and that much deeper than the
 connector layer is tall.  The clearance is also the gap kept between
 neighbouring pockets, so widening it can drop a connector that now crowds one.
 
-*Connectors can be edited by hand.*  **Edit Connectors** turns the right-hand
-map into a tool: click a connector to select it, drag one along the corridor
-to move it, click beside the corridor to add one on that side.  A connector is
+*Connectors can be edited by hand.*  **Edit Connectors** turns the map
+into a tool: click a connector to select it, drag one along the corridor
+to move it, click beside the corridor to add one on that side; a drag that
+starts on empty map still pans it.  A connector is
 deleted only once it is selected -- the **Delete** button or the Del key -- so a
 stray click cannot lose one.  A placed lobe has
 the generated profile and is held to the same rules -- it must reach a province
@@ -200,6 +207,7 @@ reach the printer unannounced.
 built in any other CRS is refused rather than carved in the wrong place.
 """
 
+import logging
 import re
 import shutil
 import sys
@@ -278,9 +286,9 @@ CRS_CHOICES = ["EPSG:3347", "EPSG:3979"]
 #: downsample; ``max`` recovers summits a heavy downsample would otherwise lose
 #: (1578 m vs 1165 m on Labrador) at the cost of biasing the surface upward.
 RESAMPLING_CHOICES = ["average", "max", "nearest", "bilinear", "cubic"]
-#: Pixels in the whole-raster overview drawn on the before panel.
+#: Pixels in the whole-raster overview drawn on the map.
 OVERVIEW_PX = 1100
-#: Above this, the after panel is strided down for display only.
+#: Above this, the crop is strided down for display only.
 MAX_DISPLAY_PX = 2_000_000
 BG_COLOUR = "#FDFEFE"       # near-white 3D scene background
 #: Sampling pitch on paper; the Res control is seeded from it via the scale.
@@ -356,6 +364,13 @@ class MapToolbar(NavigationToolbar):
     toolitems = [(text, _NAV_TIPS.get(text, tip), image, callback)
                  for text, tip, image, callback in NavigationToolbar.toolitems
                  if text in _NAV_KEEP]
+
+
+# The map keeps ``aspect="equal", adjustable="datalim"`` so it always fills the
+# canvas; matplotlib logs a warning each time it widens the view to do that,
+# which here is the intended behaviour on every zoom and resize.
+logging.getLogger("matplotlib.axes._base").addFilter(
+    lambda record: "to fulfill fixed data aspect" not in record.getMessage())
 
 
 def _height_colors(mesh):
@@ -1023,7 +1038,7 @@ class TerrainEditorTester(QMainWindow):
         self.raster_bounds = None            #: (l, b, r, t) in the raster CRS
         self.raster_shape = (0, 0)           #: (width, height) in pixels
         self.raster_res = (0.0, 0.0)         #: native metres per pixel
-        self.overview = None                 #: masked array for the before panel
+        self.overview = None                 #: masked array for the map
         self.overview_extent = None
         self.boundary: gpd.GeoDataFrame | None = None
         self.boundary_path: Path | None = None
@@ -1034,7 +1049,11 @@ class TerrainEditorTester(QMainWindow):
         self._worker = None                  #: RunWorker, MeshWorker, CallWorker
         self._pockets = 0                    #: pockets carved into the solid
         self._colorbar = None
-        self._before_drawn = False   #: has the DEM panel been painted yet?
+        #: The CRS of what the map last drew, while it drew something.  A
+        #: redraw keeps the view only in the same frame: limits carried from
+        #: EPSG:3979 into EPSG:3347 would point at another part of the globe.
+        self._view_crs = None
+        self._grab = None                    #: an in-progress drag-pan
         self._solid_meshes = []      #: vispy visuals, detached on each rebuild
         # Stage 1/2 state.  Regions are held in crs.working; their files and
         # source CRSs are kept so saving writes back what came in.
@@ -1071,19 +1090,18 @@ class TerrainEditorTester(QMainWindow):
 
         # The canvas is built ahead of the controls, as in the island editor:
         # every button hands the keyboard back to it (see ``_button``).
-        # Deliberately NOT sharex/sharey. Once a warp is in play the panels are
-        # in different CRSs — Newfoundland sits at x ~1.5e6 in EPSG:3979 and
-        # ~7.1e6 in EPSG:3347 — so shared limits would drive the result clean off
-        # the canvas. They are linked explicitly instead, and only when the two
-        # panels really are in the same frame (see _link_views).
+        # One map, showing the latest state of the stage on screen (see
+        # ``_draw_map``) rather than a before | after pair.
         self.figure = Figure(figsize=(11, 6))
+        # Room for the title above, and nothing else: the map takes the rest.
+        self.figure.subplots_adjust(left=0.005, right=0.995, bottom=0.005,
+                                    top=0.95)
         self.canvas = FigureCanvasQTAgg(self.figure)
         # Embedded, the canvas keeps Qt's NoFocus: the map keys and the arrow
         # pan would never reach it.
         self.canvas.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.ax_before = self.figure.add_subplot(1, 2, 1)
-        self.ax_after = self.figure.add_subplot(1, 2, 2)
-        self._reset_axes("Import a GeoTIFF to begin", "")
+        self.ax = self.figure.add_subplot(1, 1, 1)
+        self._clear_ax(self.ax, "Import a GeoTIFF to begin")
         self.mpl_toolbar = MapToolbar(self.canvas, self)
         self.canvas.mpl_connect("scroll_event", self._on_scroll)
         self.canvas.mpl_connect("button_press_event", self._on_press)
@@ -1214,7 +1232,7 @@ class TerrainEditorTester(QMainWindow):
                                            enabled=False)
         self.btn_edit_lobes.setCheckable(True)
         self.btn_edit_lobes.setToolTip(
-            "Edit the connectors by hand on the right-hand map:\n"
+            "Edit the connectors by hand on the map:\n"
             "  click a connector to select it: turn it, set its depth or\n"
             "    delete it under Selected connector, or turn and size it with\n"
             "    ] [ } { + - or by dragging the dot at its far end;\n"
@@ -1754,16 +1772,11 @@ class TerrainEditorTester(QMainWindow):
         shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
 
     def _pan_by(self, fx: float, fy: float) -> None:
-        """Pan both panels by a fraction of their own span.
-
-        Each by its own, because the two may be in different CRSs; while they
-        share a frame the same fraction keeps them aligned.
-        """
-        for ax in (self.ax_before, self.ax_after):
-            (x0, x1), (y0, y1) = ax.get_xlim(), ax.get_ylim()
-            dx, dy = (x1 - x0) * fx, (y1 - y0) * fy
-            ax.set_xlim(x0 + dx, x1 + dx)
-            ax.set_ylim(y0 + dy, y1 + dy)
+        """Pan the map by a fraction of its visible span."""
+        (x0, x1), (y0, y1) = self.ax.get_xlim(), self.ax.get_ylim()
+        dx, dy = (x1 - x0) * fx, (y1 - y0) * fy
+        self.ax.set_xlim(x0 + dx, x1 + dx)
+        self.ax.set_ylim(y0 + dy, y1 + dy)
         self.canvas.draw_idle()
 
     def _update_title(self) -> None:
@@ -1836,10 +1849,7 @@ class TerrainEditorTester(QMainWindow):
         self._refresh_provinces()
         self._update_border_controls()
         self.border_report.setText(self._regions_text())
-        if self._showing_borders():
-            self._draw_borders()
-        else:
-            self._draw_before(preserve_view=True)
+        self._draw_map()
 
     def _refresh_region_list(self) -> None:
         self.region_list.clear()
@@ -2069,8 +2079,6 @@ class TerrainEditorTester(QMainWindow):
             self._boundary_is_region = False
         self._update_border_controls()
         self._invalidate_raster()
-        if not self._showing_borders():
-            self._draw_before(preserve_view=True)
 
     def province_lobes(self) -> list:
         """The lobes the selected province's pockets key into, if asked for."""
@@ -2186,8 +2194,8 @@ class TerrainEditorTester(QMainWindow):
         return index if dist <= self._pick_distance() else None
 
     def _pick_distance(self) -> float:
-        width_px = max(self.ax_after.get_window_extent().width, 1.0)
-        x0, x1 = self.ax_after.get_xlim()
+        width_px = max(self.ax.get_window_extent().width, 1.0)
+        x0, x1 = self.ax.get_xlim()
         return abs(x1 - x0) / width_px * PICK_PX
 
     def click_connectors(self, x: float, y: float) -> None:
@@ -2459,26 +2467,50 @@ class TerrainEditorTester(QMainWindow):
 
     # -- map events ---------------------------------------------------------
     def _on_press(self, event) -> None:
+        """Left-drag pans the map; with Edit Connectors on, a press on a
+        connector (or the selected one's handle) drags that instead."""
         self._turning = False
-        if (event.inaxes is not self.ax_after or event.xdata is None
-                or not self._editing() or self.mpl_toolbar.mode):
-            self._press = None
+        self._grab = None
+        self._press = None
+        if (event.inaxes is not self.ax or event.xdata is None
+                or self.mpl_toolbar.mode):
             return
         if event.button == 3:            # right-click: select, or deselect
-            self._press = None
-            self.select_connector(self.connector_at(event.xdata, event.ydata))
+            if self._editing():
+                self.select_connector(
+                    self.connector_at(event.xdata, event.ydata))
             return
         if event.button != 1:
-            self._press = None
             return
         self.canvas.setFocus()
         self._press = (event.x, event.y)
-        if self._selected is not None and Point(
-                self._handle_at(self._selected)).distance(
-                    Point(event.xdata, event.ydata)) <= self._pick_distance():
-            self._drag, self._turning = self._selected, True
-            return
-        self._drag = self.connector_at(event.xdata, event.ydata)
+        if self._editing():
+            if self._selected is not None and Point(
+                    self._handle_at(self._selected)).distance(
+                        Point(event.xdata, event.ydata)) \
+                    <= self._pick_distance():
+                self._drag, self._turning = self._selected, True
+                return
+            self._drag = self.connector_at(event.xdata, event.ydata)
+        if self._drag is None:
+            # Ground units per screen pixel, read once: the limits move
+            # under the pointer as it pans.  Equal aspect, so one serves both.
+            self._grab = (event.x, event.y, self.ax.get_xlim(),
+                          self.ax.get_ylim(), self._per_px())
+
+    def _per_px(self) -> float:
+        """Ground units under one screen pixel, across the map."""
+        width_px = max(self.ax.get_window_extent().width, 1.0)
+        x0, x1 = self.ax.get_xlim()
+        return abs(x1 - x0) / width_px
+
+    def _pan_to(self, event) -> None:
+        """Move the view with a drag that started on empty map."""
+        x, y, (x0, x1), (y0, y1), per_px = self._grab
+        dx, dy = (event.x - x) * per_px, (event.y - y) * per_px
+        self.ax.set_xlim(x0 - dx, x1 - dx)
+        self.ax.set_ylim(y0 - dy, y1 - dy)
+        self.canvas.draw_idle()
 
     def _moved(self, event) -> bool:
         return self._press is not None and \
@@ -2486,8 +2518,13 @@ class TerrainEditorTester(QMainWindow):
             > CLICK_SLOP_PX
 
     def _on_motion(self, event) -> None:
-        """Outline where the dragged connector would land, red if it cannot."""
-        if (self._drag is None or event.inaxes is not self.ax_after
+        """Pan with a drag on empty map; outline where a dragged connector
+        would land, red if it cannot."""
+        if self._grab is not None:
+            if self._moved(event):
+                self._pan_to(event)
+            return
+        if (self._drag is None or event.inaxes is not self.ax
                 or event.xdata is None or not self._moved(event)):
             return
         x, y, angle, scale = self.connector_pose(self._drag)
@@ -2507,7 +2544,7 @@ class TerrainEditorTester(QMainWindow):
             self._drag_artist = None
         if shape is not None:
             xs, ys = shape.exterior.xy
-            (self._drag_artist,) = self.ax_after.plot(
+            (self._drag_artist,) = self.ax.plot(
                 xs, ys, linewidth=1.6, zorder=10,
                 color=DRAG_COLOUR if lobe is not None else REFUSED_COLOUR)
         self.canvas.draw_idle()
@@ -2515,14 +2552,14 @@ class TerrainEditorTester(QMainWindow):
     def _on_release(self, event) -> None:
         moved = self._moved(event)
         press, drag, turning = self._press, self._drag, self._turning
-        self._press = self._drag = None
+        self._press = self._drag = self._grab = None
         self._turning = False
         if self._drag_artist is not None:
             self._drag_artist.remove()
             self._drag_artist = None
             self.canvas.draw_idle()
         if (press is None or event.button != 1 or event.xdata is None
-                or event.inaxes is not self.ax_after or not self._editing()):
+                or event.inaxes is not self.ax or not self._editing()):
             return
         if not moved:
             self.click_connectors(event.xdata, event.ydata)
@@ -2539,15 +2576,8 @@ class TerrainEditorTester(QMainWindow):
         return hasattr(self, "tabs") and self.tabs.currentIndex() == 1
 
     def _on_tab(self, index: int) -> None:
-        """Tab 2 draws the borders; tabs 1 and 3 share the raster view."""
-        if index == 1:
-            self._draw_borders()
-            # The borders view is in another frame; a later "keep the view"
-            # on the raster panel must not restore its limits there.
-            self._before_drawn = False
-        else:
-            self._draw_before()
-            self._draw_after()
+        """Tab 2 shows the borders; tabs 1 and 3 the raster."""
+        self._draw_map()
 
     # -- CRS ----------------------------------------------------------------
     def target_crs(self):
@@ -2591,44 +2621,27 @@ class TerrainEditorTester(QMainWindow):
         return self.needs_warp() or self.reduction() > 1.001
 
     # -- axes helpers -------------------------------------------------------
-    def _reset_axes(self, before_title: str, after_title: str) -> None:
-        for ax, title in ((self.ax_before, before_title),
-                          (self.ax_after, after_title)):
-            self._clear_ax(ax, title)
-        self.canvas.draw_idle()
 
     @staticmethod
     def _clear_ax(ax, title: str) -> None:
         ax.clear()
         ax.set_title(title, fontsize=11)
-        ax.set_aspect("equal")
+        # ``datalim`` keeps the scale equal by widening the view rather than
+        # shrinking the axes, so the map fills the canvas edge to edge.
+        ax.set_aspect("equal", adjustable="datalim")
         ax.set_xticks([])
         ax.set_yticks([])
-
-    def _link_views(self) -> None:
-        """Match the after panel to the before panel, when both are one frame.
-
-        Replaces the ``sharex``/``sharey`` the other harnesses use, which cannot
-        express "aligned only while the projections agree".
-        """
-        if not self._showing_borders() and (self.needs_warp()
-                                            or self.result is None):
-            return
-        self.ax_after.set_xlim(self.ax_before.get_xlim())
-        self.ax_after.set_ylim(self.ax_before.get_ylim())
 
     def _on_scroll(self, event) -> None:
         """Zoom toward the pointer (wheel up = in)."""
         ax = event.inaxes
-        if ax is None or event.xdata is None or event.ydata is None:
+        if ax is not self.ax or event.xdata is None or event.ydata is None:
             return
         scale = 1 / 1.2 if event.button == "up" else 1.2
         (x0, x1), (y0, y1) = ax.get_xlim(), ax.get_ylim()
         xd, yd = event.xdata, event.ydata
         ax.set_xlim(xd - (xd - x0) * scale, xd + (x1 - xd) * scale)
         ax.set_ylim(yd - (yd - y0) * scale, yd + (y1 - yd) * scale)
-        if ax is self.ax_before:
-            self._link_views()
         self.canvas.draw_idle()
 
     # -- imports ------------------------------------------------------------
@@ -2644,7 +2657,7 @@ class TerrainEditorTester(QMainWindow):
             return
 
         self._invalidate()
-        self._draw_before()
+        self._draw_map(preserve_view=False)
         self.status.setText(
             f"{self.raster_path.name}: {self.raster_shape[0]}x"
             f"{self.raster_shape[1]} @ {self.raster_res[0]:.0f} m, "
@@ -2792,10 +2805,8 @@ class TerrainEditorTester(QMainWindow):
         self.btn_save.setEnabled(False)
         self.btn_run.setEnabled(
             self.raster_path is not None and self.boundary is not None)
-        if not self._showing_borders():     # that panel is the borders' now
-            self._drop_colorbar()
-            self._clear_ax(self.ax_after, "Not yet run")
-            self.canvas.draw_idle()
+        if not self._showing_borders():     # back to the DEM it came from
+            self._draw_map()
         self._invalidate_mesh()
 
     #: Kept as the name the imports call, which stale both stages.
@@ -2835,12 +2846,9 @@ class TerrainEditorTester(QMainWindow):
         self.result = result
         self._teardown_thread()
         self._set_busy(False)
-        # Before panel first: the result's range now drives the shared colour
-        # ramp so the DEM has to be repainted onto it (keeping wherever the user
-        # panned to), and _draw_after's _link_views reads this panel's limits --
-        # repainting it afterwards would leave the link one draw out of date.
-        self._draw_before(preserve_view=True)
-        self._draw_after()
+        # The map moves on to the crop, keeping the view where the frame did
+        # not change.
+        self._draw_map()
         self.btn_save.setEnabled(True)
         z = ("no valid pixels" if result.zmin is None
              else f"{result.zmin:.0f}..{result.zmax:.0f} m")
@@ -3033,15 +3041,12 @@ class TerrainEditorTester(QMainWindow):
     # -- drawing ------------------------------------------------------------
     def _colour_limits(self):
         """
-        One elevation ramp for both panels, so they can actually be compared.
+        The elevation ramp for the map.
 
-        The panels show the same ground, so scaling them independently would
-        paint identical elevations different colours — the before panel would
-        also be crushed into the bottom of the ramp, because the whole-Canada
-        overview runs to Mount Logan's 5500 m while a province rarely clears
-        1500 m.  So once there is a result, its range drives both panels and the
-        rest of the DEM is allowed to saturate.  Before that, percentiles keep
-        the overview readable without a few summits flattening everything else.
+        A crop is coloured over its own range.  The overview is coloured over
+        its 2nd to 98th percentiles, so a few summits do not flatten the rest:
+        the whole-Canada overview runs to Mount Logan's 5500 m while a
+        province rarely clears 1500 m.
         """
         if self.result is not None and self.result.zmin is not None:
             return self.result.zmin, self.result.zmax
@@ -3052,50 +3057,91 @@ class TerrainEditorTester(QMainWindow):
             return None, None
         return float(np.percentile(valid, 2)), float(np.percentile(valid, 98))
 
-    def _draw_before(self, preserve_view: bool = False) -> None:
-        # Only a panel that has actually been drawn has a view worth keeping.
-        # Preserving a never-drawn axis would restore matplotlib's default
-        # (0, 1) limits over an extent measured in millions of metres, leaving
-        # the panel zoomed into a one-metre square of flat colour.
-        preserve_view = preserve_view and self._before_drawn
-        if preserve_view:
-            xlim, ylim = self.ax_before.get_xlim(), self.ax_before.get_ylim()
-        frame = self.raster_crs or CRS.from_user_input(EPSG_WORKING)
-        title = f"Regions — {frame}" if self.overview is None \
-            else "DEM overview"
-        if self.overview is not None:
-            title = (f"DEM overview ({self.overview.shape[1]}x"
-                     f"{self.overview.shape[0]} of {self.raster_shape[0]}x"
-                     f"{self.raster_shape[1]}) — {self.raster_crs}")
-        self._clear_ax(self.ax_before, title)
+    def _draw_map(self, preserve_view: bool = True) -> None:
+        """Draw the latest state of the stage on screen.
+
+        The Borders tab shows the borders as defined, or the regions as
+        imported until they are; the other tabs show the crop once it has
+        run, or the DEM it is cut from until then.  ``preserve_view`` keeps
+        the view where it is, but only when the new drawing is in the frame
+        of the last one.
+        """
+        if self._showing_borders():
+            self._draw_borders(preserve_view)
+        else:
+            self._draw_raster(preserve_view)
+
+    def _keep_view(self, frame, preserve_view: bool):
+        """The limits to restore after a redraw in ``frame``, or None."""
+        if (preserve_view and self._view_crs is not None and frame is not None
+                and CRS.from_user_input(frame) == self._view_crs):
+            return self.ax.get_xlim(), self.ax.get_ylim()
+        return None
+
+    def _settle_view(self, frame, view, drew: bool) -> None:
+        """Restore ``view`` if there is one, and note what frame is shown."""
+        if view is not None:
+            self.ax.set_xlim(view[0])
+            self.ax.set_ylim(view[1])
+        self._view_crs = (CRS.from_user_input(frame)
+                          if drew and frame is not None else None)
+        self.canvas.draw_idle()
+
+    def _draw_raster(self, preserve_view: bool = True) -> None:
+        """The crop if it has run, else the DEM overview; outlines on top."""
+        cropped = self.result is not None and self.result.data is not None
+        if cropped:
+            frame = self.target_crs() if self.needs_warp() else self.raster_crs
+        else:
+            frame = self.raster_crs or CRS.from_user_input(EPSG_WORKING)
+        view = self._keep_view(frame, preserve_view)
+        self._drop_colorbar()
         vmin, vmax = self._colour_limits()
-        if self.overview is not None:
-            self.ax_before.imshow(self.overview, cmap=DEM_CMAP,
-                                  extent=self.overview_extent, origin="upper",
-                                  vmin=vmin, vmax=vmax)
-        # Drawn in the DEM's CRS, because that is the panel's frame — the after
-        # panel is where the target CRS shows up.  Context first and thinner,
-        # so the province being cut draws on top of it.
+        image = None
+        if cropped:
+            data, step = self._for_display(self.result.data)
+            title = (f"Cropped — {self.result.width}x{self.result.height} @ "
+                     f"{self.result.res[0]:.0f} m — {frame}")
+            if step > 1:
+                # Never let the map imply the saved file is this coarse.
+                title += f"  (shown 1:{step} — saved file is full resolution)"
+            self._clear_ax(self.ax, title)
+            left, bottom, right, top = self.result.bounds_m
+            image = self.ax.imshow(
+                np.ma.masked_equal(data, self.result.nodata), cmap=DEM_CMAP,
+                extent=(left, right, bottom, top), origin="upper",
+                vmin=vmin, vmax=vmax)
+        elif self.overview is not None:
+            self._clear_ax(self.ax, (
+                f"DEM overview ({self.overview.shape[1]}x"
+                f"{self.overview.shape[0]} of {self.raster_shape[0]}x"
+                f"{self.raster_shape[1]}) — {self.raster_crs}"))
+            image = self.ax.imshow(self.overview, cmap=DEM_CMAP,
+                                   extent=self.overview_extent,
+                                   origin="upper", vmin=vmin, vmax=vmax)
+        else:
+            self._clear_ax(self.ax, f"Regions — {frame}")
+        if image is not None:
+            self._colorbar = self.figure.colorbar(
+                image, ax=self.ax, fraction=0.046, label="elevation (m)")
+        # Context first and thinner, so the province being cut draws on top.
+        # Once cropped only the province is outlined: the crop is the context.
         selected = (self.province_combo.currentText()
                     if self._boundary_is_region else None)
-        for name, geom in self.surrounding.items():
-            self._plot_outline(self.ax_before,
-                               self._outline_in(name, geom, frame),
-                               colour=SURROUND_COLOUR, width=0.8)
-        for name, geom in self.targets.items():
-            if name != selected:
-                self._plot_outline(self.ax_before,
-                                   self._outline_in(name, geom, frame),
-                                   colour=MARK_COLOUR, width=0.5)
+        if not cropped:
+            for name, geom in self.surrounding.items():
+                self._plot_outline(self.ax, self._outline_in(name, geom, frame),
+                                   colour=SURROUND_COLOUR, width=0.8)
+            for name, geom in self.targets.items():
+                if name != selected:
+                    self._plot_outline(self.ax,
+                                       self._outline_in(name, geom, frame),
+                                       colour=MARK_COLOUR, width=0.5)
         geom = self._boundary_geom(frame)
         if geom is not None:
-            self._plot_outline(self.ax_before, geom)
-        if preserve_view:
-            self.ax_before.set_xlim(xlim)
-            self.ax_before.set_ylim(ylim)
-        self._before_drawn = (self.overview is not None
-                              or bool(self.targets or self.surrounding))
-        self.canvas.draw_idle()
+            self._plot_outline(self.ax, geom)
+        self._settle_view(frame, view, cropped or self.overview is not None
+                          or bool(self.targets or self.surrounding))
 
     def _outline_in(self, name, geom, crs):
         """A region reprojected for display, cached -- a province is ~100k
@@ -3108,61 +3154,55 @@ class TerrainEditorTester(QMainWindow):
                 else gpd.GeoSeries([geom], crs=EPSG_WORKING).to_crs(crs).iloc[0])
         return self._outline_cache[key]
 
-    def _draw_borders(self, preserve_view: bool = False) -> None:
-        """Tab 2: the regions as imported | as defined, both in crs.working.
+    def _draw_borders(self, preserve_view: bool = True) -> None:
+        """Tab 2: the borders as defined, or the regions as imported until
+        they are -- both in crs.working.
 
-        ``preserve_view`` keeps both panels where they are -- a connector edit
-        is made zoomed in, and must not throw the map back to full extent.
+        ``preserve_view`` keeps the map where it is -- a connector edit is
+        made zoomed in, and must not throw the map back to full extent.
         """
+        frame = EPSG_WORKING
+        view = self._keep_view(frame, preserve_view)
         self._drop_colorbar()
-        ax, after = self.ax_before, self.ax_after
-        views = [(a.get_xlim(), a.get_ylim()) for a in (ax, after)]
+        ax = self.ax
         self._drag_artist = None         # cleared with the axes below
-        self._clear_ax(ax, f"As imported — {len(self.targets)} to print, "
-                           f"{len(self.surrounding)} surrounding")
-        for geom in self.surrounding.values():
-            self._fill(ax, geom, SURROUND_COLOUR)
-        for geom in self.targets.values():
-            self._fill(ax, geom, KEEP_COLOUR)
-        ax.autoscale_view()
-
         d = self.borders
         if d is None:
-            self._clear_ax(after, "Not yet defined")
+            self._clear_ax(ax, f"As imported — {len(self.targets)} to print, "
+                               f"{len(self.surrounding)} surrounding")
+            for geom in self.surrounding.values():
+                self._fill(ax, geom, SURROUND_COLOUR)
+            for geom in self.targets.values():
+                self._fill(ax, geom, KEEP_COLOUR)
         else:
             title = f"Defined — {d.settings.width_mm:.2f} mm corridor"
             if d.settings.connectors:
                 title += f", {len(d.lobes)} connector(s)"
-            self._clear_ax(after, title)
+            self._clear_ax(ax, title)
             for name, geom in d.simplified.items():
                 if name not in d.targets:
-                    self._fill(after, geom, SURROUND_COLOUR)
+                    self._fill(ax, geom, SURROUND_COLOUR)
             for geom in d.targets.values():
-                self._fill(after, geom, KEEP_COLOUR)
+                self._fill(ax, geom, KEEP_COLOUR)
             if d.border is not None:
-                self._fill(after, d.border, CORRIDOR_COLOUR, alpha=0.85)
+                self._fill(ax, d.border, CORRIDOR_COLOUR, alpha=0.85)
             for lobe in d.lobes:
-                self._fill(after, lobe, RESULT_COLOUR, edge=EDGE_COLOUR)
+                self._fill(ax, lobe, RESULT_COLOUR, edge=EDGE_COLOUR)
             if self._selected is not None and self._selected < len(d.lobes):
                 xs, ys = d.lobes[self._selected].exterior.xy
-                after.plot(xs, ys, color=PICKED_COLOUR, linewidth=2.0,
-                           zorder=9)
+                ax.plot(xs, ys, color=PICKED_COLOUR, linewidth=2.0, zorder=9)
                 hx, hy = self._handle_at(self._selected)
-                after.plot([hx], [hy], "o", color=PICKED_COLOUR,
-                           markersize=6, zorder=9)
+                ax.plot([hx], [hy], "o", color=PICKED_COLOUR, markersize=6,
+                        zorder=9)
             for colour, segs in ((EDGE_COLOUR, d.coastal_segs),
                                  (SELECT_COLOUR, d.internal_segs)):
                 for seg in segs:
                     if len(seg) >= 2:
-                        after.plot(seg[:, 0], seg[:, 1], color=colour,
-                                   linewidth=0.6)
-            after.set_xlim(ax.get_xlim())
-            after.set_ylim(ax.get_ylim())
-        if preserve_view:
-            for a, (xlim, ylim) in zip((ax, after), views):
-                a.set_xlim(xlim)
-                a.set_ylim(ylim)
-        self.canvas.draw_idle()
+                        ax.plot(seg[:, 0], seg[:, 1], color=colour,
+                                linewidth=0.6)
+        ax.autoscale_view()
+        self._settle_view(frame, view, bool(d is not None or self.targets
+                                            or self.surrounding))
 
     @staticmethod
     def _fill(ax, geom, face, edge=None, alpha=1.0) -> None:
@@ -3175,37 +3215,11 @@ class TerrainEditorTester(QMainWindow):
             ax.add_patch(PathPatch(path, facecolor=face, alpha=alpha,
                                    edgecolor=edge or "none", linewidth=0.4))
 
-    def _draw_after(self) -> None:
-        self._drop_colorbar()
-        if self.result is None or self.result.data is None:
-            self._clear_ax(self.ax_after, "Not yet run")
-            self.canvas.draw_idle()
-            return
-
-        data, step = self._for_display(self.result.data)
-        crs = self.target_crs() if self.needs_warp() else self.raster_crs
-        title = (f"{self.result.width}x{self.result.height} @ "
-                 f"{self.result.res[0]:.0f} m — {crs}")
-        if step > 1:
-            # Never let the panel imply the saved file is this coarse.
-            title += f"  (shown 1:{step} — saved file is full resolution)"
-        self._clear_ax(self.ax_after, title)
-
-        left, bottom, right, top = self.result.bounds_m
-        masked = np.ma.masked_equal(data, self.result.nodata)
-        vmin, vmax = self._colour_limits()
-        image = self.ax_after.imshow(masked, cmap=DEM_CMAP,
-                                     extent=(left, right, bottom, top),
-                                     origin="upper", vmin=vmin, vmax=vmax)
-        self._colorbar = self.figure.colorbar(
-            image, ax=self.ax_after, fraction=0.046, label="elevation (m)")
-        self._link_views()
-        self.canvas.draw_idle()
 
     def _drop_colorbar(self) -> None:
         """Remove the elevation colorbar *before* its panel is cleared.
 
-        ``ax.clear()`` on the after panel orphans the colorbar, and a later
+        ``ax.clear()`` on the map orphans the colorbar, and a later
         ``remove()`` then dies inside matplotlib -- which made a second crop
         crash whenever any raster setting had changed in between.
         """

@@ -148,9 +148,9 @@ class TestKeys:
 
     def test_the_arrow_keys_pan(self, window, qtbot):
         window.canvas.setFocus()
-        before = window.ax_before.get_xlim()
+        before = window.ax.get_xlim()
         qtbot.keyClick(window.canvas, Qt.Key.Key_Right)
-        after = window.ax_before.get_xlim()
+        after = window.ax.get_xlim()
         span = before[1] - before[0]
         assert after[0] - before[0] == pytest.approx(span * U.PAN_STEP)
 

@@ -218,8 +218,8 @@ class TestImportStage:
 
     def test_outlines_drawn_with_no_dem(self, tmp_path):
         window = _window(tmp_path)
-        window._draw_before()
-        assert len(window.ax_before.lines) == 3     # three one-ring boxes
+        window._draw_map()
+        assert len(window.ax.lines) == 3     # three one-ring boxes
 
 
 class TestBordersStage:
@@ -274,16 +274,15 @@ class TestBordersStage:
         assert "No overlap." in text
         assert f"{len(defined.lobes)} connector(s)" in text
 
-    def test_borders_tab_draws_both_panels(self, tmp_path, defined):
+    def test_borders_tab_shows_the_latest_state(self, tmp_path, defined):
         window = _window(tmp_path)
-        window.apply_borders(defined)
         window.tabs.setCurrentIndex(1)
-        assert window.ax_before.patches and window.ax_after.patches
-        assert window.ax_after.get_title().startswith("Defined")
-        # Leaving it must not carry the borders' limits into the raster view.
-        assert window._before_drawn is False
+        assert window.ax.get_title().startswith("As imported")
+        window.apply_borders(defined)
+        assert window.ax.patches
+        assert window.ax.get_title().startswith("Defined")
         window.tabs.setCurrentIndex(2)
-        assert window.ax_after.get_title() == "Not yet run"
+        assert window.ax.get_title().startswith("Regions")
 
     def test_saved_folder_is_what_the_dovetail_tools_read(self, tmp_path,
                                                          defined):
@@ -752,11 +751,11 @@ class TestEditingConnectors:
 
     def test_an_edit_keeps_the_view(self, tmp_path, defined):
         window = _edit_window(tmp_path, defined)
-        window.ax_after.set_xlim(7_300 * KM, 7_500 * KM)
-        window.ax_after.set_ylim(1_100 * KM, 1_300 * KM)
+        window.ax.set_xlim(7_300 * KM, 7_500 * KM)
+        window.ax.set_ylim(1_100 * KM, 1_300 * KM)
         window.add_connector(*FREE_A)
-        assert window.ax_after.get_xlim() == (7_300 * KM, 7_500 * KM)
-        assert window.ax_after.get_ylim() == (1_100 * KM, 1_300 * KM)
+        assert window.ax.get_xlim() == (7_300 * KM, 7_500 * KM)
+        assert window.ax.get_ylim() == (1_100 * KM, 1_300 * KM)
 
     def test_pockets_follow_the_edit(self, tmp_path, defined):
         window = _edit_window(tmp_path, defined)
@@ -791,8 +790,8 @@ class TestConnectorMouse:
     @staticmethod
     def _event(window, xy, button=1):
         from types import SimpleNamespace
-        x, y = window.ax_after.transData.transform(xy)
-        return SimpleNamespace(button=button, inaxes=window.ax_after,
+        x, y = window.ax.transData.transform(xy)
+        return SimpleNamespace(button=button, inaxes=window.ax,
                                xdata=xy[0], ydata=xy[1], x=x, y=y)
 
     def _click(self, window, xy):
@@ -829,6 +828,33 @@ class TestConnectorMouse:
         self._click(window, (7_100 * KM, 1_100 * KM))
         assert window.borders.lobes == defined.lobes
         assert "beside the corridor" in window.status.text()
+
+    def _drag(self, window, xy, dx_px):
+        """Press at ``xy``, then drag ``dx_px`` screen pixels to the right."""
+        from types import SimpleNamespace
+        start = self._event(window, xy)
+        end = SimpleNamespace(**{**vars(start), "x": start.x + dx_px})
+        window._on_press(start)
+        window._on_motion(end)
+        window._on_release(end)
+
+    @pytest.mark.parametrize("editing", [True, False])
+    def test_a_drag_on_empty_map_pans(self, tmp_path, defined, editing):
+        window = _edit_window(tmp_path, defined)
+        window.btn_edit_lobes.setChecked(editing)
+        x0, x1 = window.ax.get_xlim()
+        per_px = (x1 - x0) / window.ax.get_window_extent().width
+        self._drag(window, FREE_A, 60)
+        assert window.ax.get_xlim() == pytest.approx(
+            (x0 - 60 * per_px, x1 - 60 * per_px))
+        assert window.borders.lobes == defined.lobes    # a pan, not a click
+
+    def test_a_drag_on_a_connector_moves_it_not_the_map(self, tmp_path,
+                                                        defined):
+        window = _edit_window(tmp_path, defined)
+        xlim = window.ax.get_xlim()
+        self._drag(window, defined.lobes[0].centroid.coords[0], 60)
+        assert window.ax.get_xlim() == xlim
 
     def test_nothing_happens_with_the_tool_off(self, tmp_path, defined):
         window = _edit_window(tmp_path, defined)
