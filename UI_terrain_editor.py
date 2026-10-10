@@ -147,7 +147,9 @@ targets (near a triple junction) has no single pocket to key into, so it is
 dropped and counted (FR-3.7).  So is one whose pocket would run out of its
 province -- past the coast at a seam's end, or into a neighbour -- and one
 that would touch another connector or bring its pocket within a clearance of
-another's.  Placed by Define, by hand or by a reshape, every connector is held
+another's, and one that would meet the corridor in two places -- near a bend
+or a junction its far end can run back into the bar.  Placed by Define, by
+hand or by a reshape, every connector is held
 to these same rules, and the report says how many each one dropped.
 
 *Connectors have a shape.*  **Height** (the lobe layer, and so the pocket
@@ -717,6 +719,8 @@ FAULTS = {
     "crowded": "It would run into another connector.",
     "detached": ("It would come loose from the bar: too little of its root "
                  "is left in the corridor."),
+    "recrosses": ("It would meet the corridor in two places -- its far end "
+                  "runs back into the bar past a bend or a junction."),
     "thin": "Its neck would be too thin to print.",
 }
 
@@ -727,12 +731,20 @@ FAULT_COUNTS = {
     "escapes": "ran out of their province",
     "crowded": "ran into another connector",
     "detached": "came loose from the bar",
+    "recrosses": "met the corridor in two places",
     "thin": "were too thin to print",
 }
 
 #: How much of a connector's root must stay in the corridor, as a fraction of
 #: what an unturned one of its size has there, for the bar to hold it.
 _ROOT_HOLD_FRAC = 0.5
+
+
+def _pieces(geom, lobe) -> int:
+    """How many separate pieces of ``geom`` count, against ``lobe``'s size:
+    a sliver where two outlines disagree by rounding is not a crossing."""
+    return sum(1 for poly in _polys(geom)
+               if poly.area > _OWNER_FRAC * lobe.area)
 
 
 def _connector_fault(lobe, definition, others, p, land) -> str:
@@ -756,6 +768,9 @@ def _fault(lobe, definition, others, p, land) -> str:
       clearance clear of every other's, or two pockets run into one.
     * Turned or shrunk by hand, it must keep enough root in the corridor to
       hang on to the bar, and a neck the printer can hold.
+    * It must meet the corridor in one place only -- its root.  Near a bend
+      or a junction the far end can run back into the bar, which fuses the
+      connector to the bar there and leaves its pocket with a side open.
     """
     d = definition
     c = lobe.exterior.coords
@@ -766,6 +781,8 @@ def _fault(lobe, definition, others, p, land) -> str:
     root_m2 = p.overlap_mm * p.mpm * neck_m          # an unturned root's area
     if lobe.intersection(d.border).area < _ROOT_HOLD_FRAC * root_m2:
         return "detached"
+    if _pieces(lobe.intersection(d.border), lobe) > 1             or _pieces(lobe.difference(d.border), lobe) > 1:
+        return "recrosses"
     if lobe.intersection(land).area < p.min_overlap_frac * lobe.area:
         return "no_province"
     targets = list(d.targets.values())

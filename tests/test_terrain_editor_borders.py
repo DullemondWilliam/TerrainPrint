@@ -553,6 +553,9 @@ def _assert_standing(d):
         pocket = _pocket(lobe, d)
         owner = max(targets, key=lambda g: pocket.intersection(g).area)
         assert pocket.difference(owner).area < 1e-3 * lobe.area
+    for lobe in d.lobes:
+        assert U._pieces(lobe.intersection(d.border), lobe) == 1
+        assert U._pieces(lobe.difference(d.border), lobe) == 1
     for i, a in enumerate(d.lobes):
         for b in d.lobes[i + 1:]:
             assert not a.intersects(b)
@@ -582,10 +585,30 @@ class TestAutoPlacement:
                                       A.bounds[1] + 0.3 * MPM)
         assert lobe is None and why == U.FAULTS["escapes"]
 
+    def test_a_connector_meeting_the_corridor_twice_is_refused(self,
+                                                              defined):
+        """Just under the T-junction, a connector on the A/B seam swings its
+        mouth up into the C corridor: the bar twice, not once."""
+        lobe, why = U.place_connector(defined, A.bounds[2] - 2 * MPM,
+                                      A.bounds[3] - 1.0 * MPM)
+        assert lobe is None and why == U.FAULTS["recrosses"]
+
+    def test_auto_placement_drops_a_connector_meeting_it_twice(self,
+                                                               defined):
+        p = defined.settings.connector_params()
+        free = lobe_at(defined.border, A.bounds[2] - 2 * MPM,
+                       A.bounds[1] + 25 * MPM, p)
+        junction = lobe_at(defined.border, A.bounds[2] - 2 * MPM,
+                           A.bounds[3] - 1.0 * MPM, p)
+        assert U._pieces(junction.intersection(defined.border), junction) == 2
+        kept, reasons = U._standing_lobes([free, junction], defined, p)
+        assert kept == [free]
+        assert reasons == {"recrosses": 1}
+
     def test_each_rule_is_counted_by_its_own_reason(self, defined):
         p = defined.settings.connector_params()
         free = lobe_at(defined.border, A.bounds[2] - 2 * MPM,
-                       A.bounds[1] + 50 * MPM, p)
+                       A.bounds[1] + 25 * MPM, p)
         coast = lobe_at(defined.border, A.bounds[2] - 2 * MPM,
                         A.bounds[1] + 0.3 * MPM, p)
         kept, reasons = U._standing_lobes([free, free, coast], defined, p)
