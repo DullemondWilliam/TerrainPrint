@@ -123,3 +123,72 @@ class TestVictoriaIslandBorders:
             min_segment_m=s.min_segment_mm * s.mpm,
             min_angle_deg=s.min_angle_deg)
         assert all(geom.is_valid for geom in simp.geometry)
+
+
+# -- the connectors --------------------------------------------------------------
+
+#: Where the two legs of the seam meet, in EPSG:3347 metres: the inside of the
+#: bend is on the NWT side.
+TURN = (5_534_157.0, 3_811_208.0)
+
+
+def _border_line(definition):
+    """The NWT/Nunavut border line the corridor is carved along: the shared
+    (internal) arcs as simplified."""
+    return shapely.union_all([shapely.LineString(seg)
+                              for seg in definition.internal_segs
+                              if len(seg) >= 2])
+
+
+def _crossing(definition) -> list:
+    """The connectors that cross the border line, by index."""
+    line = _border_line(definition)
+    return [i for i, lobe in enumerate(definition.lobes)
+            if lobe.intersects(line)]
+
+
+class TestVictoriaIslandConnectors:
+    """A connector keys one territory into the bar, from its own side of the
+    border line.  One that crosses the line reaches into the other
+    territory's half of the corridor, where it is no part of the piece it
+    is printed with.
+
+    On Victoria Island one does: in the inside corner of the bend, on the NWT
+    side, a connector hung from the north-east leg's edge swings its root
+    across the south leg's corridor and over the line.  None of the rules
+    sees it -- it meets the corridor in one piece (the two legs' corridors
+    join at the corner), and its far end is all in the NWT.
+
+    The tests that say what should happen are ``xfail(strict=True)``: green
+    while the bug stands, red the moment it is fixed.
+    """
+
+    def test_connectors_are_placed_on_both_sides(self, defined):
+        owners = {name for lobe in defined.lobes
+                  for name, geom in defined.targets.items()
+                  if lobe.difference(defined.border).intersects(geom)}
+        assert owners == {"NWT", "NU"}
+
+    def test_the_corner_connector_crosses_today(self, defined):
+        """Pins the case down, so the xfails below cannot pass vacuously:
+        the one crossing is the NWT connector in the corner of the bend.
+        Comes out with the fix, along with the two xfail marks."""
+        crossing = _crossing(defined)
+        assert len(crossing) == 1
+        lobe = defined.lobes[crossing[0]]
+        assert lobe.distance(shapely.Point(TURN)) < 4 * defined.settings.mpm
+        assert lobe.difference(defined.border).intersects(
+            defined.targets["NWT"])
+
+    @pytest.mark.xfail(strict=True, reason=(
+        "A connector in the inside corner of Victoria Island's bend crosses "
+        "the NWT/Nunavut border line, and no rule refuses it"))
+    def test_define_places_no_connector_across_the_border_line(self,
+                                                               defined):
+        assert _crossing(defined) == []
+
+    @pytest.mark.xfail(strict=True, reason="as above")
+    def test_a_connector_across_the_border_line_is_red(self, defined):
+        """Put there by hand, it must at least be marked invalid."""
+        lobe = defined.lobes[_crossing(defined)[0]]
+        assert defined.faults()[defined.lobes.index(lobe)] != ""
