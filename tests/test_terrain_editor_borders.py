@@ -772,6 +772,34 @@ class TestEditingConnectors:
         assert window.bar is None
         assert not window.btn_save_bar.isEnabled()
 
+    def test_an_edit_redraws_only_the_connectors(self, tmp_path, defined):
+        """The provinces and the corridor stay the artists they were: on all
+        of Canada redrawing them was 0.8 s of every edit."""
+        window = _edit_window(tmp_path, defined)
+        under = [a for a in window.ax.patches]
+        assert under
+        full = []
+        window._draw_borders = lambda *a, **k: full.append(1)
+        window.add_connector(*FREE_A)
+        assert not full
+        assert all(a in window.ax.patches for a in under)
+        assert f"{len(defined.lobes) + 1} connector(s)" in \
+            window.ax.get_title()
+
+    def test_the_connector_layer_is_replaced_not_stacked(self, tmp_path,
+                                                         defined):
+        window = _edit_window(tmp_path, defined)
+        before = len(window.ax.get_children())
+        window.add_connector(*FREE_A)
+        window.undo_connectors()
+        assert len(window.ax.get_children()) == before
+
+    def test_the_land_is_merged_once(self, defined):
+        d = _fresh(defined)
+        assert d.land() is d.land()
+        d.targets = dict(d.targets, A=A)            # a different target
+        assert d.land().equals(U._safe_union(list(d.targets.values())))
+
     def test_an_edit_keeps_the_view(self, tmp_path, defined):
         window = _edit_window(tmp_path, defined)
         window.ax.set_xlim(7_300 * KM, 7_500 * KM)

@@ -227,6 +227,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.backends.backend_qtagg import \
     NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
+from matplotlib.collections import PolyCollection
 from matplotlib.patches import PathPatch
 from matplotlib.path import Path as MplPath
 from rasterio.crs import CRS
@@ -542,6 +543,24 @@ class BorderDefinition:
     #: Why: fault code (see ``FAULTS``) -> how many.
     drop_reasons: dict = field(default_factory=dict)
     lobes_edited: bool = False     #: moved, added or deleted by hand since
+    #: The targets merged into one, and which target geometries it was merged
+    #: from (see :meth:`land`).
+    _land: object = field(default=None, repr=False, compare=False)
+    _land_key: tuple = field(default=(), repr=False, compare=False)
+
+    def land(self):
+        """Every target as one geometry, for the connector rules.
+
+        Merged once and kept: on all of Canada the merge is 78 ms, and the
+        rules ask for it on every placement -- every mouse move of a drag.
+        Keyed on the target geometries themselves, so a definition whose
+        targets are replaced merges again rather than serving the old land.
+        """
+        key = tuple(id(geom) for geom in self.targets.values())
+        if self._land is None or self._land_key != key:
+            self._land = _safe_union(list(self.targets.values()))
+            self._land_key = key
+        return self._land
 
     def province_lobes(self, name) -> list:
         """The lobes that key into target ``name`` -- its pockets."""
@@ -614,7 +633,7 @@ def define_borders(targets: dict, surrounding: dict,
 
     if s.connectors and result.border is not None:
         lobes = generate_lobes(result.border,
-                               _safe_union(list(result.targets.values())),
+                               result.land(),
                                s.connector_params())
         result.lobes, result.drop_reasons = _standing_lobes(
             lobes, result, s.connector_params())
@@ -662,7 +681,7 @@ def _standing_lobes(lobes, definition, p: ConnectorParams):
     leaves the province it keys into.  First come, first kept: along a seam
     that is the order they were spaced in.
     """
-    land = _safe_union(list(definition.targets.values()))
+    land = definition.land()
     kept, reasons = [], {}
     for lobe in lobes:
         code = _fault(lobe, definition, kept, p, land)
@@ -704,7 +723,7 @@ def place_connector(definition: BorderDefinition, x: float, y: float,
         return None, "No connector fits there."
     others = [other for i, other in enumerate(d.lobes) if i != ignore]
     why = _connector_fault(lobe, d, others, p,
-                           _safe_union(list(d.targets.values())))
+                           d.land())
     return (None, why) if why else (lobe, "")
 
 
@@ -821,7 +840,7 @@ def reshape_connectors(definition: BorderDefinition,
     if d.border is None or not d.lobes:
         return list(d.lobes), 0
     old, new = d.settings.connector_params(), settings.connector_params()
-    land = _safe_union(list(d.targets.values()))
+    land = d.land()
     kept, dropped = [], 0
     for lobe in d.lobes:
         x, y, angle, scale = lobe_pose(lobe, d.border, old)
@@ -1071,6 +1090,10 @@ class TerrainEditorTester(QMainWindow):
         #: EPSG:3979 into EPSG:3347 would point at another part of the globe.
         self._view_crs = None
         self._grab = None                    #: an in-progress drag-pan
+        #: The definition the Borders map was last drawn from, and the
+        #: artists of its connector layer (see ``_draw_lobes``).
+        self._drawn_borders = None
+        self._lobe_artists: list = []
         self._solid_meshes = []      #: vispy visuals, detached on each rebuild
         # Stage 1/2 state.  Regions are held in crs.working; their files and
         # source CRSs are kept so saving writes back what came in.
@@ -2279,7 +2302,7 @@ class TerrainEditorTester(QMainWindow):
         self._selected = index
         self._sync_selected()
         if self._showing_borders():
-            self._draw_borders(preserve_view=True)
+            self._draw_lobes()
 
     def _sync_selected(self) -> None:
         """Selected connector shows the selected connector, or is greyed."""
@@ -2480,7 +2503,7 @@ class TerrainEditorTester(QMainWindow):
                             "connector(s).")
         self._sync_selected()
         if self._showing_borders():
-            self._draw_borders(preserve_view=True)
+            self._draw_lobes()
 
     # -- map events ---------------------------------------------------------
     def _on_press(self, event) -> None:
@@ -3106,6 +3129,8 @@ class TerrainEditorTester(QMainWindow):
 
     def _draw_raster(self, preserve_view: bool = True) -> None:
         """The crop if it has run, else the DEM overview; outlines on top."""
+        self._drawn_borders = None       # the borders are no longer on screen
+        self._lobe_artists = []
         cropped = self.result is not None and self.result.data is not None
         if cropped:
             frame = self.target_crs() if self.needs_warp() else self.raster_crs
@@ -3183,7 +3208,9 @@ class TerrainEditorTester(QMainWindow):
         self._drop_colorbar()
         ax = self.ax
         self._drag_artist = None         # cleared with the axes below
+        self._lobe_artists = []          # likewise
         d = self.borders
+        self._drawn_borders = d
         if d is None:
             self._clear_ax(ax, f"As imported — {len(self.targets)} to print, "
                                f"{len(self.surrounding)} surrounding")
@@ -3192,10 +3219,7 @@ class TerrainEditorTester(QMainWindow):
             for geom in self.targets.values():
                 self._fill(ax, geom, KEEP_COLOUR)
         else:
-            title = f"Defined — {d.settings.width_mm:.2f} mm corridor"
-            if d.settings.connectors:
-                title += f", {len(d.lobes)} connector(s)"
-            self._clear_ax(ax, title)
+            self._clear_ax(ax, self._borders_title())
             for name, geom in d.simplified.items():
                 if name not in d.targets:
                     self._fill(ax, geom, SURROUND_COLOUR)
@@ -3203,14 +3227,7 @@ class TerrainEditorTester(QMainWindow):
                 self._fill(ax, geom, KEEP_COLOUR)
             if d.border is not None:
                 self._fill(ax, d.border, CORRIDOR_COLOUR, alpha=0.85)
-            for lobe in d.lobes:
-                self._fill(ax, lobe, RESULT_COLOUR, edge=EDGE_COLOUR)
-            if self._selected is not None and self._selected < len(d.lobes):
-                xs, ys = d.lobes[self._selected].exterior.xy
-                ax.plot(xs, ys, color=PICKED_COLOUR, linewidth=2.0, zorder=9)
-                hx, hy = self._handle_at(self._selected)
-                ax.plot([hx], [hy], "o", color=PICKED_COLOUR, markersize=6,
-                        zorder=9)
+            self._lobe_artists = self._lobe_layer()
             for colour, segs in ((EDGE_COLOUR, d.coastal_segs),
                                  (SELECT_COLOUR, d.internal_segs)):
                 for seg in segs:
@@ -3221,16 +3238,81 @@ class TerrainEditorTester(QMainWindow):
         self._settle_view(frame, view, bool(d is not None or self.targets
                                             or self.surrounding))
 
+    def _borders_title(self) -> str:
+        d = self.borders
+        title = f"Defined — {d.settings.width_mm:.2f} mm corridor"
+        if d.settings.connectors:
+            title += f", {len(d.lobes)} connector(s)"
+        return title
+
+    def _lobe_layer(self) -> list:
+        """Draw the connectors and the selection; returns what was drawn.
+
+        Not counted into the map's extent: they sit on the corridor, which
+        is, and a redraw of this layer alone must not move the view.
+        """
+        d, ax = self.borders, self.ax
+        drawn = []
+        if d.lobes:
+            # One artist for the lot: a connector is a plain quadrilateral,
+            # and 240 patches added one by one were most of an edit's cost.
+            lobes = PolyCollection(
+                [np.asarray(lobe.exterior.coords)[:, :2] for lobe in d.lobes],
+                facecolors=RESULT_COLOUR, edgecolors=EDGE_COLOUR,
+                linewidths=0.4)
+            ax.add_collection(lobes, autolim=False)
+            drawn.append(lobes)
+        if self._selected is not None and self._selected < len(d.lobes):
+            xs, ys = d.lobes[self._selected].exterior.xy
+            drawn += ax.plot(xs, ys, color=PICKED_COLOUR, linewidth=2.0,
+                             zorder=9, scalex=False, scaley=False)
+            hx, hy = self._handle_at(self._selected)
+            drawn += ax.plot([hx], [hy], "o", color=PICKED_COLOUR,
+                             markersize=6, zorder=9, scalex=False,
+                             scaley=False)
+        return drawn
+
+    def _draw_lobes(self) -> None:
+        """Redraw the connectors alone, over the map already drawn.
+
+        An edit changes the connectors and nothing under them, so the
+        provinces and the corridor stay as they are: on all of Canada a full
+        redraw is ~250 shapes and this is the few that moved.  Falls back to
+        the full redraw when the map on screen is not this definition's.
+        """
+        if self.borders is None or self._drawn_borders is not self.borders:
+            self._draw_borders(preserve_view=True)
+            return
+        for artist in self._lobe_artists:
+            artist.remove()
+        self._lobe_artists = self._lobe_layer()
+        self.ax.set_title(self._borders_title(), fontsize=11)
+        self.canvas.draw_idle()
+
     @staticmethod
-    def _fill(ax, geom, face, edge=None, alpha=1.0) -> None:
-        """Fill a (Multi)Polygon, holes and all, without geopandas plotting."""
+    def _fill(ax, geom, face, edge=None, alpha=1.0, extent=True) -> list:
+        """Fill a (Multi)Polygon, holes and all, without geopandas plotting;
+        returns the patches.
+
+        Added with ``add_artist`` rather than ``add_patch``: the latter works
+        out the map's extent by walking every segment of the outline in
+        Python, which on all of Canada was 0.8 s of a 0.9 s redraw.  The
+        extent is taken from the geometry's bounds instead, when ``extent``.
+        """
+        patches = []
         for poly in _polys(geom):
             poly = orient(poly, 1.0)      # CCW shell, CW holes: nonzero fill
             path = MplPath.make_compound_path(*(
                 MplPath(np.asarray(ring.coords)[:, :2], closed=True)
                 for ring in (poly.exterior, *poly.interiors)))
-            ax.add_patch(PathPatch(path, facecolor=face, alpha=alpha,
-                                   edgecolor=edge or "none", linewidth=0.4))
+            patch = PathPatch(path, facecolor=face, alpha=alpha,
+                              edgecolor=edge or "none", linewidth=0.4)
+            ax.add_artist(patch)
+            patches.append(patch)
+            if extent:
+                x0, y0, x1, y1 = poly.bounds
+                ax.update_datalim([(x0, y0), (x1, y1)])
+        return patches
 
 
     def _drop_colorbar(self) -> None:
