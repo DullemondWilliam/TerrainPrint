@@ -222,7 +222,8 @@ def generate_lobes(border_geom_m, prov_union_m, p: ConnectorParams):
     return lobes
 
 
-def lobe_at(border_geom_m, x, y, p: ConnectorParams):
+def lobe_at(border_geom_m, x, y, p: ConnectorParams, angle_deg=0.0,
+            scale=1.0):
     """
     The lobe :func:`generate_lobes` would place at the corridor edge nearest
     (x, y) -- one connector, put by hand.
@@ -231,26 +232,26 @@ def lobe_at(border_geom_m, x, y, p: ConnectorParams):
     click either side of the corridor picks the edge (and so the province) on
     that side, and the lobe has the same profile as a generated one.  Returns
     None when there is no corridor or the lobe there would be degenerate.
+
+    ``angle_deg`` turns the lobe about that point on the edge (positive is
+    anticlockwise; 0 is square to the edge), and ``scale`` grows its reach,
+    neck and mouth together, so it keeps its shape -- see :func:`lobe_pose`.
     """
     point = Point(x, y)
     rings = _rings(border_geom_m)
     if not rings:
         return None
     ring = min(rings, key=point.distance)
-    return _lobe_on_ring(ring, ring.project(point), border_geom_m, p)
+    return _lobe_on_ring(ring, ring.project(point), border_geom_m, p,
+                         angle_deg, scale)
 
 
-def _lobe_on_ring(ring, s, border_geom_m, p: ConnectorParams):
-    """The dovetail trapezoid ``s`` metres along ``ring``, reaching out of the
-    corridor; None where the ring has no direction or the lobe is invalid."""
-    mpm       = p.mpm
-    neck_m    = p.neck_mm    * mpm
-    mouth_m   = p.mouth_mm   * mpm
-    reach_m   = p.reach_mm   * mpm
-    overlap_m = p.overlap_mm * mpm
-    eps       = 0.001 * mpm
-    length    = ring.length
-
+def _edge_frame(ring, s, border_geom_m, mpm):
+    """The point ``s`` metres along ``ring``, the unit tangent there, and the
+    unit normal pointing out of the corridor; None where the ring has no
+    direction."""
+    eps    = 0.001 * mpm
+    length = ring.length
     P  = ring.interpolate(s)
     Pa = ring.interpolate(min(s + eps, length))
     Pb = ring.interpolate(max(s - eps, 0.0))
@@ -264,6 +265,30 @@ def _lobe_on_ring(ring, s, border_geom_m, p: ConnectorParams):
     # Point the normal OUT of the border corridor (into a province).
     if border_geom_m.contains(Point(P.x + nx*eps*10, P.y + ny*eps*10)):
         nx, ny = -nx, -ny
+    return P, (tx, ty), (nx, ny)
+
+
+def _lobe_on_ring(ring, s, border_geom_m, p: ConnectorParams, angle_deg=0.0,
+                  scale=1.0):
+    """The dovetail trapezoid ``s`` metres along ``ring``, reaching out of the
+    corridor; None where the ring has no direction or the lobe is invalid.
+
+    The root sinks ``overlap_mm`` into the corridor whatever the ``scale``:
+    that is about holding on to the bar, not about the connector's size."""
+    mpm       = p.mpm
+    neck_m    = p.neck_mm    * mpm * scale
+    mouth_m   = p.mouth_mm   * mpm * scale
+    reach_m   = p.reach_mm   * mpm * scale
+    overlap_m = p.overlap_mm * mpm
+    frame = _edge_frame(ring, s, border_geom_m, mpm)
+    if frame is None or scale <= 0:
+        return None
+    P, (tx, ty), (nx, ny) = frame
+    if angle_deg:
+        a = np.radians(angle_deg)
+        c, si = np.cos(a), np.sin(a)
+        nx, ny = nx*c - ny*si, nx*si + ny*c
+        tx, ty = tx*c - ty*si, tx*si + ty*c
 
     rc = (P.x - nx*overlap_m, P.y - ny*overlap_m)   # root centre (in corridor)
     fc = (P.x + nx*reach_m,   P.y + ny*reach_m)     # far centre  (in province)
@@ -276,6 +301,36 @@ def _lobe_on_ring(ring, s, border_geom_m, p: ConnectorParams):
     if (not lobe.is_valid) or lobe.is_empty:
         return None
     return lobe
+
+
+def lobe_pose(lobe, border_geom_m, p: ConnectorParams):
+    """
+    ``(x, y, angle_deg, scale)`` such that ``lobe_at(border, x, y, p,
+    angle_deg, scale)`` rebuilds ``lobe`` (made with the same ``p``).
+
+    Read off the outline itself -- the root and far-end centres give the
+    direction and the length -- so a connector carries its own turn and size
+    wherever its outline goes: undo, a save, a reshape to new settings.
+    """
+    c = lobe.exterior.coords
+    rx, ry = (c[0][0] + c[3][0]) / 2, (c[0][1] + c[3][1]) / 2
+    fx, fy = (c[1][0] + c[2][0]) / 2, (c[1][1] + c[2][1]) / 2
+    length = ((fx - rx) ** 2 + (fy - ry) ** 2) ** 0.5
+    ux, uy = (fx - rx) / length, (fy - ry) / length
+    overlap_m = p.overlap_mm * p.mpm
+    x, y = rx + ux * overlap_m, ry + uy * overlap_m      # on the corridor edge
+    scale = (length - overlap_m) / (p.reach_mm * p.mpm)
+    angle = 0.0
+    point = Point(x, y)
+    rings = _rings(border_geom_m)
+    if rings:
+        ring = min(rings, key=point.distance)
+        frame = _edge_frame(ring, ring.project(point), border_geom_m, p.mpm)
+        if frame is not None:
+            _, _, (nx, ny) = frame
+            angle = float(np.degrees(np.arctan2(nx * uy - ny * ux,
+                                                nx * ux + ny * uy)))
+    return x, y, angle, scale
 
 
 # ---------------------------------------------------------------------------

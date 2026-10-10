@@ -150,7 +150,17 @@ move it, click beside the corridor to add one on that side.  A placed lobe has
 the generated profile and is held to the same rules -- it must reach a province
 to print, and only one -- and its far end must stay a clearance clear of every
 other lobe's, or two pockets run into one; a refused place says why and a drag
-shows it in red before you let go.  Every edit is one Undo (Ctrl+Z / Ctrl+Y)
+shows it in red before you let go.
+
+*A connector can be turned and sized on its own.*  Right-click one to select
+it.  **Angle** turns it about where it meets the corridor, up to 45° either
+way; **Depth** sets how far it reaches, its neck and mouth growing with it so
+it keeps its shape.  ] and [ turn it 5°, } and { 1°, + and - change the depth
+0.25 mm (a held key is one Undo step), Del deletes it, and dragging the dot at
+its far end swings it round.  A turned connector must keep half its root in
+the corridor and a neck of at least two nozzle widths.  Its turn and size are
+read off its own outline, so they survive a move, a reshape from the connector
+row, Undo, and Save Borders (which writes them as ``angle_deg`` and ``scale``).  Every edit is one Undo (Ctrl+Z / Ctrl+Y)
 step and stales the border bar and a pocketed solid.  **Define Borders**
 places them afresh and discards the edits.  **Save Borders** writes them to
 ``connectors.geojson``, which ``build_border_from_dir`` uses in place of
@@ -179,6 +189,7 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -213,6 +224,7 @@ from lib.LIB_border_connectors import (CONNECTORS_NAME, ConnectorParams,
                                        _polys, _repair, _safe_union,
                                        build_border_mesh, generate_lobes,
                                        load_connector_params, lobe_at,
+                                       lobe_pose,
                                        notch_province)
 from lib.LIB_border_regions import build_border_regions
 from lib.LIB_border_simplification import topo_simplify_two_tolerances
@@ -273,8 +285,22 @@ ROLES = ("target", "surrounding")
 SHOW_CHOICES = ["Terrain", "Border bar", "Assembly"]
 DRAG_COLOUR = "#1E8449"       # dark green — where a dragged connector lands
 REFUSED_COLOUR = "#C0392B"    # red — where it cannot
+PICKED_COLOUR = "#7D3C98"     # purple — the selected connector and its handle
 #: How near, in screen pixels, a click must be to a connector to pick it.
 PICK_PX = 8
+#: "Leave the selection as it is", where None would mean "select nothing".
+_KEEP = object()
+
+#: How far a selected connector turns either way from square to its edge.
+ANGLE_LIMIT_DEG = 45.0
+#: What one press of ] / [ turns it, and of } / { (Shift) for fine work.
+ANGLE_STEP_DEG = 5.0
+FINE_ANGLE_STEP_DEG = 1.0
+#: What one press of + / - adds to or takes from its depth.
+DEPTH_STEP_MM = 0.25
+#: Presses closer together than this are one Undo step: a held key is one
+#: gesture, not a dozen.
+KEY_GESTURE_S = 0.5
 #: A press that travels further than this is a drag, not a click.
 CLICK_SLOP_PX = 4
 #: A lobe counts as reaching into a region past this fraction of its own area,
@@ -593,7 +619,8 @@ def _owners(lobe, border, targets) -> int:
 
 
 def place_connector(definition: BorderDefinition, x: float, y: float,
-                    ignore: int | None = None):
+                    ignore: int | None = None, angle_deg: float = 0.0,
+                    scale: float = 1.0):
     """
     The connector a click at (x, y) puts on the corridor edge nearest it, and
     why not when it cannot go there: ``(lobe, "")`` or ``(None, reason)``.
@@ -602,13 +629,14 @@ def place_connector(definition: BorderDefinition, x: float, y: float,
     province to print, and only one (FR-3.7) -- and to one more: its far end
     stays a clearance clear of every other lobe's, or two pockets run into
     one.  ``ignore`` is the index of the lobe being moved, which may land
-    where it already was.
+    where it already was.  ``angle_deg`` and ``scale`` turn and size it, as
+    in :func:`lobe_at`.
     """
     d = definition
     if d.border is None:
         return None, "There is no corridor to put a connector on."
     p = d.settings.connector_params()
-    lobe = lobe_at(d.border, x, y, p)
+    lobe = lobe_at(d.border, x, y, p, angle_deg, scale)
     if lobe is None:
         return None, "No connector fits there."
     others = [other for i, other in enumerate(d.lobes) if i != ignore]
@@ -626,6 +654,9 @@ FAULTS = {
     "escapes": ("Its pocket would run out of the province -- past the coast "
                 "or into a neighbour."),
     "crowded": "It would run into another connector.",
+    "detached": ("It would come loose from the bar: too little of its root "
+                 "is left in the corridor."),
+    "thin": "Its neck would be too thin to print.",
 }
 
 #: The same, as the Borders report counts generated connectors it dropped.
@@ -634,7 +665,13 @@ FAULT_COUNTS = {
     "two_provinces": "reached into two provinces",
     "escapes": "ran out of their province",
     "crowded": "ran into another connector",
+    "detached": "came loose from the bar",
+    "thin": "were too thin to print",
 }
+
+#: How much of a connector's root must stay in the corridor, as a fraction of
+#: what an unturned one of its size has there, for the bar to hold it.
+_ROOT_HOLD_FRAC = 0.5
 
 
 def _connector_fault(lobe, definition, others, p, land) -> str:
@@ -656,8 +693,18 @@ def _fault(lobe, definition, others, p, land) -> str:
       frontier opens in the side of the piece.
     * It must not touch another connector, and its pocket must stay a
       clearance clear of every other's, or two pockets run into one.
+    * Turned or shrunk by hand, it must keep enough root in the corridor to
+      hang on to the bar, and a neck the printer can hold.
     """
     d = definition
+    c = lobe.exterior.coords
+    neck_m = Point(c[0]).distance(Point(c[3]))
+    floor_m = min(2 * _cfg("seam.nozzle_mm"), p.neck_mm) * p.mpm
+    if neck_m < floor_m * (1 - 1e-6):
+        return "thin"
+    root_m2 = p.overlap_mm * p.mpm * neck_m          # an unturned root's area
+    if lobe.intersection(d.border).area < _ROOT_HOLD_FRAC * root_m2:
+        return "detached"
     if lobe.intersection(land).area < p.min_overlap_frac * lobe.area:
         return "no_province"
     targets = list(d.targets.values())
@@ -680,25 +727,15 @@ def _fault(lobe, definition, others, p, land) -> str:
     return ""
 
 
-def _anchor(lobe, p: ConnectorParams):
-    """Where on the corridor edge ``lobe`` (built with ``p``) is anchored: the
-    point on its centre line ``overlap`` from the root and ``reach`` from
-    the far end."""
-    c = lobe.exterior.coords
-    rx, ry = (c[0][0] + c[3][0]) / 2, (c[0][1] + c[3][1]) / 2
-    fx, fy = (c[1][0] + c[2][0]) / 2, (c[1][1] + c[2][1]) / 2
-    t = p.overlap_mm / (p.overlap_mm + p.reach_mm)
-    return rx + (fx - rx) * t, ry + (fy - ry) * t
-
-
 def reshape_connectors(definition: BorderDefinition,
                        settings: BorderSettings):
     """
     ``definition``'s connectors in the shape ``settings`` asks for, each where
     it stood: ``(lobes, dropped)``.
 
-    A lobe is rebuilt at its anchor on the corridor edge, so a connector put
-    by hand stays put.  One the new shape no longer lets stand -- grown into
+    A lobe is rebuilt at its anchor on the corridor edge, turned and sized as
+    it was (:func:`lobe_pose`), so a connector put, turned or resized by hand
+    stays as it was left.  One the new shape no longer lets stand -- grown into
     a neighbour, or now reaching into two provinces -- is dropped and counted;
     the rest keep their order.
     """
@@ -709,7 +746,8 @@ def reshape_connectors(definition: BorderDefinition,
     land = _safe_union(list(d.targets.values()))
     kept, dropped = [], 0
     for lobe in d.lobes:
-        reshaped = lobe_at(d.border, *_anchor(lobe, old), new)
+        x, y, angle, scale = lobe_pose(lobe, d.border, old)
+        reshaped = lobe_at(d.border, x, y, new, angle, scale)
         if reshaped is None or _connector_fault(reshaped, d, kept, new, land):
             dropped += 1
         else:
@@ -977,6 +1015,9 @@ class TerrainEditorTester(QMainWindow):
         self._press = None
         self._drag: int | None = None
         self._drag_artist = None
+        self._selected: int | None = None    #: the connector right-clicked
+        self._turning = False                #: dragging its handle
+        self._last_key_edit = 0.0            #: when a key last turned/sized it
 
         central = QWidget()
         root = QVBoxLayout(central)
@@ -1105,6 +1146,9 @@ class TerrainEditorTester(QMainWindow):
             "  click a connector to delete it\n"
             "  drag a connector to move it along the corridor\n"
             "  click beside the corridor to add one on that side\n"
+            "  right-click a connector to select it: turn it and set its\n"
+            "    depth on the Selected row, with ] [ } { + - and Del, or by\n"
+            "    dragging the dot at its far end; Esc lets it go\n"
             "Ctrl+Z / Ctrl+Y undo and redo. Define Borders places them\n"
             "afresh, discarding what was edited.")
         self.btn_edit_lobes.toggled.connect(self._on_edit_toggled)
@@ -1147,11 +1191,50 @@ class TerrainEditorTester(QMainWindow):
         connector_bar.addWidget(self.btn_lobe_undo)
         connector_bar.addWidget(self.btn_lobe_redo)
         connector_bar.addStretch(1)
+        # The one connector right-clicked: its own turn and depth.
+        self.sel_label = QLabel("Selected: none")
+        self.sel_angle_spin = self._spin(
+            -ANGLE_LIMIT_DEG, ANGLE_LIMIT_DEG, 0.0, 1,
+            "Turn the selected connector about where it meets the corridor\n"
+            "(0 is square to the edge). ] / [ turn it "
+            f"{ANGLE_STEP_DEG:g}°, }} / {{ {FINE_ANGLE_STEP_DEG:g}°; "
+            "or drag the dot at its far end.")
+        self.sel_angle_spin.setSingleStep(ANGLE_STEP_DEG)
+        self.sel_angle_spin.setSuffix("°")
+        self.sel_depth_spin = self._mm_spin(
+            defaults.lobe_depth_mm, 0.5, 20.0,
+            "How far the selected connector reaches into its province.\n"
+            "Its neck and mouth grow with it, so it keeps its shape.\n"
+            f"+ / - change it by {DEPTH_STEP_MM:g} mm.")
+        self.sel_depth_spin.setSingleStep(DEPTH_STEP_MM)
+        for spin in (self.sel_angle_spin, self.sel_depth_spin):
+            spin.setKeyboardTracking(False)
+            spin.valueChanged.connect(self._on_selected_spins)
+        self.btn_sel_reset = QPushButton("Reset")
+        self.btn_sel_reset.setToolTip(
+            "Square to the edge and the size the connector row sets.")
+        self.btn_sel_reset.clicked.connect(self.reset_selected)
+        self.btn_sel_delete = QPushButton("Delete")
+        self.btn_sel_delete.setToolTip("Delete the selected connector (Del).")
+        self.btn_sel_delete.clicked.connect(self.delete_selected)
+        selected_bar = QHBoxLayout()
+        selected_bar.addWidget(self.sel_label)
+        for label, widget in (("Angle:", self.sel_angle_spin),
+                              ("Depth:", self.sel_depth_spin)):
+            selected_bar.addWidget(QLabel(label))
+            selected_bar.addWidget(widget)
+        selected_bar.addWidget(self.btn_sel_reset)
+        selected_bar.addWidget(self.btn_sel_delete)
+        selected_bar.addStretch(1)
+        for widget in (self.sel_angle_spin, self.sel_depth_spin,
+                       self.btn_sel_reset, self.btn_sel_delete):
+            widget.setEnabled(False)          # until one is right-clicked
         self._wire_saved_settings()
         borders_page = QWidget()
         borders_layout = QVBoxLayout(borders_page)
         borders_layout.addLayout(border_bar)
         borders_layout.addLayout(connector_bar)
+        borders_layout.addLayout(selected_bar)
         borders_layout.addWidget(self.border_report)
 
         # -- stage 3: STL -- the original harness ----------------------------
@@ -1386,6 +1469,8 @@ class TerrainEditorTester(QMainWindow):
         self.canvas.mpl_connect("button_press_event", self._on_press)
         self.canvas.mpl_connect("motion_notify_event", self._on_motion)
         self.canvas.mpl_connect("button_release_event", self._on_release)
+        self.canvas.mpl_connect("key_press_event", self._on_key)
+        self.canvas.setFocusPolicy(Qt.StrongFocus)    # so the keys reach it
 
         # DEM + cropped raster on the left, the finished solid on the right.
         # The 3-D panel is vispy, not mplot3d: a province is ~200k triangles and
@@ -1580,6 +1665,7 @@ class TerrainEditorTester(QMainWindow):
     def apply_borders(self, definition: BorderDefinition) -> None:
         """Adopt a border definition: report it, draw it, hand it to stage 3."""
         self.borders = definition
+        self._selected = None
         self._lobe_undo.clear()
         self._lobe_redo.clear()
         self._invalidate_bar()
@@ -1645,6 +1731,8 @@ class TerrainEditorTester(QMainWindow):
         if not self.connectors_editable() and self.btn_edit_lobes.isChecked():
             self.btn_edit_lobes.setChecked(False)
         self.btn_lobe_undo.setEnabled(editable and bool(self._lobe_undo))
+        if hasattr(self, "sel_angle_spin"):
+            self._sync_selected()
         self.btn_lobe_redo.setEnabled(editable and bool(self._lobe_redo))
         # Buffer grows the cut outward, and outward is the corridor.
         if self.borders is not None:
@@ -1690,9 +1778,14 @@ class TerrainEditorTester(QMainWindow):
         # read back (build_border_from_dir uses these rather than its own).
         connectors = folder / CONNECTORS_NAME
         if self.borders.lobes:
+            p = self.borders.settings.connector_params()
+            poses = [lobe_pose(lobe, self.borders.border, p)
+                     for lobe in self.borders.lobes]
             frame = gpd.GeoDataFrame(
                 {"name": [f"connector_{i}" for i in
-                          range(1, len(self.borders.lobes) + 1)]},
+                          range(1, len(self.borders.lobes) + 1)],
+                 "angle_deg": [round(pose[2], 3) for pose in poses],
+                 "scale": [round(pose[3], 4) for pose in poses]},
                 geometry=list(self.borders.lobes), crs=EPSG_WORKING)
             frame.to_crs(default_crs).to_file(connectors, driver="GeoJSON")
             written.append(connectors)
@@ -1829,6 +1922,8 @@ class TerrainEditorTester(QMainWindow):
 
     def _on_edit_toggled(self, on: bool) -> None:
         if not on:
+            if self._selected is not None:
+                self.select_connector(None)
             return
         # Pan or zoom would take the clicks; the edit tool asked for them.
         mode = str(self.mpl_toolbar.mode)
@@ -1838,7 +1933,8 @@ class TerrainEditorTester(QMainWindow):
             self.mpl_toolbar.zoom()
         self.status.setText(
             "Editing connectors: click one to delete it, drag one to move it, "
-            "click beside the corridor to add one.")
+            "click beside the corridor to add one, right-click one to turn "
+            "or resize it.")
 
     def connector_at(self, x: float, y: float) -> int | None:
         """The index of the connector under (x, y), nearest first."""
@@ -1874,23 +1970,169 @@ class TerrainEditorTester(QMainWindow):
         if lobe is None:
             self.status.setText(f"No connector added: {why}")
             return False
-        self._commit_lobes(self.borders.lobes + [lobe], "Added a connector.")
+        self._commit_lobes(self.borders.lobes + [lobe], "Added a connector.",
+                           selected=len(self.borders.lobes))
         return True
 
     def delete_connector(self, index: int) -> None:
         lobes = list(self.borders.lobes)
         del lobes[index]
-        self._commit_lobes(lobes, "Deleted a connector.")
+        selected = self._selected
+        if selected == index:
+            selected = None
+        elif selected is not None and selected > index:
+            selected -= 1
+        self._commit_lobes(lobes, "Deleted a connector.", selected=selected)
 
     def move_connector(self, index: int, x: float, y: float) -> bool:
-        lobe, why = place_connector(self.borders, x, y, ignore=index)
+        """Slide connector ``index`` to the edge beside (x, y), turned and
+        sized as it was."""
+        _, _, angle, scale = self.connector_pose(index)
+        lobe, why = place_connector(self.borders, x, y, ignore=index,
+                                    angle_deg=angle, scale=scale)
         if lobe is None:
             self.status.setText(f"Connector not moved: {why}")
             return False
         lobes = list(self.borders.lobes)
         lobes[index] = lobe
-        self._commit_lobes(lobes, "Moved a connector.")
+        self._commit_lobes(lobes, "Moved a connector.", selected=index)
         return True
+
+    # -- the selected connector ----------------------------------------------
+    def connector_pose(self, index: int) -> tuple:
+        """``(x, y, angle_deg, scale)`` of connector ``index``."""
+        d = self.borders
+        return lobe_pose(d.lobes[index], d.border,
+                         d.settings.connector_params())
+
+    def select_connector(self, index: int | None) -> None:
+        """Select connector ``index`` (None for none) for turning and sizing."""
+        if self.borders is None or index is None \
+                or not 0 <= index < len(self.borders.lobes):
+            index = None
+        self._selected = index
+        self._sync_selected()
+        if self._showing_borders():
+            self._draw_borders(preserve_view=True)
+
+    def _sync_selected(self) -> None:
+        """The Selected row shows the selected connector, or is greyed."""
+        d = self.borders
+        if self._selected is not None and (
+                d is None or self._selected >= len(d.lobes)):
+            self._selected = None
+        on = self._selected is not None and self._thread is None
+        for widget in (self.sel_angle_spin, self.sel_depth_spin,
+                       self.btn_sel_reset, self.btn_sel_delete):
+            widget.setEnabled(on)
+        if self._selected is None:
+            self.sel_label.setText("Selected: none")
+            return
+        _, _, angle, scale = self.connector_pose(self._selected)
+        reach = d.settings.connector_params().reach_mm
+        self.sel_label.setText(f"Selected: connector {self._selected + 1}")
+        for spin, value in ((self.sel_angle_spin, angle),
+                            (self.sel_depth_spin, reach * scale)):
+            spin.blockSignals(True)
+            spin.setValue(value)
+            spin.blockSignals(False)
+
+    def pose_selected(self, angle_deg: float, scale: float,
+                      message: str, gesture: bool = False) -> bool:
+        """
+        Turn and size the selected connector where it stands, as one Undo
+        step -- or, for a key held down (``gesture``), as part of the step
+        the last press began.  Refused, it stays as it was and says why.
+        """
+        index = self._selected
+        if index is None or not self.connectors_editable():
+            return False
+        angle_deg = max(-ANGLE_LIMIT_DEG, min(ANGLE_LIMIT_DEG, angle_deg))
+        x, y, _, _ = self.connector_pose(index)
+        lobe, why = place_connector(self.borders, x, y, ignore=index,
+                                    angle_deg=angle_deg, scale=scale)
+        if lobe is None:
+            self.status.setText(f"Connector not changed: {why}")
+            self._sync_selected()
+            return False
+        lobes = list(self.borders.lobes)
+        lobes[index] = lobe
+        now = time.monotonic()
+        if gesture and now - self._last_key_edit < KEY_GESTURE_S:
+            self._set_lobes(lobes, message)       # the same Undo step
+        else:
+            self._commit_lobes(lobes, message)
+        self._last_key_edit = now if gesture else 0.0
+        return True
+
+    def _on_selected_spins(self) -> None:
+        if self._selected is None:
+            return
+        reach = self.borders.settings.connector_params().reach_mm
+        self.pose_selected(self.sel_angle_spin.value(),
+                           self.sel_depth_spin.value() / reach,
+                           "Changed a connector.")
+
+    def turn_selected(self, step_deg: float, gesture: bool = False) -> bool:
+        if self._selected is None:
+            return False
+        _, _, angle, scale = self.connector_pose(self._selected)
+        return self.pose_selected(angle + step_deg, scale,
+                                  "Turned a connector.", gesture)
+
+    def deepen_selected(self, step_mm: float, gesture: bool = False) -> bool:
+        """Grow (or shrink) the selected connector by ``step_mm`` of depth;
+        its neck and mouth follow, so it keeps its shape."""
+        if self._selected is None:
+            return False
+        _, _, angle, scale = self.connector_pose(self._selected)
+        reach = self.borders.settings.connector_params().reach_mm
+        depth = max(0.5, reach * scale + step_mm)
+        return self.pose_selected(angle, depth / reach,
+                                  "Resized a connector.", gesture)
+
+    def reset_selected(self) -> bool:
+        return self.pose_selected(0.0, 1.0, "Reset a connector.")
+
+    def delete_selected(self) -> None:
+        if self._selected is not None and self.connectors_editable():
+            self.delete_connector(self._selected)
+
+    def _handle_at(self, index: int) -> tuple:
+        """Where the turning handle of connector ``index`` is drawn: the
+        middle of its far end."""
+        c = self.borders.lobes[index].exterior.coords
+        return (c[1][0] + c[2][0]) / 2, (c[1][1] + c[2][1]) / 2
+
+    def _angle_toward(self, index: int, x: float, y: float) -> float:
+        """The angle that points connector ``index`` at (x, y), measured
+        from square to its edge as :func:`lobe_pose` measures it."""
+        ax_, ay_, angle, _ = self.connector_pose(index)
+        hx, hy = self._handle_at(index)
+        here = np.degrees(np.arctan2(hy - ay_, hx - ax_))
+        there = np.degrees(np.arctan2(y - ay_, x - ax_))
+        turn = (there - here + 180.0) % 360.0 - 180.0
+        return angle + turn
+
+    def _on_key(self, event) -> None:
+        """Keys on the map act on the selected connector."""
+        if not self._editing() or self._selected is None:
+            return
+        key = event.key
+        if key == "escape":
+            self.select_connector(None)
+        elif key == "delete":
+            self.delete_selected()
+        elif key in ("]", "["):
+            self.turn_selected(ANGLE_STEP_DEG if key == "]"
+                               else -ANGLE_STEP_DEG, gesture=True)
+        elif key in ("}", "{"):
+            self.turn_selected(FINE_ANGLE_STEP_DEG if key == "}"
+                               else -FINE_ANGLE_STEP_DEG, gesture=True)
+        elif key in ("+", "="):
+            self.deepen_selected(DEPTH_STEP_MM, gesture=True)
+        elif key in ("-", "_"):
+            self.deepen_selected(-DEPTH_STEP_MM, gesture=True)
 
     def _shape_spins(self) -> tuple:
         return (self.lobe_height_spin, self.lobe_depth_spin,
@@ -1934,11 +2176,12 @@ class TerrainEditorTester(QMainWindow):
             spin.blockSignals(False)
         self._set_lobes(lobes, message, edited=edited)
 
-    def _commit_lobes(self, lobes: list, message: str) -> None:
+    def _commit_lobes(self, lobes: list, message: str,
+                      selected=_KEEP) -> None:
         """Make ``lobes`` the connectors, as one undoable step."""
         self._lobe_undo.append(self._snapshot())
         self._lobe_redo.clear()
-        self._set_lobes(lobes, message)
+        self._set_lobes(lobes, message, selected=selected)
 
     def undo_connectors(self) -> None:
         if self._lobe_undo and self._thread is None and self.borders:
@@ -1951,11 +2194,17 @@ class TerrainEditorTester(QMainWindow):
             self._restore(self._lobe_redo.pop(), "Redone.")
 
     def _set_lobes(self, lobes: list, message: str,
-                   edited: bool = True) -> None:
+                   edited: bool = True, selected=_KEEP) -> None:
         """Adopt a lobe list: the bar and any pocketed solid were built from
         the old one, so both go stale."""
+        count = len(self.borders.lobes)
         self.borders.lobes = list(lobes)
         self.borders.lobes_edited = edited
+        if self._selected is not None and (selected is _KEEP and
+                                           len(lobes) != count):
+            selected = None      # an index into a list that is not the same
+        if selected is not _KEEP:
+            self._selected = selected
         self._invalidate_bar()
         if self.stl_result is not None and self._pockets:
             self._invalidate_mesh()
@@ -1963,17 +2212,31 @@ class TerrainEditorTester(QMainWindow):
         self.border_report.setText(self._borders_text())
         self.status.setText(f"{message} {len(self.borders.lobes)} "
                             "connector(s).")
+        self._sync_selected()
         if self._showing_borders():
             self._draw_borders(preserve_view=True)
 
     # -- map events ---------------------------------------------------------
     def _on_press(self, event) -> None:
-        if (event.button != 1 or event.inaxes is not self.ax_after
-                or event.xdata is None or not self._editing()
-                or self.mpl_toolbar.mode):
+        self._turning = False
+        if (event.inaxes is not self.ax_after or event.xdata is None
+                or not self._editing() or self.mpl_toolbar.mode):
             self._press = None
             return
+        if event.button == 3:            # right-click: select, or deselect
+            self._press = None
+            self.select_connector(self.connector_at(event.xdata, event.ydata))
+            return
+        if event.button != 1:
+            self._press = None
+            return
+        self.canvas.setFocus()
         self._press = (event.x, event.y)
+        if self._selected is not None and Point(
+                self._handle_at(self._selected)).distance(
+                    Point(event.xdata, event.ydata)) <= self._pick_distance():
+            self._drag, self._turning = self._selected, True
+            return
         self._drag = self.connector_at(event.xdata, event.ydata)
 
     def _moved(self, event) -> bool:
@@ -1986,10 +2249,18 @@ class TerrainEditorTester(QMainWindow):
         if (self._drag is None or event.inaxes is not self.ax_after
                 or event.xdata is None or not self._moved(event)):
             return
-        lobe, _ = place_connector(self.borders, event.xdata, event.ydata,
-                                  ignore=self._drag)
-        shape = lobe or lobe_at(self.borders.border, event.xdata, event.ydata,
-                                self.borders.settings.connector_params())
+        x, y, angle, scale = self.connector_pose(self._drag)
+        if self._turning:
+            angle = max(-ANGLE_LIMIT_DEG, min(ANGLE_LIMIT_DEG,
+                        self._angle_toward(self._drag, event.xdata,
+                                           event.ydata)))
+        else:
+            x, y = event.xdata, event.ydata
+        lobe, _ = place_connector(self.borders, x, y, ignore=self._drag,
+                                  angle_deg=angle, scale=scale)
+        shape = lobe or lobe_at(self.borders.border, x, y,
+                                self.borders.settings.connector_params(),
+                                angle, scale)
         if self._drag_artist is not None:
             self._drag_artist.remove()
             self._drag_artist = None
@@ -2002,8 +2273,9 @@ class TerrainEditorTester(QMainWindow):
 
     def _on_release(self, event) -> None:
         moved = self._moved(event)
-        press, drag = self._press, self._drag
+        press, drag, turning = self._press, self._drag, self._turning
         self._press = self._drag = None
+        self._turning = False
         if self._drag_artist is not None:
             self._drag_artist.remove()
             self._drag_artist = None
@@ -2013,6 +2285,11 @@ class TerrainEditorTester(QMainWindow):
             return
         if not moved:
             self.click_connectors(event.xdata, event.ydata)
+        elif turning:
+            _, _, _, scale = self.connector_pose(drag)
+            self.pose_selected(
+                self._angle_toward(drag, event.xdata, event.ydata), scale,
+                "Turned a connector.")
         elif drag is not None:
             self.move_connector(drag, event.xdata, event.ydata)
 
@@ -2635,6 +2912,13 @@ class TerrainEditorTester(QMainWindow):
                 self._fill(after, d.border, CORRIDOR_COLOUR, alpha=0.85)
             for lobe in d.lobes:
                 self._fill(after, lobe, RESULT_COLOUR, edge=EDGE_COLOUR)
+            if self._selected is not None and self._selected < len(d.lobes):
+                xs, ys = d.lobes[self._selected].exterior.xy
+                after.plot(xs, ys, color=PICKED_COLOUR, linewidth=2.0,
+                           zorder=9)
+                hx, hy = self._handle_at(self._selected)
+                after.plot([hx], [hy], "o", color=PICKED_COLOUR,
+                           markersize=6, zorder=9)
             for colour, segs in ((EDGE_COLOUR, d.coastal_segs),
                                  (SELECT_COLOUR, d.internal_segs)):
                 for seg in segs:

@@ -892,8 +892,9 @@ class TestConnectorShape:
             neck, mouth, _ = _neck_mouth_reach_mm(new)
             assert neck == pytest.approx(2.0)
             assert mouth == pytest.approx(3.0)
-            assert U._anchor(new, wider.connector_params()) == pytest.approx(
-                U._anchor(old, defined.settings.connector_params()))
+            assert U.lobe_pose(new, defined.border, wider.connector_params(
+            ))[:2] == pytest.approx(U.lobe_pose(
+                old, defined.border, defined.settings.connector_params())[:2])
 
     def test_a_shape_that_collides_is_dropped_and_counted(self, defined):
         huge = U.replace(defined.settings, lobe_width_mm=10.0, lobe_ratio=5.0)
@@ -945,3 +946,149 @@ class TestConnectorShape:
         window.lobe_width_spin.setValue(1.2)
         assert window.borders is None
         assert not window.btn_lobe_undo.isEnabled()
+
+
+# -- turning and sizing one connector -----------------------------------------
+
+def _select(window, index):
+    window._on_press(TestConnectorMouse._event(
+        window, window.borders.lobes[index].centroid.coords[0], button=3))
+
+
+def _reach(window):
+    return window.borders.settings.connector_params().reach_mm
+
+
+def _key(window, key):
+    from types import SimpleNamespace
+    window._on_key(SimpleNamespace(key=key))
+
+
+class TestSelectedConnector:
+
+    def test_right_click_selects_and_shows_it(self, tmp_path, defined):
+        window = _edit_window(tmp_path, defined)
+        assert not window.sel_angle_spin.isEnabled()
+        _select(window, 1)
+        assert window._selected == 1
+        assert window.sel_angle_spin.isEnabled()
+        assert window.sel_angle_spin.value() == pytest.approx(0.0)
+        assert window.sel_depth_spin.value() == pytest.approx(_reach(window))
+        assert len(window.borders.lobes) == len(defined.lobes)   # not deleted
+
+    def test_right_click_off_a_connector_deselects(self, tmp_path, defined):
+        window = _edit_window(tmp_path, defined)
+        _select(window, 1)
+        window._on_press(TestConnectorMouse._event(window, FREE_A, button=3))
+        assert window._selected is None
+        assert not window.sel_depth_spin.isEnabled()
+
+    def test_a_plain_click_still_deletes(self, tmp_path, defined):
+        window = _edit_window(tmp_path, defined)
+        _select(window, 0)
+        TestConnectorMouse()._click(window,
+                                    defined.lobes[0].centroid.coords[0])
+        assert len(window.borders.lobes) == len(defined.lobes) - 1
+        assert window._selected is None
+
+    def test_the_angle_box_turns_it_where_it_stands(self, tmp_path, defined):
+        window = _edit_window(tmp_path, defined)
+        _select(window, 1)
+        window.sel_angle_spin.setValue(30.0)
+        assert window.connector_pose(1)[2] == pytest.approx(30.0)
+        assert window.connector_pose(1)[:2] == pytest.approx(
+            U.lobe_pose(defined.lobes[1], defined.border,
+                        defined.settings.connector_params())[:2])
+
+    def test_the_depth_box_grows_it_in_shape(self, tmp_path, defined):
+        window = _edit_window(tmp_path, defined)
+        _select(window, 1)
+        window.sel_depth_spin.setValue(_reach(window) * 1.5)
+        assert window.connector_pose(1)[3] == pytest.approx(1.5)
+        c = window.borders.lobes[1].exterior.coords
+        neck = Polygon([c[0], c[3], c[0]]).length / 2 / MPM
+        mouth = Polygon([c[1], c[2], c[1]]).length / 2 / MPM
+        p = window.borders.settings.connector_params()
+        assert neck == pytest.approx(p.neck_mm * 1.5)
+        assert mouth / neck == pytest.approx(p.mouth_mm / p.neck_mm)
+
+    def test_too_small_to_print_is_refused(self, tmp_path, defined):
+        window = _edit_window(tmp_path, defined)
+        _select(window, 1)
+        assert not window.pose_selected(0.0, 0.2, "x")
+        assert U.FAULTS["thin"] in window.status.text()
+        assert window.borders.lobes[1].equals(defined.lobes[1])
+        assert window.sel_depth_spin.value() == pytest.approx(_reach(window))
+
+    def test_the_angle_is_held_to_45_degrees(self, tmp_path, defined):
+        window = _edit_window(tmp_path, defined)
+        _select(window, 1)
+        window.pose_selected(80.0, 1.0, "x")
+        assert abs(window.connector_pose(1)[2]) <= U.ANGLE_LIMIT_DEG + 1e-6
+
+    def test_keys_turn_resize_and_delete(self, tmp_path, defined):
+        window = _edit_window(tmp_path, defined)
+        _select(window, 1)
+        _key(window, "]")
+        _key(window, "}")
+        assert window.connector_pose(1)[2] == pytest.approx(
+            U.ANGLE_STEP_DEG + U.FINE_ANGLE_STEP_DEG)
+        _key(window, "+")
+        assert window.connector_pose(1)[3] * _reach(window) == pytest.approx(
+            _reach(window) + U.DEPTH_STEP_MM)
+        _key(window, "delete")
+        assert len(window.borders.lobes) == len(defined.lobes) - 1
+        assert window._selected is None
+
+    def test_a_held_key_is_one_undo_step(self, tmp_path, defined):
+        window = _edit_window(tmp_path, defined)
+        _select(window, 1)
+        for _ in range(3):
+            _key(window, "]")
+        assert window.connector_pose(1)[2] == pytest.approx(
+            3 * U.ANGLE_STEP_DEG)
+        window.undo_connectors()
+        assert window.borders.lobes[1].equals(defined.lobes[1])
+
+    def test_dragging_the_handle_swings_it(self, tmp_path, defined):
+        window = _edit_window(tmp_path, defined)
+        _select(window, 1)
+        x, y, _, _ = window.connector_pose(1)
+        hx, hy = window._handle_at(1)
+        a = np.radians(30.0)              # 30 degrees anticlockwise
+        dx, dy = hx - x, hy - y
+        to = (x + dx * np.cos(a) - dy * np.sin(a),
+              y + dx * np.sin(a) + dy * np.cos(a))
+        ev = TestConnectorMouse._event
+        window._on_press(ev(window, (hx, hy)))
+        window._on_motion(ev(window, to))
+        assert window._drag_artist is not None
+        window._on_release(ev(window, to))
+        assert window.connector_pose(1)[2] == pytest.approx(30.0, abs=0.1)
+        assert len(window.borders.lobes) == len(defined.lobes)
+
+    def test_a_turn_survives_a_move_and_a_reshape(self, tmp_path, defined):
+        window = _edit_window(tmp_path, defined)
+        _select(window, 1)
+        assert window.pose_selected(20.0, 1.25, "x")
+        assert window.move_connector(1, *FREE_A)
+        assert window.connector_pose(1)[2:] == pytest.approx((20.0, 1.25))
+        window.lobe_width_spin.setValue(window.lobe_width_spin.value() + 0.2)
+        assert window.connector_pose(1)[2:] == pytest.approx((20.0, 1.25))
+        assert window._selected == 1
+
+    def test_save_writes_the_turn_and_size(self, tmp_path, defined):
+        window = _edit_window(tmp_path, defined)
+        _select(window, 1)
+        assert window.pose_selected(-15.0, 1.2, "x")
+        window.write_borders(tmp_path / "out")
+        frame = gpd.read_file(tmp_path / "out" / "connectors.geojson")
+        assert frame["angle_deg"][1] == pytest.approx(-15.0, abs=1e-3)
+        assert frame["scale"][1] == pytest.approx(1.2, abs=1e-4)
+        assert frame["angle_deg"][0] == pytest.approx(0.0, abs=1e-3)
+
+    def test_leaving_the_tool_lets_it_go(self, tmp_path, defined):
+        window = _edit_window(tmp_path, defined)
+        _select(window, 1)
+        window.btn_edit_lobes.setChecked(False)
+        assert window._selected is None

@@ -12,7 +12,7 @@ import pytest
 from shapely.geometry import box
 
 from lib.LIB_border_connectors import (ConnectorParams, build_border_mesh,
-                                       generate_lobes, lobe_at)
+                                       generate_lobes, lobe_at, lobe_pose)
 
 P = ConnectorParams()
 MPM = P.mpm
@@ -67,3 +67,44 @@ def test_a_draped_top_never_drops_below_the_thickness():
     mesh = build_border_mesh(CORRIDOR, [], P, lambda xs, ys: np.zeros(len(xs)))
     assert mesh.bounds[1][2] == pytest.approx(P.thickness_mm)
     assert mesh.is_watertight
+
+
+# -- a connector's own turn and size ------------------------------------------
+
+def _centres(lobe):
+    c = lobe.exterior.coords
+    root = ((c[0][0] + c[3][0]) / 2, (c[0][1] + c[3][1]) / 2)
+    far = ((c[1][0] + c[2][0]) / 2, (c[1][1] + c[2][1]) / 2)
+    return np.array(root), np.array(far)
+
+
+def test_unturned_and_unscaled_is_the_plain_lobe():
+    assert lobe_at(CORRIDOR, 3 * MPM, 50 * MPM, P, 0.0, 1.0).equals(
+        lobe_at(CORRIDOR, 3 * MPM, 50 * MPM, P))
+
+
+@pytest.mark.parametrize("angle", [-45.0, -20.0, 15.0, 45.0])
+def test_turning_pivots_on_the_corridor_edge(angle):
+    lobe = lobe_at(CORRIDOR, 3 * MPM, 50 * MPM, P, angle)
+    x, y, got, scale = lobe_pose(lobe, CORRIDOR, P)
+    assert (x, y) == pytest.approx((1 * MPM, 50 * MPM))
+    assert got == pytest.approx(angle)
+    assert scale == pytest.approx(1.0)
+    root, far = _centres(lobe)
+    direction = np.degrees(np.arctan2(*(far - root)[::-1]))
+    assert direction == pytest.approx(angle)      # the normal there is +x
+
+
+@pytest.mark.parametrize("scale", [0.6, 1.5, 2.0])
+def test_scaling_keeps_the_shape(scale):
+    plain = lobe_at(CORRIDOR, 3 * MPM, 50 * MPM, P)
+    grown = lobe_at(CORRIDOR, 3 * MPM, 50 * MPM, P, 0.0, scale)
+    c = grown.exterior.coords
+    neck = np.hypot(c[0][0] - c[3][0], c[0][1] - c[3][1]) / MPM
+    mouth = np.hypot(c[1][0] - c[2][0], c[1][1] - c[2][1]) / MPM
+    assert neck == pytest.approx(P.neck_mm * scale)
+    assert mouth / neck == pytest.approx(P.mouth_mm / P.neck_mm)
+    # Reach grows; the root still sinks the same overlap into the corridor.
+    assert grown.bounds[2] / MPM == pytest.approx(1 + P.reach_mm * scale)
+    assert grown.bounds[0] == pytest.approx(plain.bounds[0])
+    assert lobe_pose(grown, CORRIDOR, P)[3] == pytest.approx(scale)
