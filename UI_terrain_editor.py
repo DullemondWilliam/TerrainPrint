@@ -362,6 +362,7 @@ SURROUND_COLOUR = "#B3B6B7"   # grey  — surrounding regions, never printed
 #: all over said that of every piece.
 CORRIDOR_COLOUR = "#5D6D7E"   # slate — the border bar, a piece that fits
 TOO_BIG_COLOUR = "#C0392B"    # red   — a piece of bar too big for the bed
+REMOVED_COLOUR = "#EAEDED"    # pale  — a piece of bar taken out, not built
 BAR_COLOUR = (0.55, 0.57, 0.58, 1.0)   # the border bar in the 3D panel
 #: ...and a piece of it too big for the bed, there too.
 TOO_BIG_BAR_COLOUR = (0.75, 0.22, 0.17, 1.0)
@@ -934,6 +935,16 @@ class TerrainEditorTester(QMainWindow):
         self.btn_remove_split = self._button("Remove", self.remove_split,
                                              enabled=False)
         self.btn_remove_split.setToolTip("Remove the selected split.")
+        self.btn_pick_pieces = self._button("Pieces", None, enabled=False)
+        self.btn_pick_pieces.setCheckable(True)
+        self.btn_pick_pieces.setToolTip(
+            "Take pieces out of the border bar, or put them back. With this "
+            "on, click a piece of bar to remove it -- drawn pale, not built, "
+            "never counted too big, and its connectors left out of the bar "
+            "and their pockets out of the provinces -- and click it again to "
+            "restore it. Split the bar first to remove only part of it. Each "
+            "click is one Undo step, saved with the borders; drag to pan.")
+        self.btn_pick_pieces.toggled.connect(self._on_pieces_toggled)
         self.lbl_pieces = QLabel()
         self.lbl_pieces.setToolTip(
             "How many pieces the bar prints in, and how many of them will not "
@@ -1007,7 +1018,7 @@ class TerrainEditorTester(QMainWindow):
             self.btn_lobe_redo)
         self.grp_splits = self._group(
             "Splits", self.btn_edit_splits, self.btn_remove_split,
-            self.lbl_pieces)
+            self.btn_pick_pieces, self.lbl_pieces)
         self.grp_selected = self._group(
             "Selected connector", self.sel_label,
             "Angle (°)", self.sel_angle_spin,
@@ -1489,6 +1500,7 @@ class TerrainEditorTester(QMainWindow):
                 (self.btn_edit_lobes, "E"),
                 (self.btn_edit_splits, "X"),
                 (self.btn_remove_split, "Backspace"),
+                (self.btn_pick_pieces, "K"),
                 (self.btn_sel_reset, "R"),
                 (self.btn_sel_delete, QKeySequence.StandardKey.Delete),
                 (self.btn_run, "C"),
@@ -1771,6 +1783,9 @@ class TerrainEditorTester(QMainWindow):
             self._selected_split = None
         self.btn_remove_split.setEnabled(
             splittable and self._selected_split is not None)
+        self.btn_pick_pieces.setEnabled(splittable)
+        if not self.splits_editable() and self.btn_pick_pieces.isChecked():
+            self.btn_pick_pieces.setChecked(False)
         self.lbl_pieces.setText(self._pieces_text())
         editable = editable or splittable
         self.btn_lobe_undo.setEnabled(editable and bool(self._lobe_undo))
@@ -1909,7 +1924,7 @@ class TerrainEditorTester(QMainWindow):
     def build_border_bar(self) -> None:
         if self._thread is not None or self.borders is None:
             return
-        bad = self._invalid_lobes(self.borders.lobes)
+        bad = self._invalid_lobes(self.borders.kept_lobes())
         if bad:
             self.status.setText(
                 f"Border bar not built: {bad} connector(s) are invalid (red). "
@@ -2003,11 +2018,65 @@ class TerrainEditorTester(QMainWindow):
         return (self.btn_edit_splits.isChecked() and self._showing_borders()
                 and self._thread is None and self.splits_editable())
 
+    def _editing_pieces(self) -> bool:
+        return (self.btn_pick_pieces.isChecked() and self._showing_borders()
+                and self._thread is None and self.splits_editable())
+
+    def _on_pieces_toggled(self, on: bool) -> None:
+        if not on:
+            return
+        # One tool on the map at a time.
+        self.btn_edit_lobes.setChecked(False)
+        self.btn_edit_splits.setChecked(False)
+        mode = str(self.mpl_toolbar.mode)
+        if "pan" in mode:
+            self.mpl_toolbar.pan()
+        elif "zoom" in mode:
+            self.mpl_toolbar.zoom()
+        self.status.setText(
+            "Picking pieces: click a piece of bar to take it out, click it "
+            f"again to put it back. {self._pieces_text()}.")
+
+    def piece_at(self, x: float, y: float) -> int | None:
+        """The index of the piece of bar under (x, y), or None."""
+        if self.borders is None:
+            return None
+        point = Point(x, y)
+        reach = self._pick_distance()
+        best = min(((piece.distance(point), i)
+                    for i, piece in enumerate(self.borders.pieces())),
+                   default=None)
+        return best[1] if best is not None and best[0] <= reach else None
+
+    def toggle_piece(self, x: float, y: float) -> bool:
+        """Take the piece under (x, y) out of the bar, or put it back, as one
+        undoable step."""
+        index = self.piece_at(x, y)
+        if index is None:
+            self.status.setText("Click a piece of the bar to take it out or "
+                                "put it back.")
+            return False
+        piece = self.borders.pieces()[index]
+        removed = list(self.borders.removed)
+        if self.borders.removed_flags()[index]:
+            removed = [p for p in removed if not piece.covers(p)]
+            message = "Put a piece back in the bar."
+        else:
+            removed.append(piece.representative_point())
+            message = "Took a piece out of the bar."
+        self._lobe_undo.append(self._snapshot())
+        self._lobe_redo.clear()
+        self.borders.removed = removed
+        self.borders.lobes_edited = True
+        self._set_lobes(self.borders.lobes, message)
+        return True
+
     def _on_splits_toggled(self, on: bool) -> None:
         if on:
             # One tool on the map at a time: a click is a split or a
             # connector, never both.
             self.btn_edit_lobes.setChecked(False)
+            self.btn_pick_pieces.setChecked(False)
             mode = str(self.mpl_toolbar.mode)
             if "pan" in mode:
                 self.mpl_toolbar.pan()
@@ -2086,12 +2155,16 @@ class TerrainEditorTester(QMainWindow):
         if d is None or d.border is None:
             return "no bar yet"
         n, big = len(d.pieces()), len(d.too_big())
+        out = sum(d.removed_flags())
         text = f"{n} piece{'s' if n != 1 else ''}"
+        if out:
+            text += f" ({out} removed)"
         return text + (f", {big} too big" if big else ", all fit")
 
     def _on_edit_toggled(self, on: bool) -> None:
         if on:
             self.btn_edit_splits.setChecked(False)
+            self.btn_pick_pieces.setChecked(False)
         if not on:
             if self._selected is not None:
                 self.select_connector(None)
@@ -2353,13 +2426,14 @@ class TerrainEditorTester(QMainWindow):
 
     def _snapshot(self):
         return (self.borders.lobes, self.borders.settings,
-                list(self.borders.splits))
+                list(self.borders.splits), list(self.borders.removed))
 
     def _restore(self, snapshot, message: str) -> None:
-        lobes, settings, splits = snapshot
+        lobes, settings, splits, removed = snapshot
         edited = self.borders.lobes_edited
         self.borders.settings = settings
         self.borders.splits = list(splits)
+        self.borders.removed = list(removed)
         if self._selected_split is not None \
                 and self._selected_split >= len(splits):
             self._selected_split = None
@@ -2507,6 +2581,11 @@ class TerrainEditorTester(QMainWindow):
                 and event.xdata is not None and event.inaxes is self.ax
                 and self._editing_splits()):
             self.click_splits(event.xdata, event.ydata)
+            return
+        if (press is not None and not moved and event.button == 1
+                and event.xdata is not None and event.inaxes is self.ax
+                and self._editing_pieces()):
+            self.toggle_piece(event.xdata, event.ydata)
             return
         if (press is None or event.button != 1 or event.xdata is None
                 or event.inaxes is not self.ax or not self._editing()):
@@ -3197,17 +3276,27 @@ class TerrainEditorTester(QMainWindow):
         if d.lobes:
             # One artist for the lot: a connector is a plain quadrilateral,
             # and 240 patches added one by one were most of an edit's cost.
-            # Red until valid: a connector placed by hand may break a rule.
+            # Red until valid: a connector placed by hand may break a rule;
+            # pale on a piece taken out of the bar, which it leaves with.
+            kept = set(map(id, d.kept_lobes()))
             lobes = PolyCollection(
                 [np.asarray(lobe.exterior.coords)[:, :2] for lobe in d.lobes],
-                facecolors=[INVALID_COLOUR if code else RESULT_COLOUR
-                            for code in d.faults()],
+                facecolors=[REMOVED_COLOUR if id(lobe) not in kept
+                            else INVALID_COLOUR if code else RESULT_COLOUR
+                            for lobe, code in zip(d.lobes, d.faults())],
                 edgecolors=EDGE_COLOUR, linewidths=0.4, zorder=1.5)
             ax.add_collection(lobes, autolim=False)
             drawn.append(lobes)
         # A piece too big for the bed, filled red over the slate bar -- the
         # reason to add a split -- and under the connectors it carries.
         pieces = d.pieces()
+        for piece, out in zip(pieces, d.removed_flags()):
+            if out:
+                for patch in self._fill(ax, piece, REMOVED_COLOUR,
+                                        edge=CORRIDOR_COLOUR, extent=False):
+                    patch.set_zorder(1.2)
+                    patch.set_linestyle("--")
+                    drawn.append(patch)
         for i in d.too_big():
             for patch in self._fill(ax, pieces[i], TOO_BIG_COLOUR,
                                     alpha=0.9, extent=False):

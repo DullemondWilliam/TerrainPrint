@@ -151,3 +151,80 @@ class TestColours:
         bar = BB.build_bar(d, bed_mm=60.0, margin_mm=0.0)
         bar.mesh = bar.pieces[0]
         assert BB.bar_vertex_colours(bar, self.FIT, self.BIG) is None
+
+
+
+class TestRemovedPieces:
+    """Pieces of bar the user takes out are not built, nor their connectors
+    -- and a removal is a point, so it follows the piece through new splits."""
+
+    @staticmethod
+    def _split_twice(defined):
+        """Three pieces: the A/B arm cut off at mid-seam, the rest cut at the
+        west frontier."""
+        return _copy(defined, splits=[_split_near(defined, *SEAM_MID)[0],
+                                      _split_near(defined, *FRONTIER_WEST)[0]])
+
+    @staticmethod
+    def _piece_at(d, x, y):
+        from shapely.geometry import Point
+        return next(i for i, p in enumerate(d.pieces()) if p.covers(Point(x, y)))
+
+    def test_a_removed_piece_is_not_built(self, defined):
+        d = self._split_twice(defined)
+        whole = BB.build_bar(d)
+        i = self._piece_at(d, 7_400 * KM, 1_100 * KM)    # the seam's south end
+        d.removed = [d.pieces()[i].representative_point()]
+        bar = BB.build_bar(d)
+        assert bar.removed == 1 and len(bar.pieces) == len(whole.pieces) - 1
+        assert bar.mesh.volume < whole.mesh.volume
+        # The rest still lies where it will join: the frame is the whole bar's.
+        assert bar.pieces[0].bounds == pytest.approx(
+            [p for p in whole.pieces
+             if p.bounds[0][0] == pytest.approx(bar.pieces[0].bounds[0][0])
+             ][0].bounds, abs=1e-6)
+
+    def test_its_connectors_go_with_it(self, defined):
+        d = self._split_twice(defined)
+        i = self._piece_at(d, 7_400 * KM, 1_100 * KM)
+        on_it = d.piece_lobes()[i]
+        assert on_it
+        d.removed = [d.pieces()[i].representative_point()]
+        kept = d.kept_lobes()
+        assert len(kept) == len(d.lobes) - len(on_it)
+        assert not any(lobe in kept for lobe in on_it)
+        assert BB.build_bar(d).lobes == len(kept)
+        for name in d.targets:
+            assert not any(lobe in d.province_lobes(name) for lobe in on_it)
+
+    def test_a_removed_piece_is_never_too_big(self, defined):
+        d = _copy(defined)
+        assert d.too_big(bed_mm=60.0, margin_mm=0.0) == [0]
+        d.removed = [d.pieces()[0].representative_point()]
+        assert d.too_big(bed_mm=60.0, margin_mm=0.0) == []
+
+    def test_removing_every_piece_is_refused(self, defined):
+        d = _copy(defined)
+        d.removed = [p.representative_point() for p in d.pieces()]
+        with pytest.raises(ValueError, match="removed"):
+            BB.build_bar(d)
+
+    def test_a_removal_follows_its_piece_through_a_new_split(self, defined):
+        d = _copy(defined)
+        point = d.pieces()[0].representative_point()
+        d.removed = [point]
+        d.splits = [_split_near(defined, *SEAM_MID)[0]]
+        flags = d.removed_flags()
+        assert sum(flags) == 1
+        assert d.pieces()[flags.index(True)].covers(point)
+
+    def test_saved_and_loaded(self, defined, tmp_path):
+        d = self._split_twice(defined)
+        d.removed = [d.pieces()[0].representative_point()]
+        BP.write_borders(d, tmp_path / "saved")
+        back = BP.read_borders(tmp_path / "saved")
+        assert len(back.removed) == 1
+        assert back.removed_flags() == d.removed_flags()
+        d.removed = []
+        BP.write_borders(d, tmp_path / "saved")
+        assert BP.read_borders(tmp_path / "saved").removed == []

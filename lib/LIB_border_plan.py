@@ -58,6 +58,8 @@ BORDER_SETTINGS_NAME = "borders_settings.json"
 
 #: Where splits are saved beside a Borders folder.
 SPLITS_NAME = "splits.geojson"
+#: Where the pieces taken out of the bar are saved, as a point in each.
+REMOVED_NAME = "removed_pieces.geojson"
 
 
 def _vertex_count(geom) -> int:
@@ -208,6 +210,10 @@ class BorderDefinition:
     #: corridor (:func:`split_at`), planned by hand.  Define makes none --
     #: the bar is never split for you.
     splits: list = field(default_factory=list)
+    #: Pieces of the bar the user has taken out, each as a point inside it:
+    #: a point rather than the piece, so a removal survives the splits
+    #: changing -- the piece the point falls in is the one left out.
+    removed: list = field(default_factory=list)
     _pieces: list = field(default=None, repr=False, compare=False,
                           init=False)
     _pieces_key: tuple = field(default=None, repr=False, compare=False,
@@ -361,25 +367,51 @@ class BorderDefinition:
         self._held = (key, out)
         return [list(lobes) for lobes in out]
 
+    def removed_flags(self) -> list:
+        """For each piece, whether the user has taken it out of the bar."""
+        pieces = self.pieces()
+        flags = [False for _ in pieces]
+        for point in self.removed:
+            # One piece a point: a split added later can run right through
+            # it, and it would then lie on the edge of both halves.
+            for i, piece in enumerate(pieces):
+                if piece.covers(point):
+                    flags[i] = True
+                    break
+        return flags
+
+    def kept_lobes(self) -> list:
+        """The connectors on pieces still in the bar: a removed piece takes
+        its connectors with it -- from the bar, and from the pockets cut for
+        them -- so no province is left with a pocket nothing fills."""
+        if not self.removed:
+            return list(self.lobes)
+        gone = {id(lobe)
+                for lobes, out in zip(self.piece_lobes(), self.removed_flags())
+                if out for lobe in lobes}
+        return [lobe for lobe in self.lobes if id(lobe) not in gone]
+
     def too_big(self, bed_mm=None, margin_mm=None) -> list:
         """Indices of the pieces that will not fit the bed at any turn -- a
         slicer turns a part to fit, diagonally if it must, so each piece is
-        tried at every angle (:func:`bed_turn`), connectors included."""
+        tried at every angle (:func:`bed_turn`), connectors included.  A
+        piece taken out of the bar is never too big: it is not printed."""
         bed = _cfg("print.bed_mm") if bed_mm is None else bed_mm
         margin = _cfg("print.bed_margin_mm") if margin_mm is None \
             else margin_mm
         usable = (bed - 2 * margin) * self.settings.mpm
         pieces, held = self.pieces(), self.piece_lobes()
         key = (self._pieces_key, tuple(map(id, self.lobes)), usable)
+        out = self.removed_flags()
         if self._big is not None and self._big[0] == key:
-            return list(self._big[1])
+            return [i for i in self._big[1] if not out[i]]
         big = []
         for i, (piece, lobes) in enumerate(zip(pieces, held)):
             shape = unary_union([piece, *lobes]) if lobes else piece
             if bed_turn(shape, usable) is None:
                 big.append(i)
         self._big = (key, big)
-        return list(big)
+        return [i for i in big if not out[i]]
 
     def border_line(self):
         """The border line between the printed provinces -- the shared
@@ -409,7 +441,7 @@ class BorderDefinition:
         geom = self.targets.get(name)
         if geom is None:
             return []
-        return [lobe for lobe in self.lobes if lobe.intersects(geom)]
+        return [lobe for lobe in self.kept_lobes() if lobe.intersects(geom)]
 
 
 def define_borders(targets: dict, surrounding: dict,
@@ -633,6 +665,9 @@ def read_borders(folder: Path, settings: "BorderSettings | None" = None):
     if splits.exists():
         result.splits = [LineString(geom.coords)
                          for geom in read(splits).geometry]
+    removed = folder / REMOVED_NAME
+    if removed.exists():
+        result.removed = list(read(removed).geometry)
     return result
 
 
@@ -713,6 +748,15 @@ def write_borders(definition: BorderDefinition, folder: Path) -> list:
     for name, geom in d.targets.items():
         write(name, geom, default_crs,
               folder / f"name_{_safe_name(name)}.geojson")
+    removed = folder / REMOVED_NAME
+    if d.removed:
+        gpd.GeoDataFrame(
+            {"name": [f"removed_{i}" for i in range(1, len(d.removed) + 1)]},
+            geometry=list(d.removed), crs=EPSG_WORKING,
+        ).to_crs(default_crs).to_file(removed, driver="GeoJSON")
+        written.append(removed)
+    elif removed.exists():
+        removed.unlink()
     splits = folder / SPLITS_NAME
     if d.splits:
         gpd.GeoDataFrame(

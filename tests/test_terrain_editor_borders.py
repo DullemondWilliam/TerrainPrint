@@ -1193,6 +1193,78 @@ class TestSplitTool:
         assert BP.read_borders(tmp_path / "saved").splits == []
 
 
+class TestPieceTool:
+    """Pieces on the map: click to take one out of the bar, again to put it
+    back."""
+
+    @staticmethod
+    def _click(window, xy):
+        event = TestConnectorMouse._event(window, xy)
+        window._on_press(event)
+        window._on_release(event)
+
+    @staticmethod
+    def _picking(tmp_path, defined):
+        window = _window(tmp_path)
+        window.apply_borders(_fresh(defined))
+        window.tabs.setCurrentIndex(1)
+        window.btn_edit_splits.setChecked(True)
+        window.add_split(*_split_near(window.borders, *SEAM_MID)[1])
+        window.btn_pick_pieces.setChecked(True)
+        return window
+
+    SEAM_SOUTH = (7_400 * KM, 1_100 * KM)
+
+    def test_a_click_takes_a_piece_out_and_another_puts_it_back(self,
+                                                                tmp_path,
+                                                                defined):
+        window = self._picking(tmp_path, defined)
+        self._click(window, self.SEAM_SOUTH)
+        assert sum(window.borders.removed_flags()) == 1
+        assert "(1 removed)" in window.lbl_pieces.text()
+        assert "Took a piece out" in window.status.text()
+        self._click(window, self.SEAM_SOUTH)
+        assert sum(window.borders.removed_flags()) == 0
+        assert "Put a piece back" in window.status.text()
+
+    def test_a_removal_undoes_and_redoes(self, tmp_path, defined):
+        window = self._picking(tmp_path, defined)
+        self._click(window, self.SEAM_SOUTH)
+        window.undo_connectors()
+        assert window.borders.removed == []
+        window.redo_connectors()
+        assert sum(window.borders.removed_flags()) == 1
+
+    def test_a_click_off_the_bar_does_nothing(self, tmp_path, defined):
+        window = self._picking(tmp_path, defined)
+        self._click(window, (7_100 * KM, 1_100 * KM))
+        assert window.borders.removed == []
+
+    def test_its_pockets_are_not_cut(self, tmp_path, defined):
+        window = self._picking(tmp_path, defined)
+        window.chk_pockets.setChecked(True)
+        window.province_combo.setCurrentText("A")
+        before = len(window.province_lobes())
+        self._click(window, self.SEAM_SOUTH)
+        assert len(window.province_lobes()) < before
+
+    def test_one_tool_at_a_time(self, tmp_path, defined):
+        window = self._picking(tmp_path, defined)
+        assert not window.btn_edit_splits.isChecked()
+        window.btn_edit_lobes.setChecked(True)
+        assert not window.btn_pick_pieces.isChecked()
+        window.btn_pick_pieces.setChecked(True)
+        assert not window.btn_edit_lobes.isChecked()
+        window.btn_edit_splits.setChecked(True)
+        assert not window.btn_pick_pieces.isChecked()
+
+    def test_a_removal_stales_the_bar(self, tmp_path, defined, bar):
+        window = self._picking(tmp_path, defined)
+        window.apply_bar(bar)
+        self._click(window, self.SEAM_SOUTH)
+        assert window.bar is None
+
+
 class TestPlaceConnector:
 
     def test_lands_on_the_side_clicked(self, defined):

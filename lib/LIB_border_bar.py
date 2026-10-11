@@ -129,6 +129,7 @@ class BarResult:
     lobes_cut: int = 0             #: connectors a split went through
     draped: bool = False           #: top follows the terrain, not flat
     too_big: int = 0               #: pieces that will not fit the bed
+    removed: int = 0               #: pieces the user took out, not built
     #: Per solid in ``pieces``: whether it is part of a piece too big for
     #: the bed -- the 3D panel draws those red.
     piece_too_big: list = field(default_factory=list)
@@ -144,7 +145,10 @@ def build_bar(definition: BorderDefinition, bed_mm=None,
     the connectors it carries, extruded on its own.  All of them share one
     local frame whose metres origin is known -- so they lie where they will
     join, and the 3D panel can lay a terrain solid beside them.  A piece too
-    big for the bed is built all the same and counted (``too_big``):
+    big for the bed is built all the same and counted (``too_big``); one
+    the user took out (``BorderDefinition.removed``) is not built at all, and
+    neither are its connectors.  The frame is the whole bar's either way, so
+    what is built still lies where it will join.  For ``too_big``,
     ``bed_mm`` and ``margin_mm`` are what it is measured against.
 
     ``surface`` -- ``(xs_m, ys_m) -> print-mm``, from :func:`bar_surface` --
@@ -163,20 +167,27 @@ def build_bar(definition: BorderDefinition, bed_mm=None,
     origin = tuple(bottom.bounds[:2])
     big = set(definition.too_big(bed_mm, margin_mm))
     pieces, flags = [], []
-    for i, (piece, mine) in enumerate(zip(definition.pieces(),
-                                          definition.piece_lobes())):
+    for i, (piece, mine, out) in enumerate(zip(
+            definition.pieces(), definition.piece_lobes(),
+            definition.removed_flags())):
+        if out:
+            continue                     # taken out of the bar by the user
         solids = build_border_pieces(piece, mine, params, surface,
                                      origin_m=origin)
         pieces += solids
         flags += [i in big] * len(solids)
     if not pieces:
+        if any(definition.removed_flags()):
+            raise ValueError("Every piece of the bar has been removed.")
         raise ValueError("The corridor is too thin to extrude; widen it.")
     mesh = pieces[0] if len(pieces) == 1 else trimesh.util.concatenate(pieces)
+    kept = definition.kept_lobes()
     result = BarResult(mesh=mesh, pieces=pieces, origin_m=origin,
-                       mpm=params.mpm, lobes=len(lobes),
+                       mpm=params.mpm, lobes=len(kept),
+                       removed=sum(definition.removed_flags()),
                        draped=surface is not None, too_big=len(big),
                        piece_too_big=flags)
-    result.lobes_cut = _lobes_cut(pieces, lobes, origin, params.mpm)
+    result.lobes_cut = _lobes_cut(pieces, kept, origin, params.mpm)
     return result
 
 
