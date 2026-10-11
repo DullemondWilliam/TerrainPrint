@@ -13,6 +13,7 @@ from dataclasses import replace
 
 import geopandas as gpd
 import pytest
+import shapely
 from shapely.geometry import LineString, box
 
 from lib import LIB_border_plan as BP
@@ -136,16 +137,55 @@ class TestSaveAndLoad:
         assert back.border.symmetric_difference(d.border).area < 1.0
         assert back.loaded_from == "saved"
 
-    def test_each_province_in_the_crs_it_came_in(self, defined, tmp_path):
-        BP.write_borders(defined, tmp_path / "out",
-                         {"A": "EPSG:4326", "B": "EPSG:4326"})
-        frame = gpd.read_file(tmp_path / "out" / "name_A.geojson")
-        assert frame.crs.to_epsg() == 4326
+    def test_written_in_the_working_crs(self, defined, tmp_path):
+        BP.write_borders(defined, tmp_path / "out")
+        for name in ("borders.geojson", "name_A.geojson",
+                     "connectors.geojson"):
+            frame = gpd.read_file(tmp_path / "out" / name)
+            assert frame.crs.to_epsg() == 3347
 
     def test_saving_without_splits_removes_stale_ones(self, defined, tmp_path):
         BP.write_borders(_copy(defined, splits=[_seam_cut()]), tmp_path)
         BP.write_borders(defined, tmp_path)
         assert not (tmp_path / BP.SPLITS_NAME).exists()
+
+    def test_a_save_reloads_exactly(self, defined, tmp_path):
+        """No reprojection on the way: what comes back is what went out."""
+        BP.write_borders(defined, tmp_path / "exact")
+        back = BP.read_borders(tmp_path / "exact")
+        # Same vertices, to a millionth of a metre, whatever ring they start.
+        same = lambda a, b: shapely.normalize(a).equals_exact(
+            shapely.normalize(b), 1e-6)
+        assert same(back.border, defined.border)
+        for name, geom in defined.targets.items():
+            assert same(back.targets[name], geom)
+
+    def test_an_old_save_with_broken_shapes_still_loads(self, defined,
+                                                        tmp_path):
+        """Folders saved before 2026-10 went through EPSG:4326 and back, and
+        came back with outlines crossing themselves.  Loading them threw
+        (merging before repairing), and once that was fixed the repair threw
+        the corridor away.  A broken corridor and province, in 4326, must
+        load whole."""
+        from shapely.affinity import scale, translate
+        from shapely.geometry import MultiPolygon, Polygon
+        spiked = Polygon([(0, 0), (10, 0), (10, 10), (5, 10), (5, 15),
+                          (5, 10), (0, 10)])
+        broken = MultiPolygon([spiked, Polygon([(20, 0), (30, 0), (30, 10),
+                                                (20, 10)])])
+        broken = translate(scale(broken, 2_000, 2_000, origin=(0, 0)),
+                           7_000 * KM, 1_000 * KM)
+        assert not broken.is_valid
+        folder = tmp_path / "old"
+        BP.write_borders(defined, folder)
+        for name in ("borders.geojson", "name_A.geojson"):
+            gpd.GeoDataFrame({"name": ["border" if "borders" in name else "A"]},
+                             geometry=[broken], crs="EPSG:3347").to_crs(
+                "EPSG:4326").to_file(folder / name, driver="GeoJSON")
+        back = BP.read_borders(folder)
+        assert back.border is not None and back.border.is_valid
+        assert back.border.area == pytest.approx(broken.area, rel=1e-3)
+        assert back.targets["A"].area == pytest.approx(broken.area, rel=1e-3)
 
     def test_a_folder_without_borders_is_refused(self, tmp_path):
         with pytest.raises(ValueError):

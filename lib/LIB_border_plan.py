@@ -85,7 +85,7 @@ def load_region(path):
     if frame.crs is None:                       # bare GeoJSON is WGS 84 by spec
         frame = frame.set_crs(_cfg("crs.source"))
     source_crs = frame.crs
-    geom = _repair(unary_union(frame.to_crs(EPSG_WORKING).geometry.values))
+    geom = _repair(_safe_union(list(frame.to_crs(EPSG_WORKING).geometry.values)))
     if geom is None:
         raise ValueError(f"{Path(path).name} has no polygon to work with.")
     return geom, source_crs
@@ -578,6 +578,13 @@ def read_borders(folder: Path, settings: "BorderSettings | None" = None):
     connector's turn and size are read off its outline against them.
     What Define measured on the way (vertex counts, seam reports, what it
     dropped) is not saved, so it is not there to report.
+
+    Every shape is repaired before it is merged.  Folders saved before
+    2026-10 hold each province in the CRS it arrived in (EPSG:4326, for the
+    cleaned provinces), and the trip from the working CRS and back moves
+    each point by rounding error: where carving left an outline within that
+    of itself -- seven places on all of Canada -- it crosses, and merging
+    the crossed shape threw.  Repairing touches only those specks.
     """
     folder = Path(folder)
     border_path = folder / "borders.geojson"
@@ -599,14 +606,14 @@ def read_borders(folder: Path, settings: "BorderSettings | None" = None):
             frame = frame.to_crs(EPSG_WORKING)
         return frame
 
-    border = _repair(unary_union(list(read(border_path).geometry)))
+    border = _repair(_safe_union(list(read(border_path).geometry)))
     result = BorderDefinition(settings=settings, border=border,
                               loaded_from=folder.name)
     for path in names:
         frame = read(path)
         name = (str(frame["name"].iloc[0]) if "name" in frame.columns
                 else path.stem[len("name_"):])
-        geom = _repair(unary_union(list(frame.geometry)))
+        geom = _repair(_safe_union(list(frame.geometry)))
         result.targets[name] = geom
         result.simplified[name] = geom
     connectors = folder / CONNECTORS_NAME
@@ -653,23 +660,25 @@ def _resolve_overlaps(simplified: dict, names: list, originals: dict) -> float:
     return total
 
 
-def write_borders(definition: BorderDefinition, folder: Path,
-                  region_crs: dict | None = None) -> list:
+def write_borders(definition: BorderDefinition, folder: Path) -> list:
     """
     Save Borders: ``borders.geojson`` + ``name_<province>.geojson`` per
     trimmed target -- the folder layout ``build_border_from_dir`` reads --
     with the connectors as they stand (``connectors.geojson``), the splits
     (``splits.geojson``) and the settings (``borders_settings.json``).
 
-    Each file is written in the CRS its province arrived in
-    (``region_crs``: name -> CRS; the corridor and connectors in the first
-    of them), defaulting to the working CRS.  Returns the paths written.
+    Every file is written in the working CRS (``crs.working``), the frame
+    the borders are built in, so a folder reloads exactly as it was saved.
+    Writing each province back in the CRS it arrived in -- as this did
+    before 2026-10 -- sent every point through a reprojection and back,
+    and the rounding crossed outlines that carving had left touching
+    themselves.  Every reader of the folder reprojects to the working CRS
+    anyway.  Returns the paths written.
     """
     d = definition
-    region_crs = region_crs or {}
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
-    default_crs = next(iter(region_crs.values()), EPSG_WORKING)
+    default_crs = EPSG_WORKING
     written = []
 
     def write(name, geom, crs, path):
@@ -696,7 +705,7 @@ def write_borders(definition: BorderDefinition, folder: Path,
     elif connectors.exists():
         connectors.unlink()      # a stale set would key into nothing
     for name, geom in d.targets.items():
-        write(name, geom, region_crs.get(name, default_crs),
+        write(name, geom, default_crs,
               folder / f"name_{_safe_name(name)}.geojson")
     splits = folder / SPLITS_NAME
     if d.splits:

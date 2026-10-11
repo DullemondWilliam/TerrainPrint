@@ -1772,7 +1772,7 @@ class TerrainEditorTester(QMainWindow):
 
     def write_borders(self, folder: Path) -> list:
         """Save Borders' files: see :func:`LIB_border_plan.write_borders`."""
-        return write_borders(self.borders, folder, self.region_crs)
+        return write_borders(self.borders, folder)
 
     def load_borders(self) -> None:
         """Reload a folder Save Borders wrote, hand edits and all."""

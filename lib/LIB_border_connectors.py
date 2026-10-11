@@ -112,7 +112,10 @@ def _polys(geom):
     if geom.geom_type == "MultiPolygon":
         return list(geom.geoms)
     if geom.geom_type == "GeometryCollection":
-        return [g for g in geom.geoms if g.geom_type == "Polygon"]
+        # Into every member: make_valid hands back a MultiPolygon
+        # *inside* a collection (beside the lines a crossing leaves), and
+        # taking only bare Polygons from it lost the whole shape.
+        return [poly for g in geom.geoms for poly in _polys(g)]
     return []
 
 

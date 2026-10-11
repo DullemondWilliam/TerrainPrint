@@ -18,6 +18,7 @@ on its own does not make the pipeline right.
 
 import numpy as np
 import pytest
+import shapely
 import rasterio
 from affine import Affine
 from rasterio.crs import CRS
@@ -840,6 +841,29 @@ class TestLoadBorders:
     def test_a_folder_without_borders_is_refused(self, tmp_path):
         with pytest.raises(ValueError):
             BP.read_borders(tmp_path)
+
+    def test_saved_in_the_working_crs_whatever_came_in(self, tmp_path):
+        """Provinces imported in EPSG:4326 used to be saved back in it, and
+        the trip there and back crossed outlines carving had left touching
+        themselves -- the saved folder then would not load."""
+        window = U.TerrainEditorTester()
+        window.add_regions([_write_region(tmp_path, "A", A, crs="EPSG:4326"),
+                            _write_region(tmp_path, "B", B, crs="EPSG:4326")],
+                           "target")
+        window.add_regions([_write_region(tmp_path, "C", C)], "surrounding")
+        window.apply_borders(BP.define_borders(window.targets,
+                                               window.surrounding,
+                                               BP.BorderSettings()))
+        folder = tmp_path / "saved"
+        window.write_borders(folder)
+        for name in ("borders.geojson", "name_A.geojson", "connectors.geojson"):
+            assert gpd.read_file(folder / name).crs.to_epsg() == 3347
+        back = BP.read_borders(folder)
+        # Same vertices, to a millionth of a metre, whatever ring they start.
+        same = lambda a, b: shapely.normalize(a).equals_exact(
+            shapely.normalize(b), 1e-6)
+        assert same(back.border, window.borders.border)
+        assert same(back.targets["A"], window.borders.targets["A"])
 
     def test_through_the_button(self, tmp_path, defined, monkeypatch):
         _, folder = self._saved(tmp_path, defined)

@@ -108,3 +108,40 @@ def test_scaling_keeps_the_shape(scale):
     assert grown.bounds[2] / MPM == pytest.approx(1 + P.reach_mm * scale)
     assert grown.bounds[0] == pytest.approx(plain.bounds[0])
     assert lobe_pose(grown, CORRIDOR, P)[3] == pytest.approx(scale)
+
+
+
+def _spiked_pair():
+    """Two squares, one with a spike: invalid, and make_valid hands it back
+    as a GeometryCollection holding a MultiPolygon *and* the spike's line --
+    the shape a reprojected Save Borders corridor came back as."""
+    from shapely.geometry import MultiPolygon, Polygon
+    spiked = Polygon([(0, 0), (10, 0), (10, 10), (5, 10), (5, 15), (5, 10),
+                      (0, 10)])
+    other = Polygon([(20, 0), (30, 0), (30, 10), (20, 10)])
+    return MultiPolygon([spiked, other])
+
+
+def test_polys_reaches_into_a_collection():
+    from shapely.validation import make_valid
+    from lib.LIB_border_connectors import _polys
+    repaired = make_valid(_spiked_pair())
+    assert repaired.geom_type == "GeometryCollection"
+    assert "MultiPolygon" in [g.geom_type for g in repaired.geoms]
+    polys = _polys(repaired)
+    assert len(polys) == 2
+    assert sum(p.area for p in polys) == 200.0
+
+
+def test_repair_keeps_the_shape():
+    """It used to come back None: every polygon was inside the collection's
+    MultiPolygon, which _polys never looked into."""
+    from lib.LIB_border_connectors import _repair, _safe_union
+    assert _repair(_spiked_pair()).area == 200.0
+    assert _safe_union([_spiked_pair()]).area == 200.0
+
+
+def test_the_stl_lib_reaches_in_too():
+    from shapely.validation import make_valid
+    from lib.LIB_border_stl import _polys
+    assert len(_polys(make_valid(_spiked_pair()))) == 2
