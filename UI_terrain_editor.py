@@ -45,7 +45,8 @@ Workflow (stage 3)
                             **Auto**, ticked by default, sets **Res** to the
                             finest the province can be built at: the finest
                             whose STL fits ``terrain.max_triangles``, never
-                            finer than the DEM.  That limit, not the GDAL
+                            finer than the DEM -- 3 million by default,
+                            set under **Max triangles**.  That limit, not the GDAL
                             **Cache** (6 GB by default, which only makes the
                             run faster), is what bounds the resolution.
 5. **Reproject + Crop**   — run the raster stage off the UI thread.
@@ -278,7 +279,8 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox,
                                QDoubleSpinBox, QFileDialog, QFrame, QGroupBox,
                                QHBoxLayout, QLabel, QListWidget, QMainWindow,
                                QMessageBox, QProgressBar, QPushButton,
-                               QSizePolicy, QTabWidget, QVBoxLayout, QWidget)
+                               QSizePolicy, QSpinBox, QTabWidget, QVBoxLayout,
+                               QWidget)
 
 from lib.LIB_border_connectors import (CONNECTORS_NAME, ConnectorParams,
                                        _polys, _repair, _safe_union,
@@ -548,6 +550,18 @@ SAVED_BORDER_SETTINGS = (
     ("borders.clearance_mm", "lobe_clear_spin"),
     ("borders.height_clearance_mm", "lobe_height_clear_spin"),
 )
+
+#: The Solid group's controls kept the same way.  Only the triangle limit:
+#: what this machine and its slicer can take is a preference of the desk,
+#: where the exaggeration, base and floor are the map's and stay shared.
+SAVED_TERRAIN_SETTINGS = (
+    ("terrain.max_triangles", "tri_spin"),
+)
+
+#: The triangle limit's range and step: a few thousand is a test fixture,
+#: fifty million a ~2.5 GB STL no slicer will open.
+MAX_TRIANGLES_RANGE = (10_000, 50_000_000)
+MAX_TRIANGLES_STEP = 250_000
 
 #: How long after the last turn of a box the settings are written, in ms: one
 #: write for a held arrow key rather than one per step.
@@ -1865,6 +1879,27 @@ class TerrainEditorTester(QMainWindow):
         self.floor_spin.setSingleStep(50.0)
         self.floor_spin.valueChanged.connect(self._invalidate_mesh)
 
+        self.tri_spin = QSpinBox()
+        self.tri_spin.setRange(*MAX_TRIANGLES_RANGE)
+        self.tri_spin.setSingleStep(MAX_TRIANGLES_STEP)
+        self.tri_spin.setGroupSeparatorShown(True)
+        self.tri_spin.setValue(saved.max_triangles)
+        self.tri_spin.setKeyboardTracking(False)
+        self.tri_spin.setToolTip(
+            "The most triangles a solid's grid may have -- counted over the "
+            "province's whole bounding box, so a solid cut to its coast comes "
+            "out well under it. Build STL refuses beyond it, and Auto Res "
+            "picks the finest resolution under it.\n\n"
+            "Doubling it makes a province about 1.4x finer, and doubles the "
+            "STL (about 48 MB a million triangles), the build time, the memory "
+            "and the 3D preview's work; the slicer slows with it. Measured: "
+            "Quebec at 3M is 1995 m, 73 MB and 3.9 s to build, against "
+            "2820 m, 38 MB and 2.0 s at 1.5M.\n\n"
+            "At 1:8,000,000 a 0.4 mm nozzle resolves about 3200 m: finer than "
+            "that the extra detail is mostly smaller than the printer can lay "
+            "down (terrain.max_triangles, kept for next time).")
+        self.tri_spin.valueChanged.connect(self._on_max_triangles)
+
         self.chk_cut = QCheckBox("Cut coastline")
         self.chk_cut.setChecked(True)
         self.chk_cut.setToolTip(
@@ -1918,7 +1953,8 @@ class TerrainEditorTester(QMainWindow):
             self.chk_crop, self.btn_run, self.btn_save)
         self.grp_solid = self._group(
             "Solid", "Exag", self.exag_spin, "Base (mm)", self.base_spin,
-            "Floor (m)", self.floor_spin, self.chk_cut, self.chk_pockets,
+            "Floor (m)", self.floor_spin, "Max triangles", self.tri_spin,
+            self.chk_cut, self.chk_pockets,
             self.btn_build, self.btn_save_stl)
         self.grp_bar = self._group(
             "Border bar", self.btn_build_bar, self.btn_save_bar)
@@ -1928,8 +1964,10 @@ class TerrainEditorTester(QMainWindow):
         stl_layout.setContentsMargins(4, 4, 4, 4)   # docs/UI_GUIDE.md §1
         stl_layout.setSpacing(4)
         stl_layout.addLayout(self._row(self.grp_province, self.grp_warp))
-        stl_layout.addLayout(self._row(self.grp_cut))
-        stl_layout.addLayout(self._row(self.grp_solid, self.grp_bar))
+        # The bar beside the cut rather than the solid: it is built once for
+        # the whole map, and the solid's row is full with its own controls.
+        stl_layout.addLayout(self._row(self.grp_cut, self.grp_bar))
+        stl_layout.addLayout(self._row(self.grp_solid))
 
         self.tabs = QTabWidget()
         self.tabs.addTab(import_page, "1 · Import")
@@ -2018,7 +2056,8 @@ class TerrainEditorTester(QMainWindow):
                       *self._shape_spins(), self.sel_angle_spin,
                       self.sel_depth_spin, self.res_spin, self.buf_spin,
                       self.cache_spin, self.exag_spin, self.base_spin,
-                      self.floor_spin, self.crs_combo.lineEdit()):
+                      self.floor_spin, self.tri_spin,
+                      self.crs_combo.lineEdit()):
             entry.installEventFilter(self)
 
         # Wired last, so that building the window is not mistaken for
@@ -3352,6 +3391,14 @@ class TerrainEditorTester(QMainWindow):
         if self.raster_path is not None:
             self.status.setText(self._cost_text())
 
+    def _on_max_triangles(self, _value) -> None:
+        """A new limit moves Auto's resolution, and so the crop; with Auto
+        off it only stales the solid built under the old one."""
+        if self.chk_res_auto.isChecked():
+            self._invalidate_raster()
+        else:
+            self._invalidate_mesh()
+
     def _on_res_typed(self, _value) -> None:
         """A Res chosen by hand: Auto stands down, then the crop is stale."""
         if self.chk_res_auto.isChecked():
@@ -3498,6 +3545,7 @@ class TerrainEditorTester(QMainWindow):
             z_exaggeration=self.exag_spin.value(),
             base_height_mm=self.base_spin.value(),
             floor_m=self.floor_spin.value(),
+            max_triangles=self.tri_spin.value(),
             buffer_mm=self.buf_spin.value(),
             # The cropped raster is in whatever CRS the raster stage produced,
             # which may deliberately be the DEM's own; the guard belongs to the
@@ -3990,7 +4038,7 @@ class TerrainEditorTester(QMainWindow):
         Wired after the controls took their saved values, so building the
         window is not mistaken for somebody choosing them.
         """
-        for key, control in SAVED_BORDER_SETTINGS:
+        for key, control in SAVED_BORDER_SETTINGS + SAVED_TERRAIN_SETTINGS:
             widget = getattr(self, control)
             signal = (widget.toggled if isinstance(widget, QCheckBox)
                       else widget.valueChanged)

@@ -750,6 +750,38 @@ class TestAutoResolution:
         assert res >= RES
         assert self._triangles_at(window, res) <= 5_000
 
+    def test_the_limit_ships_at_3_million(self):
+        from lib.LIB_project_config import shipped
+        assert shipped("terrain.max_triangles") == 3_000_000
+        fresh = U.TerrainEditorTester()
+        assert fresh.tri_spin.value() == 3_000_000
+        assert fresh._terrain_params().max_triangles == 3_000_000
+
+    def test_the_limit_box_drives_auto(self, tmp_path):
+        window = _loaded(tmp_path)
+        window.chk_res_auto.setChecked(True)
+        window.tri_spin.setValue(10_000)
+        coarse = window.res_spin.value()
+        assert self._triangles_at(window, coarse) <= 10_000
+        window.chk_res_auto.setChecked(True)
+        window.tri_spin.setValue(20_000)
+        assert window.res_spin.value() < coarse
+
+    def test_with_auto_off_the_limit_stales_only_the_solid(self, tmp_path):
+        window = _loaded(tmp_path)
+        _run_clip(window)
+        crop = window.result
+        window.tri_spin.setValue(2_000_000)
+        assert window.result is crop                # the crop stands
+        assert window.stl_result is None
+
+    def test_the_limit_reaches_build_stl(self, tmp_path):
+        window = _loaded(tmp_path)
+        _run_clip(window)
+        window.tri_spin.setValue(10_000)
+        with pytest.raises(ValueError, match="over max_triangles"):
+            _run_mesh(window)
+
     def test_choosing_a_res_turns_auto_off(self, tmp_path):
         window = _loaded(tmp_path)
         window.chk_res_auto.setChecked(True)

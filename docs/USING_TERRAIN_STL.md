@@ -63,7 +63,7 @@ agree are configuration, not call arguments:
   "floor_m": 0.0,
   "spacing_mm": 0.4,
   "resampling": "max",
-  "max_triangles": 1500000
+  "max_triangles": 3000000
 }
 ```
 

@@ -86,7 +86,7 @@
     "base_mm": 2.0,
     "exaggeration": 10.0,
     "floor_m": 0.0,
-    "max_triangles": 1500000,
+    "max_triangles": 3000000,
     "resampling": "max",
     "spacing_mm": 0.4
   },

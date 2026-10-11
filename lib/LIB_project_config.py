@@ -108,7 +108,12 @@ DEFAULTS = {
         # Labrador, where the true peak is 1652 m.
         "resampling": "max",
         # Refuse to mesh a grid larger than this, checked before reading pixels.
-        "max_triangles": 1_500_000,
+        # It is what bounds the terrain editor's finest resolution (its Auto
+        # Res). Counted over the grid's whole bounding box, so a solid cut to
+        # its coast comes out well under it: Quebec at 3M is 1.54M triangles,
+        # a 73 MB STL at 1995 m, against 2820 m and 38 MB at the 1.5M this
+        # was until 2026-10.
+        "max_triangles": 3_000_000,
     },
     "seam": {
         # Conditioning the border two provinces share, in printed millimetres.

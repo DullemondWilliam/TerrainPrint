@@ -128,3 +128,12 @@ def test_it_writes_the_local_file_not_the_tracked_one(window):
     window.width_spin.setValue(2.5)
     window._write_settings()
     assert open(config.CONFIG_PATH, encoding="utf-8").read() == before
+
+
+def test_the_triangle_limit_is_kept(window, _fixed_config):
+    window.tri_spin.setValue(4_000_000)
+    window._write_settings()
+    assert _local(_fixed_config)["terrain"]["max_triangles"] == 4_000_000
+    assert isinstance(_local(_fixed_config)["terrain"]["max_triangles"], int)
+    reopened = U.TerrainEditorTester()
+    assert reopened.tri_spin.value() == 4_000_000
