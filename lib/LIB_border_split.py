@@ -37,6 +37,7 @@ import logging
 from pathlib import Path
 
 import numpy as np
+from scipy.spatial import ConvexHull, QhullError
 import manifold3d as m3d
 import trimesh
 
@@ -163,6 +164,54 @@ def split_to_bed(mesh, bed_mm=DEFAULT_BED_MM, margin_mm=0.0,
              "(usable %.0f x %.0f mm).",
              len(pieces), bed_w, bed_d, fit_w, fit_d)
     return pieces
+
+
+# ---------------------------------------------------------------------------
+# Fitting the bed, turned
+# ---------------------------------------------------------------------------
+#: The angles :func:`bed_turn` tries, in degrees: a square bed repeats every
+#: quarter turn, so 0 to 90 covers every orientation.  A tenth of a degree is
+#: well inside what a slicer's own rotation is placed to.
+BED_TURN_STEP_DEG = 0.1
+
+
+def bed_turn(shape, usable: float):
+    """
+    The angle (degrees) at which ``shape`` fits a square bed ``usable`` on a
+    side, or None if it fits at no angle.  0 when it fits as it lies.
+    ``shape`` is a shapely geometry or an (N, 2+) array of plan points.
+
+    Tried at every turn, not only square to the bed nor only along the
+    piece's own smallest rectangle: a long thin piece -- a stretch of border
+    bar, typically -- fits corner to corner where it fits no other way.  Only
+    the convex hull matters, so the test is cheap for any outline.
+    """
+    if hasattr(shape, "convex_hull"):
+        hull = shape.convex_hull
+        xy = np.asarray(hull.exterior.coords if hull.geom_type == "Polygon"
+                        else hull.coords, dtype=float)
+    else:
+        # Points -- a solid's vertices, a million and more: hull them first,
+        # or every one is projected at every angle.  scipy's hull, as
+        # shapely's takes seconds over that many points where it takes 0.15.
+        xy = np.asarray(shape, dtype=float)[:, :2]
+        if len(xy) >= 3:
+            try:
+                xy = xy[ConvexHull(xy).vertices]
+            except QhullError:           # all on one line: the points serve
+                pass
+    if not len(xy):
+        return 0.0
+    xy = xy - xy.mean(axis=0)
+    angles = np.radians(np.arange(0.0, 90.0 + 1e-9, BED_TURN_STEP_DEG))
+    cos, sin = np.cos(angles), np.sin(angles)
+    u = np.outer(xy[:, 0], cos) + np.outer(xy[:, 1], sin)     # along X'
+    v = -np.outer(xy[:, 0], sin) + np.outer(xy[:, 1], cos)    # along Y'
+    width = u.max(axis=0) - u.min(axis=0)
+    depth = v.max(axis=0) - v.min(axis=0)
+    fits = np.flatnonzero((width <= usable * (1 + 1e-9))
+                          & (depth <= usable * (1 + 1e-9)))
+    return float(np.degrees(angles[fits[0]])) if len(fits) else None
 
 
 # ---------------------------------------------------------------------------

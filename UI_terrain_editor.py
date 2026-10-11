@@ -238,8 +238,10 @@ Undo step, saved and loaded with the borders (``splits.geojson``), and Define
 starts with none.  A split is refused through a connector (FR-3.11), and a
 connector moved onto one turns red.  **Build Border STL** extrudes each piece
 between the splits on its own, all in one frame so they meet where they
-were cut; a piece too big for the bed -- tried turned whichever way fits, as
-a slicer would -- is outlined in red on the map and counted, and still built.
+were cut; a piece too big for the bed -- tried at every turn, diagonally
+included, as a slicer would place it -- is outlined in red on the map and
+counted, and still built.  Splits may sit close together (one on each arm of
+a junction), but not so close the piece between is too small to build.
 
 *Pockets need the print CRS.*  Lobes are generated in EPSG:3347 and the solid's
 ``origin_m`` is in whatever CRS the raster stage produced, so pocketing a solid
@@ -289,7 +291,8 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox,
                                QSizePolicy, QSpinBox, QTabWidget, QVBoxLayout,
                                QWidget)
 
-from lib.LIB_border_connectors import (CONNECTORS_NAME, ConnectorParams,
+from lib.LIB_border_connectors import (CONNECTORS_NAME,
+                                       MIN_PART_AREA_MM2, ConnectorParams,
                                        _edge_frame, _polys, _repair, _rings,
                                        _safe_union,
                                        build_border_pieces, generate_lobes,
@@ -297,6 +300,7 @@ from lib.LIB_border_connectors import (CONNECTORS_NAME, ConnectorParams,
                                        lobe_pose,
                                        notch_province)
 from lib.LIB_border_regions import build_border_regions, shared_borderlines
+from lib.LIB_border_split import bed_turn
 from lib.LIB_border_simplification import topo_simplify_two_tolerances
 from lib.LIB_shared_border import _count_short, _count_spikes
 from lib.LIB_geotiff_clip import ClipParams, clip_geotiff
@@ -371,9 +375,6 @@ SPLIT_COLOUR = "#17202A"      # near-black — a planned split across the bar
 #: edge nearest the click.  One that has not come out the other side within
 #: this many corridor widths is running *along* the corridor, not across it.
 SPLIT_REACH_WIDTHS = 3.0
-#: The closest two splits may be, in print-mm: a shorter piece is a crumb to
-#: lose, and one under the bar's sliver floor would not be built at all.
-SPLIT_MIN_GAP_MM = 10.0
 #: Where splits are saved beside a Borders folder.
 SPLITS_NAME = "splits.geojson"
 #: How near, in screen pixels, a click must be to a connector to pick it.
@@ -777,9 +778,9 @@ class BorderDefinition:
         return out
 
     def too_big(self, bed_mm=None, margin_mm=None) -> list:
-        """Indices of the pieces that will not fit the bed, turned whichever
-        way fits best -- a slicer turns a part to fit, so the test is the
-        piece's smallest rotated rectangle, connectors included."""
+        """Indices of the pieces that will not fit the bed at any turn -- a
+        slicer turns a part to fit, diagonally if it must, so each piece is
+        tried at every angle (:func:`bed_turn`), connectors included."""
         bed = _cfg("print.bed_mm") if bed_mm is None else bed_mm
         margin = _cfg("print.bed_margin_mm") if margin_mm is None \
             else margin_mm
@@ -788,12 +789,7 @@ class BorderDefinition:
         for i, (piece, lobes) in enumerate(zip(self.pieces(),
                                                self.piece_lobes())):
             shape = unary_union([piece, *lobes]) if lobes else piece
-            rect = shape.minimum_rotated_rectangle
-            xy = list(rect.exterior.coords) if rect.geom_type == "Polygon" \
-                else []
-            sides = sorted(Point(a).distance(Point(b))
-                           for a, b in zip(xy, xy[1:]))[-2:] if xy else [0, 0]
-            if max(sides) > usable * (1 + 1e-9):
+            if bed_turn(shape, usable) is None:
                 big.append(i)
         return big
 
@@ -1157,9 +1153,11 @@ def split_at(definition, x: float, y: float):
     a cut that stops at a hole leaves the ring whole.  Refused where it does
     not come out within ``SPLIT_REACH_WIDTHS`` corridor widths -- a click at
     a junction, or running along a bend -- and where it would pass within a
-    clearance of a connector, which it would cut in two, and within
-    ``SPLIT_MIN_GAP_MM`` of another split.  The line runs a hair past both
-    edges, so it divides the corridor cleanly.
+    clearance of a connector, which it would cut in two, and where it would
+    leave a piece under the bar's sliver floor (``MIN_PART_AREA_MM2``), which
+    would not be built.  Splits may otherwise sit as close as they like: one
+    on each arm is how a junction is taken apart.  The line runs a hair past
+    both edges, so it divides the corridor cleanly.
     """
     d = definition
     if d.border is None:
@@ -1196,11 +1194,16 @@ def split_at(definition, x: float, y: float):
     gap = p.clearance_mm * p.mpm
     if any(cut.distance(lobe) < gap for lobe in d.lobes):
         return None, "It would cut through a connector."
-    if any(cut.distance(other) < SPLIT_MIN_GAP_MM * p.mpm
-           for other in d.splits):
-        return None, (f"Too close to another split: keep them "
-                      f"{SPLIT_MIN_GAP_MM:g} mm apart, or the piece between "
-                      "is a crumb.")
+    # Splits may sit as close as they like -- one on each arm of a junction
+    # is the usual way to take a junction apart -- but not so close that the
+    # piece between falls under the sliver floor the bar is built to, where
+    # it would not be built at all and that stretch of bar would be lost.
+    floor = MIN_PART_AREA_MM2 * p.mpm ** 2
+    trial = replace(d, splits=d.splits + [cut])
+    if any(piece.area < floor for piece in trial.pieces()):
+        return None, (f"It would leave a piece under {MIN_PART_AREA_MM2:g} "
+                      "mm², too small to build -- move it a little further "
+                      "from the next split or the end of the bar.")
     return cut, ""
 
 
@@ -1859,8 +1862,8 @@ class TerrainEditorTester(QMainWindow):
         self.lbl_pieces = QLabel()
         self.lbl_pieces.setToolTip(
             "How many pieces the bar prints in, and how many of them will not "
-            "fit the bed (print.bed_mm less print.bed_margin_mm each side), "
-            "turned whichever way fits best.")
+            "fit the bed (print.bed_mm less print.bed_margin_mm each side) "
+            "at any turn -- diagonally included, as a slicer would place it.")
         self.lbl_pieces.setFixedWidth(
             self.lbl_pieces.fontMetrics().horizontalAdvance(
                 "888 pieces, 888 too big") + 6)
@@ -3936,8 +3939,17 @@ class TerrainEditorTester(QMainWindow):
             f"Built {result.triangles:,} triangles, {w:.0f} x {h:.0f} x "
             f"{z:.1f} mm ({relief:.1f} mm of relief on a "
             f"{result.base_height_mm:.1f} mm base){pockets}, "
-            f"{'fits' if result.bed_fits else 'DOES NOT FIT'} the bed, "
+            f"{self._fit_text(result)}, "
             f"watertight={result.watertight}. Inspect in 3D, then save.")
+
+    @staticmethod
+    def _fit_text(result) -> str:
+        """Whether a solid fits the bed, and turned how far."""
+        if not result.bed_fits:
+            return "DOES NOT FIT the bed at any turn"
+        angle = getattr(result, "bed_angle_deg", 0.0) or 0.0
+        return ("fits the bed" if angle < 0.05
+                else f"fits the bed turned {angle:.0f}°")
 
     def _refresh_3d(self) -> None:
         """Draw what the 3D selector asks for, from whatever has been built."""

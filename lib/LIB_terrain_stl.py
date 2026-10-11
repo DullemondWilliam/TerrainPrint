@@ -89,6 +89,7 @@ import trimesh
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import unary_union
 
+from lib.LIB_border_split import bed_turn
 from lib.LIB_project_config import DEFAULTS as _DEFAULTS
 from lib.LIB_project_config import build_params, load_files, settings_files
 from lib.LIB_project_config import get as _get
@@ -180,6 +181,8 @@ class TerrainResult:
     grid: tuple = (0, 0)                #: (cols, rows) of sampled points
     extent_mm: tuple = (0.0, 0.0, 0.0)  #: (w, h, z) as printed
     bed_fits: bool = False
+    #: The turn (degrees) it fits the bed at; 0 as it lies, None if never.
+    bed_angle_deg: float = None
     triangles: int = 0
     volume_mm3: float = 0.0
     watertight: bool = False
@@ -543,7 +546,11 @@ def _finish(mesh, result, params):
         return
     result.extent_mm = (float(extents[0]), float(extents[1]), float(extents[2]))
     usable = params.bed_mm - 2 * params.bed_margin_mm
-    result.bed_fits = bool(extents[0] <= usable and extents[1] <= usable)
+    # At any turn, as a slicer would place it -- diagonally included -- not
+    # only as it lies: a province that will not go on square often will
+    # corner to corner.
+    result.bed_angle_deg = bed_turn(mesh.vertices, usable)
+    result.bed_fits = result.bed_angle_deg is not None
 
 
 def _validate(result, raster):

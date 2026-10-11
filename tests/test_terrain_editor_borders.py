@@ -898,21 +898,37 @@ class TestSplits:
         cut, why = U.split_at(defined, x, y)
         assert cut is None and "connector" in why
 
-    def test_splits_too_close_together_are_refused(self, defined):
-        """The piece between would be a crumb -- and below the bar's sliver
-        floor it would not be built at all, losing that stretch of bar."""
+    def test_splits_may_sit_close_together(self, defined):
+        """One on each arm of a junction is how a junction comes apart, so a
+        split a couple of millimetres from another is fine."""
         d = _fresh(defined)
         cut, (x, y) = _split_near(d, *SEAM_MID)
-        # A spot inside the gap that would take a split if it stood alone.
-        spots = [(x, y + f * U.SPLIT_MIN_GAP_MM * MPM)
-                 for f in (0.3, 0.5, 0.7, -0.3, -0.5, -0.7)]
-        free = [xy for xy in spots if U.split_at(d, *xy)[0] is not None]
-        assert free
         d.splits = [cut]
-        near, why = U.split_at(d, *free[0])
-        assert near is None and "Too close" in why
-        far, _ = _split_near(d, x, y + 2 * U.SPLIT_MIN_GAP_MM * MPM)
-        assert far.distance(cut) >= U.SPLIT_MIN_GAP_MM * MPM
+        spots = [(x, y + f * MPM) for f in (2.0, -2.0, 3.0, -3.0, 4.0, -4.0)]
+        near = [U.split_at(d, *xy)[0] for xy in spots]
+        near = [c for c in near if c is not None]
+        assert near and min(c.distance(cut) for c in near) < 5 * MPM
+
+    def test_a_split_that_leaves_a_crumb_is_refused(self, defined):
+        """Under the bar's sliver floor a piece would not be built at all,
+        and that stretch of bar would be lost."""
+        d = _fresh(defined)
+        cut, (x, y) = _split_near(d, *SEAM_MID)
+        alone = [(x, y + f * MPM) for f in (0.1, -0.1)
+                 if U.split_at(d, x, y + f * MPM)[0] is not None]
+        assert alone
+        d.splits = [cut]
+        crumb, why = U.split_at(d, *alone[0])
+        assert crumb is None and "too small to build" in why
+
+    def test_a_piece_that_fits_only_diagonally_fits(self):
+        """78 x 4 mm will not go on a 60 mm bed square, but it will corner
+        to corner -- and a slicer would place it so."""
+        mm = U.BorderSettings().mpm
+        bar = box(0, 0, 78 * mm, 4 * mm)
+        d = U.BorderDefinition(settings=U.BorderSettings(), border=bar)
+        assert d.too_big(bed_mm=60.0, margin_mm=0.0) == []
+        assert d.too_big(bed_mm=50.0, margin_mm=0.0) == [0]
 
     def test_every_planned_piece_is_built(self, defined):
         d = _fresh(defined)

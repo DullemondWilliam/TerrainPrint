@@ -8,6 +8,7 @@ fit, piece count, and volume conservation can be checked exactly.
 import numpy as np
 import pytest
 import trimesh
+from shapely.geometry import box
 
 from lib.LIB_border_split import (MIN_PART_AREA_MM2, DEFAULT_BED_MM,
                                    split_to_bed)
@@ -118,3 +119,28 @@ class TestSplitToBed:
 
     def test_default_bed_constant(self):
         assert DEFAULT_BED_MM == 256.0
+
+
+
+class TestBedTurn:
+    """Fitting the bed at any turn, as a slicer places a part."""
+
+    def test_a_part_that_fits_square_needs_no_turn(self):
+        from lib.LIB_border_split import bed_turn
+        assert bed_turn(box(0, 0, 50, 20), 60.0) == 0.0
+
+    def test_a_long_thin_part_fits_corner_to_corner(self):
+        from lib.LIB_border_split import bed_turn
+        angle = bed_turn(box(0, 0, 78, 4), 60.0)
+        assert angle is not None and 30.0 < angle < 60.0
+
+    def test_too_big_at_every_turn_is_none(self):
+        from lib.LIB_border_split import bed_turn
+        assert bed_turn(box(0, 0, 61, 61), 60.0) is None
+        assert bed_turn(box(0, 0, 90, 4), 60.0) is None
+
+    def test_it_takes_points_as_well(self):
+        import numpy as np
+        from lib.LIB_border_split import bed_turn
+        corners = np.array([[0, 0, 1], [78, 0, 1], [78, 4, 1], [0, 4, 1]])
+        assert bed_turn(corners, 60.0) is not None
