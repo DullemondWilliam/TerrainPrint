@@ -1220,9 +1220,20 @@ class TerrainEditorTester(QMainWindow):
             f"the {_cfg('print.bed_mm'):.0f} mm bed (print.bed_mm, "
             "print.bed_margin_mm).\n\n"
             "With a DEM imported the top is draped over the terrain, read at "
-            "the Res / Resample / Exag / Base / Floor the solids use, so it "
+            "the bar's own Res and the Resample / Exag / Base / Floor the "
+            "solids use, so it "
             "stands as tall as the solids either side. Without one it is flat "
             "at print.border_thickness_mm.")
+        self.bar_res_spin = self._spin(
+            0.0, 100_000.0, _cfg("print.border_res_m"), 0,
+            "Ground metres per pixel the bar's draped top is read at -- its "
+            "own, whatever Res each province is cropped at (Process All "
+            "uses it too); 0 is the DEM's native resolution. Starts at "
+            "print.border_res_m.")
+        self.bar_res_spin.setSingleStep(100.0)
+        self.bar_res_spin.setSpecialValueText("native")
+        self.bar_res_spin.setSuffix(" m/px")
+        self.bar_res_spin.valueChanged.connect(self._invalidate_bar)
         self.btn_save_bar = self._button("Save Border Pieces …",
                                          self.save_border_pieces, enabled=False)
         self.btn_save_bar.setToolTip(
@@ -1259,7 +1270,8 @@ class TerrainEditorTester(QMainWindow):
             self.chk_cut, self.chk_pockets,
             self.btn_build, self.btn_save_stl)
         self.grp_bar = self._group(
-            "Border bar", self.btn_build_bar, self.btn_save_bar)
+            "Border bar", "Res", self.bar_res_spin, self.btn_build_bar,
+            self.btn_save_bar)
 
         stl_page = QWidget()
         stl_layout = QVBoxLayout(stl_page)
@@ -1983,7 +1995,8 @@ class TerrainEditorTester(QMainWindow):
             cache_mb=int(self.cache_spin.value()),
             terrain=self._terrain_params(), cut=self.chk_cut.isChecked(),
             pockets=self.chk_pockets.isChecked(),
-            bar=self.borders is not None)
+            bar=self.borders is not None,
+            bar_res_m=self.bar_res_spin.value())
 
     def process_all(self) -> None:
         """Ask where, then build every province and the bar there."""
@@ -2059,10 +2072,10 @@ class TerrainEditorTester(QMainWindow):
         return text
 
     def _bar_warp(self) -> ReprojectParams:
-        """The warp the bar's surface is read through: the crop's own
-        resolution and resampling, so the bar and the solids agree."""
+        """The warp the bar's surface is read through: the bar's own
+        resolution, and the crop's resampling."""
         return ReprojectParams(
-            dst_res_m=self.res_spin.value(),
+            dst_res_m=self.bar_res_spin.value(),
             resampling=Resampling[self.resample_combo.currentText()],
             gdal_cache_mb=int(self.cache_spin.value()))
 

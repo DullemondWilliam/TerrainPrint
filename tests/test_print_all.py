@@ -125,6 +125,21 @@ class TestWhatGoesWrong:
 
 class TestTheBar:
 
+    def test_the_bar_is_draped_at_its_own_resolution(self, dem, tmp_path,
+                                                     defined):
+        report = _run(dem, tmp_path, defined, bar_res_m=4 * RES)
+        assert report.bar_res_m == 4 * RES
+        with rasterio.open(tmp_path / "work" / "border_surface.tif") as ds:
+            assert ds.res[0] == pytest.approx(4 * RES)
+        for done in report.provinces:
+            assert done.res_m == RES
+
+    def test_by_default_at_print_border_res_m(self, dem, tmp_path, defined,
+                                              monkeypatch):
+        monkeypatch.setattr(PA, "_cfg", lambda key: {
+            "print.border_res_m": 5 * RES}[key])
+        assert _run(dem, tmp_path, defined).bar_res_m == 5 * RES
+
     def test_stale_pieces_are_cleared(self, dem, tmp_path, defined):
         out = tmp_path / "out"
         out.mkdir()

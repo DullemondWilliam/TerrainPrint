@@ -54,6 +54,7 @@
   "print": {
     "bed_margin_mm": 10.0,
     "bed_mm": 256.0,
+    "border_res_m": 1000.0,
     "border_thickness_mm": 2.0,
     "dovetail_mm": 1.0,
     "scale": 8000000

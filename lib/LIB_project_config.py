@@ -86,6 +86,9 @@ DEFAULTS = {
         # Border pieces: total height, and the dovetail layer within it (mm).
         "border_thickness_mm": 2.0,
         "dovetail_mm": 1.0,
+        # The DEM pitch the bar's draped top is read at (ground m/px), its
+        # own whatever each province was cropped at; 0 is the DEM's native.
+        "border_res_m": 1000.0,
     },
     "terrain": {
         # Vertical exaggeration. At 1:8,000,000 one print-mm is 8 km, so true

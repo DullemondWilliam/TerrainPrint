@@ -1343,6 +1343,14 @@ class TestProcessAll:
         window.chk_res_auto.setChecked(True)
         assert window.print_all_request(tmp_path)["res_m"] is None
 
+    def test_the_bar_has_its_own_resolution(self, tmp_path, defined):
+        window = self._ready(tmp_path, defined)
+        assert window.bar_res_spin.value() == 1000.0
+        window.bar_res_spin.setValue(6400.0)
+        assert window.print_all_request(tmp_path)["bar_res_m"] == 6400.0
+        assert window._bar_warp().dst_res_m == 6400.0
+        assert window.res_spin.value() != 6400.0
+
     def test_red_connectors_stop_it(self, tmp_path, defined, monkeypatch):
         window = self._ready(tmp_path, defined)
         window.tabs.setCurrentIndex(1)

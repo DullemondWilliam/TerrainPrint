@@ -36,6 +36,7 @@ from lib.LIB_border_bar import BORDER_STEM, build_bar, build_draped_bar
 from lib.LIB_border_connectors import load_connector_params, notch_province
 from lib.LIB_border_plan import EPSG_WORKING, _safe_name
 from lib.LIB_geotiff_clip import clip_geotiff
+from lib.LIB_project_config import get as _cfg
 from lib.LIB_project_config import load_files, settings_files
 from lib.LIB_raster_plan import finest_res, needs_warp, plan_run
 from lib.LIB_raster_reproject import ReprojectParams, reproject_geotiff
@@ -96,6 +97,7 @@ class PrintAllReport:
     provinces: list = field(default_factory=list)   #: ProvincePrint each
     bar_paths: list = field(default_factory=list)   #: border_*.stl written
     bar_too_big: int = 0                            #: pieces over the bed
+    bar_res_m: float = 0.0                          #: its top's pitch, draped
     bar_error: str = ""
     cancelled: bool = False
     seconds: float = 0.0
@@ -129,8 +131,8 @@ def print_all(raster_path, out_dir, provinces: dict, work_dir, *,
               crop: bool = True, all_touched: bool = False,
               resampling: str = "max", cache_mb: int = 0,
               terrain: TerrainParams = None, cut: bool = True,
-              pockets: bool = True, bar: bool = True, progress=None,
-              cancelled=None) -> PrintAllReport:
+              pockets: bool = True, bar: bool = True, bar_res_m=None,
+              progress=None, cancelled=None) -> PrintAllReport:
     """
     Write every province's solid and the border bar's pieces to ``out_dir``.
 
@@ -142,7 +144,9 @@ def print_all(raster_path, out_dir, provinces: dict, work_dir, *,
 
     ``res_m`` is the crop's metres per pixel for every province (0 for the
     DEM's own), or None for each province's own finest under
-    ``terrain.max_triangles`` (``LIB_raster_plan.finest_res``).  The other
+    ``terrain.max_triangles`` (``LIB_raster_plan.finest_res``).
+    ``bar_res_m`` is the bar's own -- the pitch its draped top is read at
+    (0 for the DEM's own) -- or None for ``print.border_res_m``.  The other
     settings are the editor's STL tab's.  ``progress(step, total, text)`` is
     told before each step; ``cancelled()`` is asked between them, and a run
     stopped early reports what it had written.
@@ -217,10 +221,12 @@ def print_all(raster_path, out_dir, provinces: dict, work_dir, *,
         tell(len(names), total, "the border bar")
         try:
             if used:
-                # The coarsest a province was cropped at: the bar's surface
-                # is read once over the whole corridor, and as fine as the
-                # finest province could be a whole-country raster.
-                bar_res = max(used) or native
+                # Its own resolution: the bar's surface is read once over
+                # the whole corridor, where a province's could be a
+                # whole-country raster.
+                bar_res = (_cfg("print.border_res_m") if bar_res_m is None
+                           else bar_res_m) or native
+                report.bar_res_m = bar_res
                 result = build_draped_bar(
                     definition, str(raster_path),
                     ReprojectParams(dst_res_m=bar_res,
