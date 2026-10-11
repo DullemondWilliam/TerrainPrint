@@ -79,6 +79,7 @@ flowchart TD
 │   ├── LIB_connector_rules.py         # The rules a connector is held to; moving one
 │   ├── LIB_border_stl.py              # Extrude a border region to a slab STL
 │   ├── LIB_butterfly_keys.py          # Bowtie keys joining two province STLs from the back
+│   ├── LIB_print_all.py               # Every province and the border bar to STL in one run
 │   ├── LIB_province_joins.py          # Bowtie keys across every border of a map
 │   ├── LIB_raster_plan.py             # Plan a crop: its path, its grid, the finest buildable res
 │   ├── LIB_island_merging.py          # Merge two islands with a connecting neck of land

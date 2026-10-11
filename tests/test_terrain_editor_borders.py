@@ -1285,6 +1285,91 @@ class TestSplittingARing:
         assert len(window.borders.pieces()) == 2
 
 
+def _write_wide_dem(tmp_path, res=3200.0):
+    """A sloping DEM in the print CRS over both A and B, with a margin."""
+    x0, y0 = 6_960 * KM, 1_440 * KM
+    cols, rows = int(880 * KM / res), int(480 * KM / res)
+    data = np.tile(np.linspace(50, 900, cols, dtype="float32"), (rows, 1))
+    path = tmp_path / "wide_dem.tif"
+    with rasterio.open(path, "w", driver="GTiff", width=cols, height=rows,
+                       count=1, dtype="float32", crs=WORK, nodata=-32767.0,
+                       transform=Affine.translation(x0, y0)
+                       * Affine.scale(res, -res)) as ds:
+        ds.write(data, 1)
+    return path
+
+
+class TestProcessAll:
+    """Every province and the bar, from one button."""
+
+    @staticmethod
+    def _ready(tmp_path, defined):
+        window = _window(tmp_path)
+        window._load_raster(_write_wide_dem(tmp_path))
+        window.apply_borders(_fresh(defined))
+        window.chk_res_auto.setChecked(False)
+        window.res_spin.setValue(3200.0)
+        window.base_spin.setValue(3.0)
+        window._update_border_controls()
+        return window
+
+    def test_it_needs_a_dem_and_provinces(self, tmp_path):
+        window = _window(tmp_path)
+        assert not window.btn_print_all.isEnabled()
+        window._load_raster(_write_wide_dem(tmp_path))
+        window._update_border_controls()
+        assert window.btn_print_all.isEnabled()
+
+    def test_the_request_is_this_tabs_settings(self, tmp_path, defined):
+        window = self._ready(tmp_path, defined)
+        request = window.print_all_request(tmp_path / "out")
+        assert set(request["provinces"]) == {"A", "B"}
+        assert request["provinces"]["A"].equals(window.borders.targets["A"])
+        assert request["definition"] is window.borders
+        assert request["res_m"] == 3200.0 and request["bar"]
+        window.chk_res_auto.setChecked(True)
+        assert window.print_all_request(tmp_path)["res_m"] is None
+
+    def test_red_connectors_stop_it(self, tmp_path, defined, monkeypatch):
+        window = self._ready(tmp_path, defined)
+        window.tabs.setCurrentIndex(1)
+        window.btn_edit_lobes.setChecked(True)
+        window.add_connector(*FACING_C)                  # red
+        asked = []
+        monkeypatch.setattr(U.QFileDialog, "getExistingDirectory",
+                            lambda *a: asked.append(1) or str(tmp_path))
+        window.process_all()
+        assert not asked and window._thread is None
+        assert "invalid (red)" in window.status.text()
+
+    def test_it_asks_before_writing_over(self, tmp_path, defined,
+                                         monkeypatch):
+        window = self._ready(tmp_path, defined)
+        out = tmp_path / "out"
+        out.mkdir()
+        (out / "A.stl").write_text("old")
+        monkeypatch.setattr(U.QFileDialog, "getExistingDirectory",
+                            lambda *a: str(out))
+        monkeypatch.setattr(U.QMessageBox, "question",
+                            lambda *a: U.QMessageBox.StandardButton.No)
+        window.process_all()
+        assert window._thread is None
+        assert (out / "A.stl").read_text() == "old"
+
+    def test_a_run_writes_everything_and_says_so(self, tmp_path, defined,
+                                                 qtbot):
+        window = self._ready(tmp_path, defined)
+        out = tmp_path / "out"
+        window.start_print_all(window.print_all_request(out))
+        assert not window.btn_print_all.isEnabled()      # busy: locked
+        qtbot.waitUntil(lambda: window._thread is None, timeout=120_000)
+        assert (out / "A.stl").exists() and (out / "B.stl").exists()
+        assert list(out.glob("border_*.stl"))
+        assert window.status.text().startswith("Processed")
+        assert "FAILED" not in window.status.text()
+        assert window.btn_print_all.isEnabled()
+
+
 class TestPlaceConnector:
 
     def test_lands_on_the_side_clicked(self, defined):

@@ -56,6 +56,13 @@ Workflow (stage 3)
 7. **Build STL**          — mesh the cropped DEM into a watertight solid.
 8. **Save GeoTIFF … / Save STL …** — keep either stage's output.  Every
                             save starts in ``paths.stl`` (Data/STL).
+9. **Process All …**      — every province and the border bar in one run,
+                            into one folder: ``<province>.stl`` with its
+                            frame, pocketed, each at its own Auto resolution
+                            (or at Res), and ``border_001.stl`` onward, draped
+                            over the DEM (``LIB_print_all``).  Asks before
+                            writing over files; a province that fails is
+                            reported and the rest go on.
 
 The whole run is here: national DEM in, printable province solid out, without
 leaving the window or touching QGIS.
@@ -68,8 +75,8 @@ Ctrl+O imports the DEM, Ctrl+P / Ctrl+Shift+P add provinces / surrounding,
 Shift+Del removes a region; D defines the borders, E edits connectors, R
 resets and Del deletes the selected one; C reproject-and-crops, S builds the
 STL and B the border bar; Ctrl+S, Ctrl+Shift+S, Ctrl+B and Ctrl+Shift+B save
-the STL, the GeoTIFF, the borders and the border pieces, and Ctrl+L loads
-saved borders back.  Home, Alt+Left /
+the STL, the GeoTIFF, the borders and the border pieces, Ctrl+L loads
+saved borders back, and Ctrl+E processes everything.  Home, Alt+Left /
 Alt+Right, P and Z work the map's view, and the arrow keys pan it (Shift for
 a long stride, Ctrl for a nudge).  Left-drag pans the map too, and the wheel
 zooms it.
@@ -299,8 +306,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox,
 # libraries; this file is the window over them.
 from lib.LIB_border_bar import (BarResult, bar_vertex_colours, build_bar,
                                 build_draped_bar, split_at)
-from lib.LIB_border_connectors import (_polys, load_connector_params, lobe_at,
-                                       notch_province)
+from lib.LIB_border_connectors import _polys, lobe_at
 from lib.LIB_border_plan import (EPSG_WORKING, SHAPE_FIELDS,
                                  BorderDefinition, BorderSettings,
                                  _vertex_count, define_borders,
@@ -310,14 +316,13 @@ from lib.LIB_connector_rules import (FAULT_COUNTS, STANDING_FAULTS,
                                      angle_toward, connector_pose, handle_at,
                                      place_connector, reshape_connectors)
 from lib.LIB_geotiff_clip import clip_geotiff
+from lib.LIB_print_all import build_terrain, outputs, print_all
 from lib.LIB_raster_plan import (finest_res, needs_resample, needs_warp,
                                  output_grid, plan_run, reduction)
 from lib.LIB_raster_reproject import ReprojectParams, reproject_geotiff
-from lib.LIB_terrain_stl import (TerrainParams, _finish, _validate, _write,
-                                 load_terrain_params, terrain_to_stl)
+from lib.LIB_terrain_stl import TerrainParams, load_terrain_params
 from lib.LIB_project_config import get as _cfg
-from lib.LIB_project_config import (load_files, settings_files,
-                                     update_local)
+from lib.LIB_project_config import settings_files, update_local
 from lib.LIB_project_config import shipped as _shipped
 
 GEOJSON_FILTER = "GeoJSON (*.geojson *.json);;All files (*)"
@@ -550,40 +555,6 @@ SETTINGS_WRITE_MS = 500
 
 
 
-def build_terrain(raster, boundary, out_path, params, lobes=None,
-                  connector=None):
-    """
-    ``terrain_to_stl``, then the dovetail pockets when ``lobes`` are given.
-
-    The solid's ``origin_m`` *is* its metres -> print-mm frame, so the pockets
-    go straight in with ``notch_province`` -- no reconciliation.  That only
-    holds when the solid was built in the CRS the lobes were (EPSG:3347).
-    """
-    # The sidecar fingerprints the settings the piece is built under: the
-    # ones this desk has saved, not merely the shipped ones.
-    config = load_files(*settings_files())
-    if not lobes:
-        return terrain_to_stl(raster, boundary, out_path, params, config)
-    result = terrain_to_stl(raster, boundary, None, params, config)
-    if CRS.from_user_input(result.crs) != CRS.from_user_input(EPSG_WORKING):
-        raise ValueError(
-            f"Pockets need the terrain built in {EPSG_WORKING}, where the "
-            f"connectors are; this crop is in {result.crs}. Set CRS to "
-            f"{EPSG_WORKING} and re-run the crop.")
-    connector = connector or load_connector_params(*settings_files(),
-                                                   scale=params.scale)
-    if connector.pocket_depth_mm >= params.base_height_mm:
-        raise ValueError(
-            f"The pockets are {connector.pocket_depth_mm:g} mm deep (Height "
-            f"plus Height clear.), which cuts through the "
-            f"{params.base_height_mm:g} mm Base. Raise the Base or make the "
-            "connectors shallower.")
-    mesh = notch_province(result.mesh, lobes, *result.origin_m, connector)
-    _finish(mesh, result, params)
-    _validate(result, raster)          # FR-4.7 again: the boolean can break it
-    if out_path is not None:
-        _write(mesh, result, out_path)
-    return result
 
 
 class RunWorker(QObject):
@@ -644,6 +615,33 @@ class MeshWorker(QObject):
             self.failed.emit(str(exc))
             return
         self.done.emit(result)
+
+
+class PrintAllWorker(QObject):
+    """Runs ``LIB_print_all.print_all`` off the UI thread -- every province
+    and the bar, which on a whole map is minutes -- telling the window how
+    far it has got, and stopping between pieces when asked."""
+    done = Signal(object)            # PrintAllReport
+    failed = Signal(str)
+    progress = Signal(int, int, str)
+
+    def __init__(self, request: dict):
+        super().__init__()
+        self._request = request
+        self._stop = False
+
+    def stop(self) -> None:
+        self._stop = True
+
+    def run(self) -> None:
+        try:
+            report = print_all(**self._request,
+                               progress=self.progress.emit,
+                               cancelled=lambda: self._stop)
+        except Exception as exc:      # what no single province could report
+            self.failed.emit(str(exc))
+            return
+        self.done.emit(report)
 
 
 class CallWorker(QObject):
@@ -1228,6 +1226,18 @@ class TerrainEditorTester(QMainWindow):
         self.btn_save_bar.setToolTip(
             "Write each bed-sized piece of the border bar as its own STL.")
 
+        self.btn_print_all = self._button("Process All …", self.process_all,
+                                          enabled=False)
+        self.btn_print_all.setToolTip(
+            "Every province's solid and the border bar's pieces, in one run, "
+            "into one folder (Data/STL to start): <province>.stl with its "
+            "frame for each, pocketed for its connectors, and border_001.stl "
+            "onward for the bar, draped over the DEM. Each province is "
+            "cropped at its own finest resolution with Auto on, or at Res, "
+            "with the CRS, Resample, Cut and Solid settings here. A province "
+            "that fails is reported and the rest go on. Asks before writing "
+            "over files already there.")
+        self.grp_everything = self._group("Everything", self.btn_print_all)
         self.grp_province = self._group("Province", self.province_combo)
         # The raster stage in two groups: the frame and pitch it is warped
         # to, then how it is cut -- and the run, which ends with the cut.
@@ -1253,7 +1263,8 @@ class TerrainEditorTester(QMainWindow):
         stl_layout.addLayout(self._row(self.grp_province, self.grp_warp))
         # The bar beside the cut rather than the solid: it is built once for
         # the whole map, and the solid's row is full with its own controls.
-        stl_layout.addLayout(self._row(self.grp_cut, self.grp_bar))
+        stl_layout.addLayout(self._row(self.grp_cut, self.grp_bar,
+                                       self.grp_everything))
         stl_layout.addLayout(self._row(self.grp_solid))
 
         self.tabs = QTabWidget()
@@ -1429,7 +1440,8 @@ class TerrainEditorTester(QMainWindow):
                 self.grp_connectors, self.grp_shape, self.grp_fit,
                 self.grp_by_hand, self.grp_selected, self.grp_splits,
                 self.grp_province,
-                self.grp_warp, self.grp_cut, self.grp_solid, self.grp_bar)
+                self.grp_warp, self.grp_cut, self.grp_solid,
+                self.grp_everything, self.grp_bar)
 
     @staticmethod
     def _separator() -> QFrame:
@@ -1509,6 +1521,7 @@ class TerrainEditorTester(QMainWindow):
                 (self.btn_save_stl, "Ctrl+S"),
                 (self.btn_build_bar, "B"),
                 (self.btn_save_bar, "Ctrl+Shift+B"),
+                (self.btn_print_all, "Ctrl+E"),
         ):
             widget.setShortcut(QKeySequence(sequence))
             self._hint(widget, widget.shortcut())
@@ -1769,6 +1782,8 @@ class TerrainEditorTester(QMainWindow):
             self.borders is not None and self.borders.border is not None
             and not busy)
         self.btn_save_bar.setEnabled(self.bar is not None and not busy)
+        self.btn_print_all.setEnabled(self.raster_path is not None
+                                      and bool(self.targets) and not busy)
         editable = self.connectors_editable() and not busy
         self.btn_edit_lobes.setEnabled(editable)
         if not self.connectors_editable() and self.btn_edit_lobes.isChecked():
@@ -1943,6 +1958,100 @@ class TerrainEditorTester(QMainWindow):
                                 self._terrain_params(),
                                 str(self._tempdir / "border_surface.tif")),
                      self._on_bar)
+
+    def print_all_request(self, folder) -> dict:
+        """What Process All runs: every province, cut to its trimmed shape
+        once borders exist, with this tab's settings -- the arguments to
+        ``LIB_print_all.print_all``."""
+        names = list(self.borders.targets) if self.borders is not None \
+            else list(self.targets)
+        return dict(
+            raster_path=str(self.raster_path), out_dir=Path(folder),
+            provinces={name: self.province_geom(name) for name in names},
+            work_dir=self._tempdir / "print_all", definition=self.borders,
+            dst_crs=self.target_crs() or EPSG_WORKING,
+            res_m=None if self.chk_res_auto.isChecked()
+            else self.res_spin.value(),
+            crop=self.chk_crop.isChecked(),
+            all_touched=self.chk_touched.isChecked(),
+            resampling=self.resample_combo.currentText(),
+            cache_mb=int(self.cache_spin.value()),
+            terrain=self._terrain_params(), cut=self.chk_cut.isChecked(),
+            pockets=self.chk_pockets.isChecked(),
+            bar=self.borders is not None)
+
+    def process_all(self) -> None:
+        """Ask where, then build every province and the bar there."""
+        if self._thread is not None:
+            return
+        if self.raster_path is None or not self.targets:
+            self.status.setText("Process All needs a DEM and the provinces: "
+                                "import them on the Import tab.")
+            return
+        if self.borders is not None:
+            bad = self._invalid_lobes(self.borders.kept_lobes())
+            if bad:
+                self.status.setText(
+                    f"Nothing processed: {bad} connector(s) are invalid "
+                    "(red). Fix them on the Borders tab first.")
+                return
+        folder = QFileDialog.getExistingDirectory(
+            self, "Process all into folder", self._save_dir())
+        if not folder:
+            return
+        request = self.print_all_request(folder)
+        there = outputs(folder, request["provinces"])
+        if there and QMessageBox.question(
+                self, "Write over files?",
+                f"{len(there)} file(s) in {Path(folder).name} will be "
+                "written over -- province STLs and frames, and the border "
+                "pieces there. Go on?") != QMessageBox.StandardButton.Yes:
+            return
+        self.start_print_all(request)
+
+    def start_print_all(self, request: dict) -> None:
+        """Run ``request`` off the UI thread, the progress bar counting."""
+        self._set_busy(True)
+        self.progress.setRange(0, max(1, len(request["provinces"])
+                                      + (1 if request["bar"] else 0)))
+        self.status.setText(f"Processing {len(request['provinces'])} "
+                            "province(s) …")
+        worker = PrintAllWorker(request)
+        worker.progress.connect(self._on_print_progress)
+        self._launch(worker, self._on_printed_all)
+
+    def _on_print_progress(self, step: int, total: int, text: str) -> None:
+        self.progress.setRange(0, max(total, 1))
+        self.progress.setValue(step)
+        if step < total:
+            self.status.setText(f"Processing {step + 1} of {total}: {text} …")
+
+    def _on_printed_all(self, report) -> None:
+        self._teardown_thread()
+        self._set_busy(False)
+        self.status.setText(self._print_all_text(report))
+
+    @staticmethod
+    def _print_all_text(report) -> str:
+        made = [p for p in report.provinces if p.path is not None]
+        text = (f"Processed in {report.seconds:.0f} s: {len(made)} "
+                f"province STL(s)")
+        if report.bar_paths:
+            text += f" and {len(report.bar_paths)} border piece(s)"
+        text += "."
+        big = [p.name for p in made if not p.bed_fits]
+        if big:
+            text += f" Too big for the bed: {', '.join(big)}."
+        if report.bar_too_big:
+            text += (f" {report.bar_too_big} border piece(s) too big for "
+                     "the bed -- add splits.")
+        for p in report.failed:
+            text += f" {p.name} FAILED: {p.error}"
+        if report.bar_error:
+            text += f" Border bar FAILED: {report.bar_error}"
+        if report.cancelled:
+            text += " Stopped before the end."
+        return text
 
     def _bar_warp(self) -> ReprojectParams:
         """The warp the bar's surface is read through: the crop's own
