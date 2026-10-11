@@ -760,6 +760,95 @@ class TestCrossingTheBoundary:
         assert not any(window.borders.faults())
 
 
+class TestLoadBorders:
+    """Save Borders, then Load: the borders come back as they were left,
+    hand edits and settings and all."""
+
+    @staticmethod
+    def _saved(tmp_path, defined):
+        """A definition edited by hand -- one deleted, one turned and sized,
+        the shape changed -- and the folder it was saved to."""
+        window = _edit_window(tmp_path, defined)
+        window.delete_connector(0)
+        _select(window, 1)
+        assert window.pose_selected(-15.0, 1.2, "x")
+        window.lobe_width_spin.setValue(1.4)
+        folder = tmp_path / "saved"
+        window.write_borders(folder)
+        return window, folder
+
+    def test_the_connectors_come_back_as_they_were_left(self, tmp_path,
+                                                        defined):
+        before, folder = self._saved(tmp_path, defined)
+        loaded = U.read_borders(folder)
+        assert len(loaded.lobes) == len(before.borders.lobes)
+        for a, b in zip(loaded.lobes, before.borders.lobes):
+            assert a.equals_exact(b, 1e-3)
+        assert loaded.lobes_edited
+
+    def test_their_turn_and_size_come_back(self, tmp_path, defined):
+        before, folder = self._saved(tmp_path, defined)
+        after = _window(tmp_path)
+        assert after.adopt_borders(U.read_borders(folder))
+        for i in range(len(before.borders.lobes)):
+            assert after.connector_pose(i) == pytest.approx(
+                before.connector_pose(i), abs=1e-3)
+
+    def test_the_settings_come_back(self, tmp_path, defined):
+        before, folder = self._saved(tmp_path, defined)
+        after = _window(tmp_path)
+        assert after.adopt_borders(U.read_borders(folder))
+        assert after.lobe_width_spin.value() == pytest.approx(1.4)
+        assert after.borders.settings == before.borders.settings
+        assert after.borders is not None       # not discarded by the spins
+
+    def test_the_corridor_and_provinces_come_back(self, tmp_path, defined):
+        before, folder = self._saved(tmp_path, defined)
+        loaded = U.read_borders(folder)
+        assert loaded.border.equals_exact(before.borders.border, 1e-3) or \
+            loaded.border.symmetric_difference(
+                before.borders.border).area < 1.0
+        assert set(loaded.targets) == set(before.borders.targets)
+
+    def test_the_loaded_borders_can_be_edited_on(self, tmp_path, defined):
+        _, folder = self._saved(tmp_path, defined)
+        after = _window(tmp_path)
+        after.adopt_borders(U.read_borders(folder))
+        after.tabs.setCurrentIndex(1)
+        after.btn_edit_lobes.setChecked(True)
+        n = len(after.borders.lobes)
+        assert after.add_connector(*FREE_A)
+        assert len(after.borders.lobes) == n + 1
+        after.undo_connectors()
+        assert len(after.borders.lobes) == n
+
+    def test_provinces_not_imported_are_refused(self, tmp_path, defined):
+        _, folder = self._saved(tmp_path, defined)
+        lonely = U.TerrainEditorTester()
+        lonely.add_regions([_write_region(tmp_path, "A", A)], "target")
+        assert not lonely.adopt_borders(U.read_borders(folder))
+        assert lonely.borders is None
+        assert "B" in lonely.status.text()
+
+    def test_a_folder_without_borders_is_refused(self, tmp_path):
+        with pytest.raises(ValueError):
+            U.read_borders(tmp_path)
+
+    def test_through_the_button(self, tmp_path, defined, monkeypatch):
+        _, folder = self._saved(tmp_path, defined)
+        after = _window(tmp_path)
+        assert after.btn_load_borders.isEnabled()
+        monkeypatch.setattr(U.QFileDialog, "getExistingDirectory",
+                            lambda *a: str(folder))
+        after.load_borders()
+        assert after.borders is not None
+        assert "Loaded" in after.status.text()
+        assert "(edited by hand)" in after.border_report.text()
+        # Define's measurements are not saved, so none are reported as zero.
+        assert after.border_report.text().startswith("Loaded from saved")
+        assert "vertices" not in after.border_report.text()
+
+
 class TestPlaceConnector:
 
     def test_lands_on_the_side_clicked(self, defined):

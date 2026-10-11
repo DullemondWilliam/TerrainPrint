@@ -42,12 +42,19 @@ Workflow (stage 3)
                             1578 m of Mount Caubvick with ``max`` and 1175 m
                             with ``bilinear``, against a true 1652 m.  Both
                             apply whether or not the CRS changes.
+                            **Auto**, ticked by default, sets **Res** to the
+                            finest the province can be built at: the finest
+                            whose STL fits ``terrain.max_triangles``, never
+                            finer than the DEM.  That limit, not the GDAL
+                            **Cache** (6 GB by default, which only makes the
+                            run faster), is what bounds the resolution.
 5. **Reproject + Crop**   — run the raster stage off the UI thread.
 6. **Exag / Base / Floor / Cut** — the solid's parameters.  Defaults come from
                             ``project_config.json``'s ``terrain`` section, so
                             every piece of a map is built the same way.
 7. **Build STL**          — mesh the cropped DEM into a watertight solid.
-8. **Save GeoTIFF … / Save STL …** — keep either stage's output.
+8. **Save GeoTIFF … / Save STL …** — keep either stage's output.  Every
+                            save starts in ``paths.stl`` (Data/STL).
 
 The whole run is here: national DEM in, printable province solid out, without
 leaving the window or touching QGIS.
@@ -60,7 +67,8 @@ Ctrl+O imports the DEM, Ctrl+P / Ctrl+Shift+P add provinces / surrounding,
 Shift+Del removes a region; D defines the borders, E edits connectors, R
 resets and Del deletes the selected one; C reproject-and-crops, S builds the
 STL and B the border bar; Ctrl+S, Ctrl+Shift+S, Ctrl+B and Ctrl+Shift+B save
-the STL, the GeoTIFF, the borders and the border pieces.  Home, Alt+Left /
+the STL, the GeoTIFF, the borders and the border pieces, and Ctrl+L loads
+saved borders back.  Home, Alt+Left /
 Alt+Right, P and Z work the map's view, and the arrow keys pan it (Shift for
 a long stride, Ctrl for a nudge).  Left-drag pans the map too, and the wheel
 zooms it.
@@ -204,10 +212,14 @@ the corridor and a neck of at least two nozzle widths.  Its turn and size are
 read off its own outline, so they survive a move, a reshape from the Shape
 group, Undo, and Save Borders (which writes them as ``angle_deg`` and
 ``scale``).  Every edit is one Undo (Ctrl+Z; Ctrl+Shift+Z or Ctrl+Y redoes)
-step and stales the border bar and a pocketed solid.  **Define Borders**
-places them afresh and discards the edits.  **Save Borders** writes them to
+step and stales the border bar and a pocketed solid.  **Define** (in the
+Borders group) places them afresh and discards the edits.  **Save …** writes
+them, with the settings they were shaped by (``borders_settings.json``), to
 ``connectors.geojson``, which ``build_border_from_dir`` uses in place of
-generating its own.
+generating its own.  **Load …** reads such a folder back -- the corridor, the
+trimmed provinces and the connectors as they were left, with the settings --
+so a session of hand edits can be picked up again; the provinces must be
+imported first.
 
 *The bar stands as tall as the terrain.*  With a DEM imported, **Build Border
 STL** warps it to ``crs.working`` over the corridor at the crop's **Res** and
@@ -229,12 +241,14 @@ built in any other CRS is refused rather than carved in the wrong place.
 """
 
 import logging
+import json
 import re
 import shutil
 import sys
 import tempfile
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
+from dataclasses import fields as dataclasses_fields
 from pathlib import Path
 
 import geopandas as gpd
@@ -314,6 +328,16 @@ OVERVIEW_PX = 1100
 #: Above this, the crop is strided down for display only.
 MAX_DISPLAY_PX = 2_000_000
 BG_COLOUR = "#FDFEFE"       # near-white 3D scene background
+#: Where every save dialog starts: the project's STL folder, next to this
+#: script (``paths.stl``).
+DEFAULT_SAVE_DIR = Path(__file__).resolve().parent / _cfg("paths.stl")
+#: GDAL's block cache for a run, in MB.  6 GB: the run is faster the more of
+#: a striped DEM's scanlines stay in memory, and the cache never changes the
+#: pixels that come out -- only how often they are read again.
+DEFAULT_CACHE_MB = 6144
+#: The Borders settings, written beside a saved Borders folder so loading it
+#: rebuilds the connectors in the shape they were saved in.
+BORDER_SETTINGS_NAME = "borders_settings.json"
 #: Sampling pitch on paper; the Res control is seeded from it via the scale.
 DEFAULT_SPACING_MM = _shipped("terrain.spacing_mm")
 DEFAULT_RESAMPLING = _shipped("terrain.resampling")
@@ -570,6 +594,9 @@ class BorderDefinition:
     #: Why: fault code (see ``FAULTS``) -> how many.
     drop_reasons: dict = field(default_factory=dict)
     lobes_edited: bool = False     #: moved, added or deleted by hand since
+    #: The folder it was read back from (:func:`read_borders`), or "" when
+    #: Define made it.
+    loaded_from: str = ""
     #: Pieces the corridor cut off from their province, added to the bar
     #: (see :func:`_absorb_enclaves`), and their printed area.
     enclaves: int = 0
@@ -858,6 +885,59 @@ def _fill_pinholes(border, targets, max_m2: float):
                 keep.append(ring)
         out.append(Polygon(poly.exterior, keep))
     return _repair(unary_union(out)) if changed else border
+
+
+def read_borders(folder: Path, settings: "BorderSettings | None" = None):
+    """
+    A :class:`BorderDefinition` read back from a folder Save Borders wrote:
+    the corridor (``borders.geojson``), each trimmed province
+    (``name_<province>.geojson``) and the connectors as they were left
+    (``connectors.geojson``), hand edits and all.
+
+    The connector settings come from the folder's ``borders_settings.json``
+    where there is one, else from ``settings`` (the window's own) -- a
+    connector's turn and size are read off its outline against them.
+    What Define measured on the way (vertex counts, seam reports, what it
+    dropped) is not saved, so it is not there to report.
+    """
+    folder = Path(folder)
+    border_path = folder / "borders.geojson"
+    names = sorted(folder.glob("name_*.geojson"))
+    if not border_path.exists() or not names:
+        raise ValueError(f"{folder} holds no saved borders: it needs "
+                         "borders.geojson and a name_<province>.geojson.")
+    saved = folder / BORDER_SETTINGS_NAME
+    if saved.exists():
+        values = json.loads(saved.read_text(encoding="utf-8"))
+        known = {f.name for f in dataclasses_fields(BorderSettings)}
+        settings = BorderSettings(**{k: v for k, v in values.items()
+                                     if k in known})
+    settings = settings or BorderSettings()
+
+    def read(path):
+        frame = gpd.read_file(path)
+        if frame.crs is not None:
+            frame = frame.to_crs(EPSG_WORKING)
+        return frame
+
+    border = _repair(unary_union(list(read(border_path).geometry)))
+    result = BorderDefinition(settings=settings, border=border,
+                              loaded_from=folder.name)
+    for path in names:
+        frame = read(path)
+        name = (str(frame["name"].iloc[0]) if "name" in frame.columns
+                else path.stem[len("name_"):])
+        geom = _repair(unary_union(list(frame.geometry)))
+        result.targets[name] = geom
+        result.simplified[name] = geom
+    connectors = folder / CONNECTORS_NAME
+    if connectors.exists():
+        # As written, corner order and all: a connector's turn and size are
+        # read off its corners (lobe_pose), so the ring is never re-oriented.
+        result.lobes = [Polygon(geom.exterior.coords)
+                        for geom in read(connectors).geometry]
+        result.lobes_edited = True
+    return result
 
 
 def _resolve_overlaps(simplified: dict, names: list, originals: dict) -> float:
@@ -1542,14 +1622,21 @@ class TerrainEditorTester(QMainWindow):
         for widget in self._shape_spins():
             widget.setKeyboardTracking(False)
             widget.valueChanged.connect(self._on_connector_shape)
-        self.btn_define = self._button("Define Borders", self.define,
+        self.btn_define = self._button("Define", self.define,
                                        enabled=False)
         self.btn_define.setToolTip(
             "Simplify every outline in one topology, carve the corridor and "
             "place the connectors. Places them afresh, discarding any edited "
             "by hand.")
-        self.btn_save_borders = self._button("Save Borders …",
+        self.btn_save_borders = self._button("Save …",
                                              self.save_borders, enabled=False)
+        self.btn_load_borders = self._button("Load …", self.load_borders,
+                                             enabled=False)
+        self.btn_load_borders.setToolTip(
+            "Reload a folder Save wrote -- the corridor, the trimmed provinces "
+            "and the connectors as they were left, hand edits and all -- with "
+            "the Borders settings they were made with. The provinces must be "
+            "imported first.")
         self.btn_save_borders.setToolTip(
             "Write borders.geojson and name_<province>.geojson, the layout the "
             "dovetail tools read (build_border_from_dir).")
@@ -1617,7 +1704,8 @@ class TerrainEditorTester(QMainWindow):
             "Corridor", "Width (mm)", self.width_spin,
             "Enclaves (mm²)", self.enclave_spin)
         self.grp_borders = self._group(
-            "Borders", self.btn_define, self.btn_save_borders)
+            "Borders", self.btn_define, self.btn_save_borders,
+            self.btn_load_borders)
         self.grp_connectors = self._group(
             "Connectors", self.chk_connectors, "Spacing (mm)",
             self.spacing_spin)
@@ -1684,7 +1772,16 @@ class TerrainEditorTester(QMainWindow):
         self.res_spin.setSingleStep(100.0)
         self.res_spin.setSpecialValueText("native")
         self.res_spin.setSuffix(" m/px")
-        self.res_spin.valueChanged.connect(self._invalidate_raster)
+        self.res_spin.valueChanged.connect(self._on_res_typed)
+        self.chk_res_auto = QCheckBox("Auto")
+        self.chk_res_auto.setChecked(True)
+        self.chk_res_auto.setToolTip(
+            "Use the finest resolution this province can be built at: the "
+            "finest whose STL still fits the triangle limit "
+            "(terrain.max_triangles), and never finer than the DEM itself. A "
+            "small province comes out at the DEM's own pitch, a large one "
+            "coarser. Choosing a Res by hand turns this off.")
+        self.chk_res_auto.toggled.connect(self._invalidate_raster)
 
         self.buf_spin = self._spin(
             0.0, 100_000.0, 0.0, 0,
@@ -1720,10 +1817,12 @@ class TerrainEditorTester(QMainWindow):
 
         # Keeps its suffix, like Res: "default" and "256 MB" must read alike.
         self.cache_spin = self._spin(
-            0.0, 8192.0, 0.0, 0,
-            "Cap GDAL's block cache for the run. 0 leaves GDAL's default (5% "
-            "of RAM); on a striped DEM that is the difference between a "
-            "~1.9 GB and a ~256 MB peak.")
+            0.0, 8192.0, DEFAULT_CACHE_MB, 0,
+            "GDAL's block cache for the run. More is faster -- a striped DEM "
+            "re-reads whole scanlines when they fall out of it -- and it never "
+            "changes the pixels that come out, nor the finest resolution you "
+            "can build: that is set by the STL's triangle limit (see Auto). "
+            "6 GB by default; 0 leaves GDAL's own (5% of RAM).")
         self.cache_spin.setSingleStep(64.0)
         self.cache_spin.setSpecialValueText("default")
         self.cache_spin.setSuffix(" MB")
@@ -1812,6 +1911,7 @@ class TerrainEditorTester(QMainWindow):
         # to, then how it is cut -- and the run, which ends with the cut.
         self.grp_warp = self._group(
             "Warp", "CRS", self.crs_combo, "Res", self.res_spin,
+            self.chk_res_auto,
             "Resample", self.resample_combo, "Cache", self.cache_spin)
         self.grp_cut = self._group(
             "Cut", "Buffer (m)", self.buf_spin, self.chk_touched,
@@ -2068,6 +2168,7 @@ class TerrainEditorTester(QMainWindow):
                 (self.btn_remove, "Shift+Del"),
                 (self.btn_define, "D"),
                 (self.btn_save_borders, "Ctrl+B"),
+                (self.btn_load_borders, "Ctrl+L"),
                 (self.btn_edit_lobes, "E"),
                 (self.btn_sel_reset, "R"),
                 (self.btn_sel_delete, QKeySequence.StandardKey.Delete),
@@ -2263,6 +2364,18 @@ class TerrainEditorTester(QMainWindow):
     def _borders_text(self) -> str:
         d = self.borders
         s = d.settings
+        if d.loaded_from:
+            # What Define measured on the way is not saved, so there is no
+            # vertex count or seam report to give -- only where they came from.
+            text = (f"Loaded from {d.loaded_from}: {len(d.targets)} "
+                    "province(s).")
+        else:
+            text = self._define_text()
+        return self._corridor_text(text)
+
+    def _define_text(self) -> str:
+        """What Define measured: simplification, seams, overlaps."""
+        d = self.borders
         text = (f"{len(d.simplified)} regions: {d.vertices_before:,} → "
                 f"{d.vertices_after:,} vertices. Seams: {d.short_segments} "
                 f"run(s) under {_cfg('seam.nozzle_mm'):.2f} mm, {d.spikes} "
@@ -2270,6 +2383,12 @@ class TerrainEditorTester(QMainWindow):
                 + (f"{d.overlap_mm2:.2f} mm² claimed by two provinces, handed "
                    "back to the one that held it." if d.overlap_mm2 > 1e-4
                    else "No overlap."))
+        return text
+
+    def _corridor_text(self, text: str) -> str:
+        """The corridor and its connectors, after ``text``."""
+        d = self.borders
+        s = d.settings
         if d.border is None:
             text += " No corridor: the provinces touch nothing."
         else:
@@ -2311,6 +2430,7 @@ class TerrainEditorTester(QMainWindow):
         self.tabs.setTabEnabled(1, bool(self.targets))
         self.btn_define.setEnabled(bool(self.targets) and not busy)
         self.btn_save_borders.setEnabled(self.borders is not None and not busy)
+        self.btn_load_borders.setEnabled(bool(self.targets) and not busy)
         self.btn_build_bar.setEnabled(
             self.borders is not None and self.borders.border is not None
             and not busy)
@@ -2334,7 +2454,7 @@ class TerrainEditorTester(QMainWindow):
         if self.borders is None:
             return
         folder = QFileDialog.getExistingDirectory(
-            self, "Save borders into folder", str(Path.cwd()))
+            self, "Save borders into folder", self._save_dir())
         if not folder:
             return
         try:
@@ -2383,7 +2503,71 @@ class TerrainEditorTester(QMainWindow):
         for name, geom in self.borders.targets.items():
             write(name, geom, self.region_crs.get(name, default_crs),
                   folder / f"name_{_safe_name(name)}.geojson")
+        # The settings the connectors were shaped by, so Load Borders can
+        # rebuild them as they were -- a connector's turn and size are read
+        # off its outline against these.
+        settings = folder / BORDER_SETTINGS_NAME
+        settings.write_text(json.dumps(asdict(self.borders.settings),
+                                       indent=2) + "\n", encoding="utf-8")
+        written.append(settings)
         return written
+
+    def load_borders(self) -> None:
+        """Reload a folder Save Borders wrote, hand edits and all."""
+        if self._thread is not None:
+            return
+        folder = QFileDialog.getExistingDirectory(
+            self, "Load borders from folder", self._save_dir())
+        if not folder:
+            return
+        try:
+            definition = read_borders(Path(folder), self.border_settings())
+        except Exception as exc:
+            QMessageBox.critical(self, "Load failed", str(exc))
+            return
+        if not self.adopt_borders(definition):
+            return
+        self.status.setText(
+            f"Loaded {len(definition.targets)} province(s) and "
+            f"{len(definition.lobes)} connector(s) from {Path(folder).name}."
+            f"{self._faults_text()}")
+
+    def adopt_borders(self, definition) -> bool:
+        """Make a loaded definition the one on screen, settings and all.
+
+        Its provinces must be the ones imported: a border carved for other
+        provinces would key into land that is not on the table.
+        """
+        missing = sorted(set(definition.targets) - set(self.targets))
+        if missing:
+            self.status.setText(
+                "Borders not loaded: add these provinces on the Import tab "
+                f"first -- {', '.join(missing)}.")
+            return False
+        # The controls take the saved settings without reading them as a
+        # change: a change would discard the definition being loaded.
+        s = definition.settings
+        for widget, value in ((self.coast_spin, s.coast_tol_mm),
+                              (self.internal_spin, s.internal_tol_mm),
+                              (self.min_seg_spin, s.min_segment_mm),
+                              (self.min_angle_spin, s.min_angle_deg),
+                              (self.width_spin, s.width_mm),
+                              (self.enclave_spin, s.enclave_mm2),
+                              (self.spacing_spin, s.lobe_spacing_mm),
+                              *zip(self._shape_spins(),
+                                   (getattr(s, f) for f in SHAPE_FIELDS))):
+            widget.blockSignals(True)
+            widget.setValue(value)
+            widget.blockSignals(False)
+        self.chk_connectors.blockSignals(True)
+        self.chk_connectors.setChecked(s.connectors)
+        self.chk_connectors.blockSignals(False)
+        # Everything outside the definition comes from the window: the
+        # surrounding regions are drawn as context, as Define draws them.
+        for name, geom in self.surrounding.items():
+            definition.simplified.setdefault(name, geom)
+        self.apply_borders(definition)
+        return True
 
     # -- stage 3: which province --------------------------------------------
     def _refresh_provinces(self) -> None:
@@ -2496,7 +2680,7 @@ class TerrainEditorTester(QMainWindow):
         if self.bar is None:
             return
         folder = QFileDialog.getExistingDirectory(
-            self, "Save border pieces into folder", str(Path.cwd()))
+            self, "Save border pieces into folder", self._save_dir())
         if not folder:
             return
         try:
@@ -3168,12 +3352,86 @@ class TerrainEditorTester(QMainWindow):
         if self.raster_path is not None:
             self.status.setText(self._cost_text())
 
+    def _on_res_typed(self, _value) -> None:
+        """A Res chosen by hand: Auto stands down, then the crop is stale."""
+        if self.chk_res_auto.isChecked():
+            self.chk_res_auto.blockSignals(True)
+            self.chk_res_auto.setChecked(False)
+            self.chk_res_auto.blockSignals(False)
+        self._invalidate_raster()
+
+    def finest_res(self) -> float | None:
+        """
+        The finest resolution (m/px) the selected province can be built at,
+        or None when there is no DEM or boundary to size it against.
+
+        Finest such that the solid's grid fits ``max_triangles`` -- the limit
+        Build STL refuses beyond, counted the way the lib counts it, over the
+        crop's whole grid -- and never finer than the DEM's own pitch.  The
+        grid at each candidate comes from the libs' own grid helpers, so this
+        is the grid the run will produce, not an estimate of it.
+        """
+        if self.raster_path is None or self.boundary is None \
+                or self.target_crs() is None:
+            return None
+        native = float(self.raster_res[0]) or 1.0
+        budget = self._terrain_params().max_triangles
+        dst = self.target_crs()
+        crop = self.chk_crop.isChecked()
+        try:
+            with rasterio.open(str(self.raster_path)) as ds:
+                bounds = (bounds_for(self._boundary_geom(dst), dst)
+                          if crop else None)
+                window = _read_window(ds, self._boundary_geom(), crop)
+                same_crs = not self.needs_warp()
+
+                def triangles(res):
+                    if same_crs and res <= native * 1.001:
+                        grid = _clip_grid(ds, window, ClipParams(
+                            crop=crop, target_res_m=0.0))
+                    else:
+                        grid = _warp_grid(ds, dst, ReprojectParams(
+                            dst_res_m=res, bounds=bounds))
+                    return _triangle_count(grid.width, grid.height)
+
+                if triangles(native) <= budget:
+                    return 0.0 if same_crs else native
+                lo, hi = native, native * 2
+                while triangles(hi) > budget:
+                    lo, hi = hi, hi * 2
+                for _ in range(40):           # to well under a metre
+                    if hi - lo < 0.5:
+                        break
+                    mid = (lo + hi) / 2
+                    lo, hi = (lo, mid) if triangles(mid) <= budget \
+                        else (mid, hi)
+                res = float(np.ceil(hi))
+                while triangles(res) > budget:
+                    res += 1.0
+                return res
+        except Exception:
+            return None                       # the preview says what is wrong
+
+    def _update_auto_res(self) -> None:
+        """With Auto on, put the finest buildable resolution in Res."""
+        if not self.chk_res_auto.isChecked():
+            return
+        res = self.finest_res()
+        if res is None:
+            return
+        self.res_spin.blockSignals(True)
+        self.res_spin.setValue(res)
+        self.res_spin.blockSignals(False)
+
     def _invalidate_raster(self) -> None:
         """A raster-parameter change stales both stages.
 
         The solid is meshed *from* the cropped raster, so a new crop makes the
-        old solid describe ground that is no longer on the table.
+        old solid describe ground that is no longer on the table.  With Auto
+        on, the resolution is worked out again first: what the province can
+        be built at depends on the province, the CRS and the crop.
         """
+        self._update_auto_res()
         self.result = None
         self.btn_save.setEnabled(False)
         self.btn_run.setEnabled(
@@ -3369,7 +3627,7 @@ class TerrainEditorTester(QMainWindow):
     def save_stl(self) -> None:
         if self.stl_result is None or self.stl_result.path is None:
             return
-        default = str(Path.cwd() / f"{self._stem()}.stl")
+        default = str(Path(self._save_dir()) / f"{self._stem()}.stl")
         path, _ = QFileDialog.getSaveFileName(self, "Save STL", default,
                                               STL_FILTER)
         if not path:
@@ -3694,13 +3952,23 @@ class TerrainEditorTester(QMainWindow):
         return data[::step, ::step], step
 
     # -- save ---------------------------------------------------------------
+    @staticmethod
+    def _save_dir() -> str:
+        """Where every save dialog starts: ``paths.stl`` (Data/STL), made if
+        it is not there yet."""
+        try:
+            DEFAULT_SAVE_DIR.mkdir(parents=True, exist_ok=True)
+            return str(DEFAULT_SAVE_DIR)
+        except OSError:
+            return str(Path.cwd())
+
     def _stem(self) -> str:
         return self.boundary_path.stem if self.boundary_path else "terrain"
 
     def save_geotiff(self) -> None:
         if self.result is None or self.result.path is None:
             return
-        default = str(Path.cwd() / f"{self._stem()}_crop.tif")
+        default = str(Path(self._save_dir()) / f"{self._stem()}_crop.tif")
         path, _ = QFileDialog.getSaveFileName(
             self, "Save GeoTIFF", default, GEOTIFF_FILTER)
         if not path:

@@ -23,6 +23,7 @@ geometry, and nothing here opens ``Canada120m.tif``.
 
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -683,6 +684,80 @@ class TestDisplay:
         assert len(window.ax.lines) == 2
 
 
+class TestAutoResolution:
+    """Res on Auto: the finest resolution the province can be built at --
+    the finest whose STL fits ``max_triangles`` -- never finer than the DEM."""
+
+    @staticmethod
+    def _triangles_at(window, res):
+        """What Build STL would count for a crop at ``res``, from the same
+        grid helpers the run uses."""
+        window.res_spin.setValue(res)              # (turns Auto off)
+        warp, clip = window._plan()
+        with rasterio.open(str(window.raster_path)) as ds:
+            if warp is not None:
+                grid = U._warp_grid(ds, window.target_crs(), warp)
+            else:
+                grid = U._clip_grid(ds, U._read_window(
+                    ds, window._boundary_geom(), clip.crop), clip)
+        return U._triangle_count(grid.width, grid.height)
+
+    @staticmethod
+    def _budget(window, monkeypatch, triangles):
+        params = U.replace(window._terrain_params(), max_triangles=triangles)
+        monkeypatch.setattr(window, "_terrain_params", lambda: params)
+
+    def test_a_fresh_window_is_on_auto_with_a_6_gb_cache(self):
+        fresh = U.TerrainEditorTester()
+        assert fresh.chk_res_auto.isChecked()
+        assert fresh.cache_spin.value() == 6144
+
+    def test_it_is_the_finest_that_fits(self, tmp_path, monkeypatch):
+        """The 100x70 px boundary at native is ~28,000 triangles: against a
+        limit of 5,000 Auto must coarsen, and only as far as it has to."""
+        window = _loaded(tmp_path)
+        self._budget(window, monkeypatch, 5_000)
+        window.chk_res_auto.setChecked(True)
+        res = window.res_spin.value()
+        assert res > RES
+        assert self._triangles_at(window, res) <= 5_000
+        assert self._triangles_at(window, res - 1) > 5_000
+
+    def test_a_province_that_fits_at_native_gets_native(self, tmp_path,
+                                                        monkeypatch):
+        window = _loaded(tmp_path)
+        self._budget(window, monkeypatch, 10_000_000)
+        window.chk_res_auto.setChecked(True)
+        assert window.res_spin.value() == 0.0
+        assert window.res_spin.text() == "native"
+
+    def test_it_follows_the_province(self, tmp_path, monkeypatch):
+        window = _loaded(tmp_path)
+        self._budget(window, monkeypatch, 5_000)
+        window.chk_res_auto.setChecked(True)
+        big = window.res_spin.value()
+        window.boundary = gpd.GeoDataFrame(
+            geometry=[_metric_box(50, 30, 90, 60)], crs=DEM_CRS)
+        window._invalidate()
+        assert window.chk_res_auto.isChecked()
+        assert window.res_spin.value() < big
+
+    def test_it_holds_when_the_crop_is_warped(self, tmp_path, monkeypatch):
+        window = _loaded(tmp_path, target_crs=PRINT_CRS)
+        self._budget(window, monkeypatch, 5_000)
+        window.chk_res_auto.setChecked(True)
+        res = window.res_spin.value()
+        assert res >= RES
+        assert self._triangles_at(window, res) <= 5_000
+
+    def test_choosing_a_res_turns_auto_off(self, tmp_path):
+        window = _loaded(tmp_path)
+        window.chk_res_auto.setChecked(True)
+        window.res_spin.setValue(500.0)
+        assert not window.chk_res_auto.isChecked()
+        assert window.res_spin.value() == 500.0
+
+
 class TestSave:
 
     def test_save_copies_the_libs_own_file(self, tmp_path):
@@ -694,6 +769,30 @@ class TestSave:
         with rasterio.open(target) as ds:
             assert ds.crs == DEM_CRS
             assert (ds.width, ds.height) == (result.width, result.height)
+
+    def test_every_save_starts_in_data_stl(self, tmp_path, monkeypatch):
+        from lib.LIB_project_config import get as cfg
+        stl_dir = Path(U.__file__).resolve().parent / cfg("paths.stl")
+        assert Path(U.TerrainEditorTester._save_dir()) == stl_dir
+        asked = []
+        monkeypatch.setattr(U.QFileDialog, "getSaveFileName",
+                            lambda parent, title, start, *a: (
+                                asked.append(start), ("", ""))[1])
+        monkeypatch.setattr(U.QFileDialog, "getExistingDirectory",
+                            lambda parent, title, start, *a: (
+                                asked.append(start), "")[1])
+        window = _loaded(tmp_path)
+        _run_clip(window)
+        window.save_geotiff()
+        window.stl_result = SimpleNamespace(path=tmp_path / "x.stl")
+        window.save_stl()
+        window.borders = SimpleNamespace()
+        window.save_borders()
+        window.bar = SimpleNamespace(pieces=[])
+        window.save_border_pieces()
+        assert len(asked) == 4
+        for start in asked:
+            assert Path(start) == stl_dir or Path(start).parent == stl_dir
 
     def test_default_save_name_comes_from_the_boundary(self, tmp_path):
         window = _loaded(tmp_path)
