@@ -216,7 +216,8 @@ def _button(self, text, slot, enabled=True):
   | `EDGE_COLOUR` | `#1B4F72` | outlines |
   | `SELECT_COLOUR` | `#F5B041` | selected |
   | `REMOVE_COLOUR` / `MARK_COLOUR` | `#E6787A` | on its way out / about to be cut |
-  | `THIN_COLOUR` / `REFUSED_COLOUR` | `#C0392B` | a fault: too thin, not allowed |
+  | `THIN_COLOUR` / `REFUSED_COLOUR` / `TOO_BIG_COLOUR` | `#C0392B` | a fault: too thin, not allowed, too big for the bed |
+  | `CORRIDOR_COLOUR` | `#5D6D7E` | the border bar (not red: red is a fault) |
   | `ORIGINAL_COLOUR` / `PICKED_COLOUR` | `#7D3C98` | the one special overlay |
 
 * Severity uses the good-to-critical ramp `SEVERITY_STOPS`, copied into each

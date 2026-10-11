@@ -239,8 +239,9 @@ starts with none.  A split is refused through a connector (FR-3.11), and a
 connector moved onto one turns red.  **Build Border STL** extrudes each piece
 between the splits on its own, all in one frame so they meet where they
 were cut; a piece too big for the bed -- tried at every turn, diagonally
-included, as a slicer would place it -- is outlined in red on the map and
-counted, and still built.  Splits may sit close together (one on each arm of
+included, as a slicer would place it -- is filled red on the map and
+counted, and still built -- the map draws the bar slate, and a piece too big
+red, and so does the 3D view.  Splits may sit close together (one on each arm of
 a junction), but not so close the piece between is too small to build.
 
 *Pockets need the print CRS.*  Lobes are generated in EPSG:3347 and the solid's
@@ -361,8 +362,15 @@ KEEP_COLOUR = "#AED6F1"       # blue  — a trimmed target, what gets printed
 RESULT_COLOUR = "#ABEBC6"     # green — the dovetail lobes
 SELECT_COLOUR = "#F5B041"     # orange — shared (internal) arcs
 SURROUND_COLOUR = "#B3B6B7"   # grey  — surrounding regions, never printed
-CORRIDOR_COLOUR = "#E74C3C"   # red   — the carved corridor (UI_border_regions)
+#: The carved corridor -- the border bar -- on the map.  Slate rather than
+#: the red it once was: red on this map means "this will not do" (a
+#: connector that breaks a rule, a piece too big for the bed), and a bar red
+#: all over said that of every piece.
+CORRIDOR_COLOUR = "#5D6D7E"   # slate — the border bar, a piece that fits
+TOO_BIG_COLOUR = "#C0392B"    # red   — a piece of bar too big for the bed
 BAR_COLOUR = (0.55, 0.57, 0.58, 1.0)   # the border bar in the 3D panel
+#: ...and a piece of it too big for the bed, there too.
+TOO_BIG_BAR_COLOUR = (0.75, 0.22, 0.17, 1.0)
 ROLES = ("target", "surrounding")
 #: What the 3D panel shows on the STL stage.
 SHOW_CHOICES = ["Terrain", "Border bar", "Assembly"]
@@ -1396,6 +1404,9 @@ class BarResult:
     lobes_cut: int = 0             #: connectors a split went through
     draped: bool = False           #: top follows the terrain, not flat
     too_big: int = 0               #: pieces that will not fit the bed
+    #: Per solid in ``pieces``: whether it is part of a piece too big for
+    #: the bed -- the 3D panel draws those red.
+    piece_too_big: list = field(default_factory=list)
 
 
 def build_bar(definition: BorderDefinition, bed_mm=None,
@@ -1425,17 +1436,21 @@ def build_bar(definition: BorderDefinition, bed_mm=None,
     bottom = _safe_union([definition.border] + list(lobes)) if lobes \
         else definition.border
     origin = tuple(bottom.bounds[:2])
-    pieces = []
-    for piece, mine in zip(definition.pieces(), definition.piece_lobes()):
-        pieces += build_border_pieces(piece, mine, params, surface,
-                                      origin_m=origin)
+    big = set(definition.too_big(bed_mm, margin_mm))
+    pieces, flags = [], []
+    for i, (piece, mine) in enumerate(zip(definition.pieces(),
+                                          definition.piece_lobes())):
+        solids = build_border_pieces(piece, mine, params, surface,
+                                     origin_m=origin)
+        pieces += solids
+        flags += [i in big] * len(solids)
     if not pieces:
         raise ValueError("The corridor is too thin to extrude; widen it.")
     mesh = pieces[0] if len(pieces) == 1 else trimesh.util.concatenate(pieces)
     result = BarResult(mesh=mesh, pieces=pieces, origin_m=origin,
                        mpm=params.mpm, lobes=len(lobes),
-                       draped=surface is not None,
-                       too_big=len(definition.too_big(bed_mm, margin_mm)))
+                       draped=surface is not None, too_big=len(big),
+                       piece_too_big=flags)
     result.lobes_cut = _lobes_cut(pieces, lobes, origin, params.mpm)
     return result
 
@@ -1853,8 +1868,8 @@ class TerrainEditorTester(QMainWindow):
             "never cut for you. With this on, click the corridor to put a "
             "split straight across it there, click a split to select it, and "
             "Remove takes the selected one away; drag to pan. A split is "
-            "refused through a connector, and a piece too big for the bed is "
-            "outlined in red.")
+            "refused through a connector. The bar is slate where a piece fits "
+            "the bed and red where it is too big, here and in the 3D view.")
         self.btn_edit_splits.toggled.connect(self._on_splits_toggled)
         self.btn_remove_split = self._button("Remove", self.remove_split,
                                              enabled=False)
@@ -3961,7 +3976,9 @@ class TerrainEditorTester(QMainWindow):
         if show == "Border bar":
             title = ("Not yet built" if bar is None else
                      f"Border bar — {len(self.bar.pieces)} bed piece(s)")
-            self._show_meshes(title, [(bar, None)])
+            if bar is not None and self.bar.too_big:
+                title += f", {self.bar.too_big} too big for the bed (red)"
+            self._show_meshes(title, [(bar, self._bar_colours())])
         elif show == "Assembly":
             self._show_meshes(*self._assembly())
         elif solid is None:
@@ -3985,7 +4002,30 @@ class TerrainEditorTester(QMainWindow):
         dy = (self.stl_result.origin_m[1] - self.bar.origin_m[1]) / self.bar.mpm
         solid.apply_translation([dx, dy, 0.0])
         return ("Assembly — solid laid into the border bar",
-                [(self.bar.mesh, None), (solid, _height_colors(solid))])
+                [(self.bar.mesh, self._bar_colours()),
+                 (solid, _height_colors(solid))])
+
+    def _bar_colours(self):
+        """Per-vertex colours for the bar: grey, and red on each piece too
+        big for the bed -- or None (all grey) when every piece fits.
+
+        The bar's mesh is its pieces concatenated in order, so their vertex
+        counts, in order, say which vertices are whose.
+        """
+        bar = self.bar
+        if bar is None or not any(bar.piece_too_big) \
+                or len(bar.piece_too_big) != len(bar.pieces):
+            return None
+        if len(bar.pieces) == 1:
+            counts = [len(bar.mesh.vertices)]
+        else:
+            counts = [len(piece.vertices) for piece in bar.pieces]
+        if sum(counts) != len(bar.mesh.vertices):
+            return None                    # not the concatenation: stay grey
+        return np.vstack([np.tile(TOO_BIG_BAR_COLOUR if big else BAR_COLOUR,
+                                  (n, 1))
+                          for n, big in zip(counts, bar.piece_too_big)]
+                         ).astype(np.float32)
 
     def _show_meshes(self, title: str, meshes) -> None:
         """Draw several meshes; ``None`` colours means the flat bar grey."""
@@ -4256,17 +4296,17 @@ class TerrainEditorTester(QMainWindow):
                 [np.asarray(lobe.exterior.coords)[:, :2] for lobe in d.lobes],
                 facecolors=[INVALID_COLOUR if code else RESULT_COLOUR
                             for code in d.faults()],
-                edgecolors=EDGE_COLOUR, linewidths=0.4)
+                edgecolors=EDGE_COLOUR, linewidths=0.4, zorder=1.5)
             ax.add_collection(lobes, autolim=False)
             drawn.append(lobes)
-        # A piece too big for the bed, outlined: the reason to add a split.
+        # A piece too big for the bed, filled red over the slate bar -- the
+        # reason to add a split -- and under the connectors it carries.
         pieces = d.pieces()
         for i in d.too_big():
-            for ring in (pieces[i].exterior, *pieces[i].interiors):
-                xs, ys = ring.xy
-                drawn += ax.plot(xs, ys, color=REFUSED_COLOUR, linewidth=1.4,
-                                 linestyle="--", zorder=8, scalex=False,
-                                 scaley=False)
+            for patch in self._fill(ax, pieces[i], TOO_BIG_COLOUR,
+                                    alpha=0.9, extent=False):
+                patch.set_zorder(1.2)
+                drawn.append(patch)
         for i, cut in enumerate(d.splits):
             xs, ys = cut.xy
             drawn += ax.plot(xs, ys, linewidth=2.6, zorder=9,

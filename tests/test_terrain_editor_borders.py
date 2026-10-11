@@ -975,6 +975,73 @@ class TestSplits:
         assert "on_split" in window.borders.faults()
 
 
+class TestTooBigIsRed:
+    """A piece of bar too big for the bed is red, on the map and in 3D;
+    the rest of the bar is not."""
+
+    @staticmethod
+    def _small_bed(monkeypatch, bed_mm=60.0):
+        real = U._cfg
+        monkeypatch.setattr(U, "_cfg", lambda key, *a, **k: (
+            bed_mm if key == "print.bed_mm"
+            else 0.0 if key == "print.bed_margin_mm" else real(key, *a, **k)))
+
+    @staticmethod
+    def _faces(window, colour):
+        from matplotlib.colors import to_rgba
+        want = to_rgba(colour)
+        return [p for p in window.ax.patches
+                if tuple(p.get_facecolor())[:3] == want[:3]]
+
+    def _window(self, tmp_path, defined):
+        window = _window(tmp_path)
+        window.apply_borders(_fresh(defined))
+        window.tabs.setCurrentIndex(1)
+        return window
+
+    def test_the_bar_is_not_red_when_it_fits(self, tmp_path, defined):
+        window = self._window(tmp_path, defined)
+        assert self._faces(window, U.CORRIDOR_COLOUR)
+        assert not self._faces(window, U.TOO_BIG_COLOUR)
+
+    def test_a_piece_too_big_is_filled_red(self, tmp_path, defined,
+                                           monkeypatch):
+        self._small_bed(monkeypatch)
+        window = self._window(tmp_path, defined)
+        assert window.borders.too_big() == [0]
+        assert self._faces(window, U.TOO_BIG_COLOUR)
+
+    def test_splitting_it_to_fit_takes_the_red_away(self, tmp_path, defined,
+                                                    monkeypatch):
+        self._small_bed(monkeypatch)
+        window = self._window(tmp_path, defined)
+        window.btn_edit_splits.setChecked(True)
+        for spot in (FRONTIER_WEST, FRONTIER_EAST):
+            window.add_split(*_split_near(window.borders, *spot)[1])
+        assert window.borders.too_big() == []
+        assert not self._faces(window, U.TOO_BIG_COLOUR)
+
+    def test_red_in_the_3d_view_too(self, tmp_path, defined):
+        d = _fresh(defined)
+        d.splits = [_split_near(d, *FRONTIER_WEST)[0]]
+        bar = U.build_bar(d, bed_mm=60.0, margin_mm=0.0)
+        assert bar.too_big == 1 and sum(bar.piece_too_big) == 1
+        window = self._window(tmp_path, defined)
+        window.apply_bar(bar)
+        colours = window._bar_colours()
+        assert colours is not None
+        assert len(colours) == len(bar.mesh.vertices)
+        red = np.all(np.isclose(colours, U.TOO_BIG_BAR_COLOUR), axis=1)
+        grey = np.all(np.isclose(colours, U.BAR_COLOUR), axis=1)
+        assert red.any() and grey.any() and (red | grey).all()
+        assert "too big for the bed (red)" in window.solid_title.text()
+
+    def test_a_bar_that_fits_stays_grey_in_3d(self, tmp_path, defined, bar):
+        window = self._window(tmp_path, defined)
+        window.apply_bar(bar)
+        assert window._bar_colours() is None
+
+
 class TestSplitTool:
     """Edit Splits on the map, through the mouse."""
 
