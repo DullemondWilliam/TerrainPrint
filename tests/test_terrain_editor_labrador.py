@@ -24,6 +24,8 @@ import shapely
 from shapely.geometry import Polygon
 
 import UI_terrain_editor as U
+from lib import LIB_border_connectors as BC
+from lib import LIB_border_plan as BP
 
 HERE = Path(__file__).parent
 
@@ -41,13 +43,13 @@ def regions():
 
 @pytest.fixture(scope="module")
 def defined(regions):
-    return U.define_borders(regions, {}, U.BorderSettings())
+    return BP.define_borders(regions, {}, BP.BorderSettings())
 
 
 @pytest.fixture(scope="module")
 def kept_apart(regions):
     """The same border with the merge turned off: what carving leaves."""
-    return U.define_borders(regions, {}, U.BorderSettings(enclave_mm2=0.0))
+    return BP.define_borders(regions, {}, BP.BorderSettings(enclave_mm2=0.0))
 
 
 def _cut_off(definition) -> list:
@@ -55,8 +57,8 @@ def _cut_off(definition) -> list:
     every piece left but the largest."""
     pieces = []
     for name, trimmed in definition.targets.items():
-        for part in U._polys(definition.simplified[name]):
-            inside = [piece for piece in U._polys(trimmed)
+        for part in BC._polys(definition.simplified[name]):
+            inside = [piece for piece in BC._polys(trimmed)
                       if part.covers(piece.representative_point())]
             inside.sort(key=lambda g: g.area, reverse=True)
             pieces += inside[1:]
@@ -68,7 +70,7 @@ def _mm2(definition, geom) -> float:
 
 
 def _holes(definition) -> list:
-    return [Polygon(ring) for poly in U._polys(definition.border)
+    return [Polygon(ring) for poly in BC._polys(definition.border)
             for ring in poly.interiors]
 
 
@@ -78,7 +80,7 @@ class TestWhatCarvingLeaves:
 
     def test_it_cuts_pieces_off(self, kept_apart):
         small = [p for p in _cut_off(kept_apart)
-                 if _mm2(kept_apart, p) < U.BorderSettings().enclave_mm2]
+                 if _mm2(kept_apart, p) < BP.BorderSettings().enclave_mm2]
         assert len(small) >= 3
 
     def test_some_sit_in_holes_in_the_bar(self, kept_apart):
@@ -123,17 +125,17 @@ class TestEnclavesJoinTheBar:
         """A piece that was its own part before carving stays, however
         small: only what the carving cut off is merged."""
         before = [p for name, g in kept_apart.targets.items()
-                  for p in U._polys(g) if p not in _cut_off(kept_apart)]
-        after = [p for g in defined.targets.values() for p in U._polys(g)]
+                  for p in BC._polys(g) if p not in _cut_off(kept_apart)]
+        after = [p for g in defined.targets.values() for p in BC._polys(g)]
         lost = [p for p in before
                 if not any(q.covers(p.representative_point()) for q in after)]
         assert lost == []
 
     def test_the_limit_is_honoured(self, regions):
-        tight = U.define_borders(regions, {}, U.BorderSettings(
+        tight = BP.define_borders(regions, {}, BP.BorderSettings(
             enclave_mm2=0.2))
-        assert tight.enclaves < U.define_borders(
-            regions, {}, U.BorderSettings()).enclaves
+        assert tight.enclaves < BP.define_borders(
+            regions, {}, BP.BorderSettings()).enclaves
         assert all(_mm2(tight, p) >= 0.2 for p in _cut_off(tight))
 
     def test_the_count_and_area_are_reported(self, defined):

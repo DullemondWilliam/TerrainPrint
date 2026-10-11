@@ -395,6 +395,14 @@ def _output_grid(src, dst_crs, params):
     return _Grid(width, height, transform)
 
 
+
+def output_grid(src, dst_crs, params):
+    """The grid a warp of ``src`` to ``dst_crs`` with ``params`` produces:
+    ``.width``, ``.height`` and ``.transform``.  Public so a caller can know
+    the size of a warp before running it."""
+    return _output_grid(src, dst_crs, params)
+
+
 def _row_bands(grid, dtype, band_bytes):
     """Split the output into row bands that each fit the memory budget."""
     per_row = max(1, grid.width * np.dtype(dtype).itemsize)

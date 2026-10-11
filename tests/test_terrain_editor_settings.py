@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QCheckBox
 from lib import LIB_project_config as config
 
 import UI_terrain_editor as U
+from lib import LIB_border_plan as BP
 
 pytestmark = pytest.mark.usefixtures("qapp")
 
@@ -64,7 +65,7 @@ def _value(widget):
 
 
 def test_the_table_covers_every_border_setting():
-    keyed = set(U._BORDER_SETTINGS_KEYS.values()) - {"print.scale"}
+    keyed = set(BP._BORDER_SETTINGS_KEYS.values()) - {"print.scale"}
     assert keyed == {key for key, _ in U.SAVED_BORDER_SETTINGS}
     assert set(TURNED) == keyed
 
@@ -92,7 +93,7 @@ def test_turning_it_is_what_the_next_launch_reads(qtbot, window, key, control):
 
 
 def _field(key):
-    return next(f for f, k in U._BORDER_SETTINGS_KEYS.items() if k == key)
+    return next(f for f, k in BP._BORDER_SETTINGS_KEYS.items() if k == key)
 
 
 def test_the_tick_is_written_as_a_bool(window, _fixed_config):

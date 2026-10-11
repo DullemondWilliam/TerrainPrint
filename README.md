@@ -70,13 +70,17 @@ flowchart TD
 ├── lib/                               # Library modules (imported as lib.LIB_*)
 │   ├── LIB_border_ledger.py           # Find shared borders; record which are cleaned
 │   ├── LIB_seam_fit.py                # Where printed pieces will not mesh; push or solve
+│   ├── LIB_border_bar.py              # The border bar in planned pieces: splits, build, colours
 │   ├── LIB_border_connectors.py       # Border lobes / solid extrusion / province notching
+│   ├── LIB_border_plan.py             # The Borders stage as data: settings, Define, Save / Load
 │   ├── LIB_border_regions.py          # Province vs. state border region construction
 │   ├── LIB_border_simplification.py   # Topology-aware border simplification
-│   ├── LIB_border_split.py            # Split a border STL into bed-sized pieces
+│   ├── LIB_border_split.py            # Bed fit at any turn; auto-split a border STL to the bed
+│   ├── LIB_connector_rules.py         # The rules a connector is held to; moving one
 │   ├── LIB_border_stl.py              # Extrude a border region to a slab STL
 │   ├── LIB_butterfly_keys.py          # Bowtie keys joining two province STLs from the back
 │   ├── LIB_province_joins.py          # Bowtie keys across every border of a map
+│   ├── LIB_raster_plan.py             # Plan a crop: its path, its grid, the finest buildable res
 │   ├── LIB_island_merging.py          # Merge two islands with a connecting neck of land
 │   ├── LIB_island_removal.py          # Small-island detection and removal
 │   ├── LIB_lake_removal.py            # Interior ring (lake) removal helper

@@ -27,6 +27,10 @@ from shapely.ops import unary_union
 import geopandas as gpd
 
 import UI_terrain_editor as U
+from lib import LIB_border_bar as BB
+from lib import LIB_border_connectors as BC
+from lib import LIB_border_plan as BP
+from lib import LIB_connector_rules as CR
 from lib.LIB_border_connectors import lobe_at
 from lib.LIB_project_config import get as cfg
 
@@ -61,7 +65,7 @@ def _write_region(tmp_path, name, geom, crs=WORK):
 @pytest.fixture(scope="module")
 def defined():
     """One border definition of the fixture map, shared (it is pure)."""
-    return U.define_borders({"A": A, "B": B}, {"C": C}, U.BorderSettings())
+    return BP.define_borders({"A": A, "B": B}, {"C": C}, BP.BorderSettings())
 
 
 def _window(tmp_path):
@@ -75,7 +79,7 @@ def _window(tmp_path):
 class TestLoadRegion:
 
     def test_reprojects_to_the_working_crs_and_keeps_the_source(self, tmp_path):
-        geom, source = U.load_region(_write_region(tmp_path, "A", A,
+        geom, source = BP.load_region(_write_region(tmp_path, "A", A,
                                                    crs="EPSG:4326"))
         assert CRS.from_user_input(source) == CRS.from_epsg(4326)
         assert geom.equals_exact(A, tolerance=1.0) or \
@@ -85,7 +89,7 @@ class TestLoadRegion:
         bowtie = Polygon([(7_000 * KM, 1_000 * KM), (7_100 * KM, 1_100 * KM),
                           (7_100 * KM, 1_000 * KM), (7_000 * KM, 1_100 * KM)])
         assert not bowtie.is_valid
-        geom, _ = U.load_region(_write_region(tmp_path, "bow", bowtie))
+        geom, _ = BP.load_region(_write_region(tmp_path, "bow", bowtie))
         assert geom.is_valid and geom.area > 0
 
 
@@ -93,16 +97,16 @@ class TestDefineBorders:
 
     def test_seam_cleanup_reaches_the_topology_lib_in_metres(self, monkeypatch):
         seen = {}
-        real = U.topo_simplify_two_tolerances
+        real = BP.topo_simplify_two_tolerances
 
         def spy(gdf, coast, internal, **kw):
             seen.update(coast=coast, internal=internal, **kw)
             return real(gdf, coast, internal, **kw)
 
-        monkeypatch.setattr(U, "topo_simplify_two_tolerances", spy)
-        s = U.BorderSettings(coast_tol_mm=0.3, internal_tol_mm=0.5,
+        monkeypatch.setattr(BP, "topo_simplify_two_tolerances", spy)
+        s = BP.BorderSettings(coast_tol_mm=0.3, internal_tol_mm=0.5,
                              min_segment_mm=0.4, min_angle_deg=25.0)
-        U.define_borders({"A": A, "B": B}, {}, s)
+        BP.define_borders({"A": A, "B": B}, {}, s)
         assert seen["coast"] == pytest.approx(0.3 * MPM)
         assert seen["internal"] == pytest.approx(0.5 * MPM)
         assert seen["min_segment_m"] == pytest.approx(0.4 * MPM)
@@ -136,7 +140,7 @@ class TestDefineBorders:
         """
         sliver = box(7_390 * KM, 1_100 * KM, 7_400 * KM, 1_200 * KM)
         simplified = {"A": A, "B": B.union(sliver)}     # B overreached into A
-        fixed_m2 = U._resolve_overlaps(simplified, ["A", "B"],
+        fixed_m2 = BP._resolve_overlaps(simplified, ["A", "B"],
                                        {"A": A, "B": B})
         assert fixed_m2 == pytest.approx(sliver.area)
         assert simplified["A"].equals(A)                # A held it, A keeps it
@@ -166,13 +170,13 @@ class TestDefineBorders:
         assert len(a) + len(b) == len(defined.lobes)
 
     def test_connectors_off_places_none(self):
-        d = U.define_borders({"A": A, "B": B}, {"C": C},
-                             U.BorderSettings(connectors=False))
+        d = BP.define_borders({"A": A, "B": B}, {"C": C},
+                             BP.BorderSettings(connectors=False))
         assert d.lobes == [] and d.border is not None
 
     def test_needs_a_target(self):
         with pytest.raises(ValueError, match="at least one province"):
-            U.define_borders({}, {"C": C})
+            BP.define_borders({}, {"C": C})
 
 
 class TestImportStage:
@@ -296,13 +300,13 @@ class TestBordersStage:
         assert (folder / "name_A.geojson").exists()
         mesh, n_lobes = build_border_from_dir(
             folder, tmp_path / "bar.stl",
-            U.BorderSettings().connector_params())
+            BP.BorderSettings().connector_params())
         assert mesh is not None and n_lobes > 0
 
 
 @pytest.fixture(scope="module")
 def bar(defined):
-    return U.build_bar(defined)
+    return BB.build_bar(defined)
 
 
 class TestBorderBar:
@@ -326,7 +330,7 @@ class TestBorderBar:
     def test_nothing_is_split_for_you(self, defined):
         """A bed too small for the bar no longer cuts it: the piece is built
         whole and counted as too big, for the user to split."""
-        bar = U.build_bar(defined, bed_mm=40.0, margin_mm=0.0)
+        bar = BB.build_bar(defined, bed_mm=40.0, margin_mm=0.0)
         assert len(bar.pieces) == 1
         assert bar.too_big == 1
         assert bar.lobes_cut == 0
@@ -348,9 +352,9 @@ class TestBorderBar:
         assert window.bar is None and not window.btn_save_bar.isEnabled()
 
     def test_no_corridor_is_refused(self):
-        lonely = U.define_borders({"A": A}, {})
+        lonely = BP.define_borders({"A": A}, {})
         with pytest.raises(ValueError, match="No corridor"):
-            U.build_bar(lonely)
+            BB.build_bar(lonely)
 
 
 def _write_dem(tmp_path, crs=WORK, res=3200.0):
@@ -374,7 +378,7 @@ DRAPE_PARAMS = dict(scale=SCALE, expect_crs=None, z_exaggeration=100.0)
 @pytest.fixture(scope="module")
 def draped(defined, tmp_path_factory):
     tmp = tmp_path_factory.mktemp("draped")
-    return U.build_draped_bar(defined, _write_dem(tmp),
+    return BB.build_draped_bar(defined, _write_dem(tmp),
                               U.ReprojectParams(dst_res_m=3200.0),
                               U.TerrainParams(**DRAPE_PARAMS),
                               tmp / "surface.tif")
@@ -512,7 +516,7 @@ class TestAssembly:
         window = _window(tmp_path)
         window.province_combo.setCurrentText("A")
         window.apply_borders(defined)
-        window.apply_bar(U.build_bar(defined))
+        window.apply_bar(BB.build_bar(defined))
         window.stl_result = U.build_terrain(
             _write_dem(tmp_path), defined.targets["A"], None,
             U.TerrainParams(scale=SCALE, expect_crs=None))
@@ -557,8 +561,8 @@ def _assert_standing(d):
         owner = max(targets, key=lambda g: pocket.intersection(g).area)
         assert pocket.difference(owner).area < 1e-3 * lobe.area
     for lobe in d.lobes:
-        assert U._pieces(lobe.intersection(d.border), lobe) == 1
-        assert U._pieces(lobe.difference(d.border), lobe) == 1
+        assert CR._pieces(lobe.intersection(d.border), lobe) == 1
+        assert CR._pieces(lobe.difference(d.border), lobe) == 1
     for i, a in enumerate(d.lobes):
         for b in d.lobes[i + 1:]:
             assert not a.intersects(b)
@@ -574,8 +578,8 @@ class TestAutoPlacement:
 
     def test_crowded_connectors_are_dropped_not_overlapped(self):
         """Spaced closer than they are wide, every other one must go."""
-        d = U.define_borders({"A": A, "B": B}, {"C": C},
-                             U.BorderSettings(lobe_spacing_mm=2.0))
+        d = BP.define_borders({"A": A, "B": B}, {"C": C},
+                             BP.BorderSettings(lobe_spacing_mm=2.0))
         assert d.lobes
         assert d.drop_reasons.get("crowded", 0) > 0
         assert d.lobes_dropped == sum(d.drop_reasons.values())
@@ -584,17 +588,17 @@ class TestAutoPlacement:
     def test_a_pocket_off_the_coast_is_refused(self, defined):
         """The A/B seam's south end meets open sea: a connector there would
         put half its pocket in the water."""
-        lobe, why = U.place_connector(defined, A.bounds[2] - 2 * MPM,
+        lobe, why = CR.place_connector(defined, A.bounds[2] - 2 * MPM,
                                       A.bounds[1] + 0.3 * MPM)
-        assert lobe is None and why == U.FAULTS["escapes"]
+        assert lobe is None and why == CR.FAULTS["escapes"]
 
     def test_a_connector_meeting_the_corridor_twice_is_refused(self,
                                                               defined):
         """Just under the T-junction, a connector on the A/B seam swings its
         mouth up into the C corridor: the bar twice, not once."""
-        lobe, why = U.place_connector(defined, A.bounds[2] - 2 * MPM,
+        lobe, why = CR.place_connector(defined, A.bounds[2] - 2 * MPM,
                                       A.bounds[3] - 1.0 * MPM)
-        assert lobe is None and why == U.FAULTS["recrosses"]
+        assert lobe is None and why == CR.FAULTS["recrosses"]
 
     def test_auto_placement_drops_a_connector_meeting_it_twice(self,
                                                                defined):
@@ -603,8 +607,8 @@ class TestAutoPlacement:
                        A.bounds[1] + 25 * MPM, p)
         junction = lobe_at(defined.border, A.bounds[2] - 2 * MPM,
                            A.bounds[3] - 1.0 * MPM, p)
-        assert U._pieces(junction.intersection(defined.border), junction) == 2
-        kept, reasons = U._standing_lobes([free, junction], defined, p)
+        assert CR._pieces(junction.intersection(defined.border), junction) == 2
+        kept, reasons = CR._standing_lobes([free, junction], defined, p)
         assert kept == [free]
         assert reasons == {"recrosses": 1}
 
@@ -616,10 +620,10 @@ class TestAutoPlacement:
         turned = lobe_at(defined.border, A.bounds[2] - 2 * MPM,
                          A.bounds[1] + 25 * MPM, p, 45.0)
         assert turned.intersects(defined.border_line())
-        kept, reasons = U._standing_lobes([turned], defined, p)
+        kept, reasons = CR._standing_lobes([turned], defined, p)
         assert kept == [] and reasons == {"crosses_line": 1}
-        x, y, angle, scale = U.lobe_pose(turned, defined.border, p)
-        lobe, why = U.place_connector(defined, x, y, angle_deg=angle,
+        x, y, angle, scale = BC.lobe_pose(turned, defined.border, p)
+        lobe, why = CR.place_connector(defined, x, y, angle_deg=angle,
                                       scale=scale, allow_faults=True)
         assert lobe is not None and why == ""
 
@@ -637,13 +641,13 @@ class TestAutoPlacement:
                        A.bounds[1] + 25 * MPM, p)
         coast = lobe_at(defined.border, A.bounds[2] - 2 * MPM,
                         A.bounds[1] + 0.3 * MPM, p)
-        kept, reasons = U._standing_lobes([free, free, coast], defined, p)
+        kept, reasons = CR._standing_lobes([free, free, coast], defined, p)
         assert kept == [free]
         assert reasons == {"crowded": 1, "escapes": 1}
 
     def test_the_report_says_why(self, tmp_path):
-        d = U.define_borders({"A": A, "B": B}, {"C": C},
-                             U.BorderSettings(lobe_spacing_mm=2.0))
+        d = BP.define_borders({"A": A, "B": B}, {"C": C},
+                             BP.BorderSettings(lobe_spacing_mm=2.0))
         window = _window(tmp_path)
         window.apply_borders(d)
         assert "ran into another connector" in window.border_report.text()
@@ -716,7 +720,7 @@ class TestCrossingTheBoundary:
                     lobe = lobe_at(d.border, at.x, at.y, p, angle)
                     if lobe is None:
                         continue
-                    code = U._own_fault(lobe, d, p, d.land())
+                    code = CR._own_fault(lobe, d, p, d.land())
                     if code not in ("", "escapes"):
                         continue      # broke an earlier rule: not this one's
                     crosses = self._crosses_the_line(lobe, d)
@@ -738,7 +742,7 @@ class TestCrossingTheBoundary:
         lobe = window.borders.lobes[-1]
         assert self._crosses_the_line(lobe, window.borders)
         assert window.borders.faults()[-1] == "escapes"
-        assert U.STANDING_FAULTS["escapes"] in window.status.text()
+        assert CR.STANDING_FAULTS["escapes"] in window.status.text()
 
     def test_turning_one_across_the_coast_turns_it_red(self, tmp_path,
                                                        defined):
@@ -783,7 +787,7 @@ class TestLoadBorders:
     def test_the_connectors_come_back_as_they_were_left(self, tmp_path,
                                                         defined):
         before, folder = self._saved(tmp_path, defined)
-        loaded = U.read_borders(folder)
+        loaded = BP.read_borders(folder)
         assert len(loaded.lobes) == len(before.borders.lobes)
         for a, b in zip(loaded.lobes, before.borders.lobes):
             assert a.equals_exact(b, 1e-3)
@@ -792,7 +796,7 @@ class TestLoadBorders:
     def test_their_turn_and_size_come_back(self, tmp_path, defined):
         before, folder = self._saved(tmp_path, defined)
         after = _window(tmp_path)
-        assert after.adopt_borders(U.read_borders(folder))
+        assert after.adopt_borders(BP.read_borders(folder))
         for i in range(len(before.borders.lobes)):
             assert after.connector_pose(i) == pytest.approx(
                 before.connector_pose(i), abs=1e-3)
@@ -800,14 +804,14 @@ class TestLoadBorders:
     def test_the_settings_come_back(self, tmp_path, defined):
         before, folder = self._saved(tmp_path, defined)
         after = _window(tmp_path)
-        assert after.adopt_borders(U.read_borders(folder))
+        assert after.adopt_borders(BP.read_borders(folder))
         assert after.lobe_width_spin.value() == pytest.approx(1.4)
         assert after.borders.settings == before.borders.settings
         assert after.borders is not None       # not discarded by the spins
 
     def test_the_corridor_and_provinces_come_back(self, tmp_path, defined):
         before, folder = self._saved(tmp_path, defined)
-        loaded = U.read_borders(folder)
+        loaded = BP.read_borders(folder)
         assert loaded.border.equals_exact(before.borders.border, 1e-3) or \
             loaded.border.symmetric_difference(
                 before.borders.border).area < 1.0
@@ -816,7 +820,7 @@ class TestLoadBorders:
     def test_the_loaded_borders_can_be_edited_on(self, tmp_path, defined):
         _, folder = self._saved(tmp_path, defined)
         after = _window(tmp_path)
-        after.adopt_borders(U.read_borders(folder))
+        after.adopt_borders(BP.read_borders(folder))
         after.tabs.setCurrentIndex(1)
         after.btn_edit_lobes.setChecked(True)
         n = len(after.borders.lobes)
@@ -829,13 +833,13 @@ class TestLoadBorders:
         _, folder = self._saved(tmp_path, defined)
         lonely = U.TerrainEditorTester()
         lonely.add_regions([_write_region(tmp_path, "A", A)], "target")
-        assert not lonely.adopt_borders(U.read_borders(folder))
+        assert not lonely.adopt_borders(BP.read_borders(folder))
         assert lonely.borders is None
         assert "B" in lonely.status.text()
 
     def test_a_folder_without_borders_is_refused(self, tmp_path):
         with pytest.raises(ValueError):
-            U.read_borders(tmp_path)
+            BP.read_borders(tmp_path)
 
     def test_through_the_button(self, tmp_path, defined, monkeypatch):
         _, folder = self._saved(tmp_path, defined)
@@ -858,7 +862,7 @@ def _split_near(d, x, y, step_km=4.0, tries=40):
     for k in range(tries):
         for sign in (1, -1):
             for dx, dy in ((sign * k * step_km * KM, 0), (0, sign * k * step_km * KM)):
-                cut, _ = U.split_at(d, x + dx, y + dy)
+                cut, _ = BB.split_at(d, x + dx, y + dy)
                 if cut is not None:
                     return cut, (x + dx, y + dy)
     raise AssertionError("no free spot to split near there")
@@ -894,9 +898,9 @@ class TestSplits:
 
     def test_a_split_through_a_connector_is_refused(self, defined):
         lobe = defined.lobes[0]
-        x, y, _, _ = U.lobe_pose(lobe, defined.border,
+        x, y, _, _ = BC.lobe_pose(lobe, defined.border,
                                  defined.settings.connector_params())
-        cut, why = U.split_at(defined, x, y)
+        cut, why = BB.split_at(defined, x, y)
         assert cut is None and "connector" in why
 
     def test_splits_may_sit_close_together(self, defined):
@@ -906,7 +910,7 @@ class TestSplits:
         cut, (x, y) = _split_near(d, *SEAM_MID)
         d.splits = [cut]
         spots = [(x, y + f * MPM) for f in (2.0, -2.0, 3.0, -3.0, 4.0, -4.0)]
-        near = [U.split_at(d, *xy)[0] for xy in spots]
+        near = [BB.split_at(d, *xy)[0] for xy in spots]
         near = [c for c in near if c is not None]
         assert near and min(c.distance(cut) for c in near) < 5 * MPM
 
@@ -916,10 +920,10 @@ class TestSplits:
         d = _fresh(defined)
         cut, (x, y) = _split_near(d, *SEAM_MID)
         alone = [(x, y + f * MPM) for f in (0.1, -0.1)
-                 if U.split_at(d, x, y + f * MPM)[0] is not None]
+                 if BB.split_at(d, x, y + f * MPM)[0] is not None]
         assert alone
         d.splits = [cut]
-        crumb, why = U.split_at(d, *alone[0])
+        crumb, why = BB.split_at(d, *alone[0])
         assert crumb is None and "too small to build" in why
 
     @staticmethod
@@ -930,7 +934,7 @@ class TestSplits:
                     2_000 * KM + 0.5 * MPM)          # 0.25 mm², alone
         d = U.replace(defined, lobes=list(defined.lobes),
                       border=unary_union([defined.border, speck]))
-        floor = U.MIN_PART_AREA_MM2 * MPM ** 2
+        floor = BC.MIN_PART_AREA_MM2 * MPM ** 2
         assert any(piece.area < floor for piece in d.pieces())
         return d
 
@@ -939,7 +943,7 @@ class TestSplits:
         speck the corridor already had was counted as one the cut made."""
         d = self._with_a_speck(defined)
         _, at = _split_near(d, *SEAM_MID)
-        cut, why = U.split_at(d, *at)
+        cut, why = BB.split_at(d, *at)
         assert cut is not None and why == ""
 
     def test_a_speck_elsewhere_still_lets_the_window_split(self, tmp_path,
@@ -966,9 +970,9 @@ class TestSplits:
     def test_a_piece_that_fits_only_diagonally_fits(self):
         """78 x 4 mm will not go on a 60 mm bed square, but it will corner
         to corner -- and a slicer would place it so."""
-        mm = U.BorderSettings().mpm
+        mm = BP.BorderSettings().mpm
         bar = box(0, 0, 78 * mm, 4 * mm)
-        d = U.BorderDefinition(settings=U.BorderSettings(), border=bar)
+        d = BP.BorderDefinition(settings=BP.BorderSettings(), border=bar)
         assert d.too_big(bed_mm=60.0, margin_mm=0.0) == []
         assert d.too_big(bed_mm=50.0, margin_mm=0.0) == [0]
 
@@ -977,7 +981,7 @@ class TestSplits:
         d.splits = [_split_near(d, *SEAM_MID)[0],
                     _split_near(d, *FRONTIER_WEST)[0],
                     _split_near(d, *FRONTIER_EAST)[0]]
-        assert len(U.build_bar(d).pieces) == len(d.pieces()) == 4
+        assert len(BB.build_bar(d).pieces) == len(d.pieces()) == 4
 
     def test_each_connector_goes_with_one_piece(self, defined):
         d = _fresh(defined)
@@ -986,11 +990,11 @@ class TestSplits:
         assert sum(len(lobes) for lobes in held) == len(d.lobes)
 
     def test_the_bar_is_built_in_the_planned_pieces(self, defined):
-        whole = U.build_bar(defined)
+        whole = BB.build_bar(defined)
         d = _fresh(defined)
         d.splits = [_split_near(d, *SEAM_MID)[0],
                     _split_near(d, *FRONTIER_WEST)[0]]
-        bar = U.build_bar(d)
+        bar = BB.build_bar(d)
         assert len(bar.pieces) == 3
         for piece in bar.pieces:
             assert piece.is_watertight and piece.volume > 0
@@ -1023,8 +1027,8 @@ class TestTooBigIsRed:
 
     @staticmethod
     def _small_bed(monkeypatch, bed_mm=60.0):
-        real = U._cfg
-        monkeypatch.setattr(U, "_cfg", lambda key, *a, **k: (
+        real = BP._cfg
+        monkeypatch.setattr(BP, "_cfg", lambda key, *a, **k: (
             bed_mm if key == "print.bed_mm"
             else 0.0 if key == "print.bed_margin_mm" else real(key, *a, **k)))
 
@@ -1066,7 +1070,7 @@ class TestTooBigIsRed:
     def test_red_in_the_3d_view_too(self, tmp_path, defined):
         d = _fresh(defined)
         d.splits = [_split_near(d, *FRONTIER_WEST)[0]]
-        bar = U.build_bar(d, bed_mm=60.0, margin_mm=0.0)
+        bar = BB.build_bar(d, bed_mm=60.0, margin_mm=0.0)
         assert bar.too_big == 1 and sum(bar.piece_too_big) == 1
         window = self._window(tmp_path, defined)
         window.apply_bar(bar)
@@ -1134,7 +1138,7 @@ class TestSplitTool:
 
     def test_a_refused_split_says_why(self, tmp_path, defined):
         window = self._splitting(tmp_path, defined)
-        x, y, _, _ = U.lobe_pose(defined.lobes[0], defined.border,
+        x, y, _, _ = BC.lobe_pose(defined.lobes[0], defined.border,
                                  defined.settings.connector_params())
         window.add_split(x, y)
         assert window.borders.splits == []
@@ -1157,47 +1161,47 @@ class TestSplitTool:
         window = self._splitting(tmp_path, defined)
         window.add_split(*_split_near(window.borders, *SEAM_MID)[1])
         window.write_borders(tmp_path / "saved")
-        loaded = U.read_borders(tmp_path / "saved")
+        loaded = BP.read_borders(tmp_path / "saved")
         assert len(loaded.splits) == 1
         assert loaded.splits[0].equals_exact(window.borders.splits[0], 1e-3)
         window.borders.splits = []
         window.write_borders(tmp_path / "saved")
-        assert U.read_borders(tmp_path / "saved").splits == []
+        assert BP.read_borders(tmp_path / "saved").splits == []
 
 
 class TestPlaceConnector:
 
     def test_lands_on_the_side_clicked(self, defined):
-        lobe_a, why = U.place_connector(defined, *FREE_A)
+        lobe_a, why = CR.place_connector(defined, *FREE_A)
         assert lobe_a is not None, why
         assert _owner(defined, lobe_a) == ["A"]
-        lobe_b, why = U.place_connector(defined, *FREE_B)
+        lobe_b, why = CR.place_connector(defined, *FREE_B)
         assert lobe_b is not None, why
         assert _owner(defined, lobe_b) == ["B"]
 
     def test_has_the_generated_profile(self, defined):
-        lobe, _ = U.place_connector(defined, *FREE_A)
+        lobe, _ = CR.place_connector(defined, *FREE_A)
         assert lobe.area == pytest.approx(defined.lobes[0].area, rel=1e-6)
 
     def test_its_root_sinks_into_the_corridor(self, defined):
-        lobe, _ = U.place_connector(defined, *FREE_A)
+        lobe, _ = CR.place_connector(defined, *FREE_A)
         assert lobe.intersection(defined.border).area > 0
 
     def test_refused_facing_a_surrounding_region(self, defined):
-        lobe, why = U.place_connector(defined, *FACING_C)
+        lobe, why = CR.place_connector(defined, *FACING_C)
         assert lobe is None and "no province" in why
 
     def test_refused_on_top_of_another_connector(self, defined):
-        lobe, why = U.place_connector(defined, *ON_FIRST)
+        lobe, why = CR.place_connector(defined, *ON_FIRST)
         assert lobe is None and "another connector" in why
 
     def test_a_moved_connector_may_land_where_it_was(self, defined):
-        lobe, why = U.place_connector(defined, *ON_FIRST, ignore=0)
+        lobe, why = CR.place_connector(defined, *ON_FIRST, ignore=0)
         assert lobe is not None, why
 
     def test_refused_with_no_corridor(self, defined):
         from dataclasses import replace
-        lobe, why = U.place_connector(replace(defined, border=None), *FREE_A)
+        lobe, why = CR.place_connector(replace(defined, border=None), *FREE_A)
         assert lobe is None and "no corridor" in why
 
 
@@ -1235,7 +1239,7 @@ class TestEditingConnectors:
         assert len(window.borders.lobes) == len(defined.lobes) + 1
         assert window.borders.faults()[-1] == "no_province"
         assert "1 invalid (red)" in window.status.text()
-        assert U.STANDING_FAULTS["no_province"] in window.status.text()
+        assert CR.STANDING_FAULTS["no_province"] in window.status.text()
         assert "1 invalid (red)" in window.border_report.text()
         window.undo_connectors()
         assert window.borders.lobes == list(defined.lobes)
@@ -1291,8 +1295,8 @@ class TestEditingConnectors:
         window = _edit_window(tmp_path, defined)
         window.borders.faults()                    # every one measured
         measured = []
-        real = U._own_fault
-        monkeypatch.setattr(U, "_own_fault", lambda lobe, *a: (
+        real = BP._own_fault
+        monkeypatch.setattr(BP, "_own_fault", lambda lobe, *a: (
             measured.append(lobe), real(lobe, *a))[1])
         window.add_connector(*FREE_A)
         assert measured and all(lobe is window.borders.lobes[-1]
@@ -1372,7 +1376,7 @@ class TestEditingConnectors:
         d = _fresh(defined)
         assert d.land() is d.land()
         d.targets = dict(d.targets, A=A)            # a different target
-        assert d.land().equals(U._safe_union(list(d.targets.values())))
+        assert d.land().equals(BC._safe_union(list(d.targets.values())))
 
     def test_an_edit_keeps_the_view(self, tmp_path, defined):
         window = _edit_window(tmp_path, defined)
@@ -1397,7 +1401,7 @@ class TestEditingConnectors:
         folder = tmp_path / "borders"
         assert (folder / "connectors.geojson") in window.write_borders(folder)
         _, n_lobes = build_border_from_dir(
-            folder, tmp_path / "bar.stl", U.BorderSettings().connector_params())
+            folder, tmp_path / "bar.stl", BP.BorderSettings().connector_params())
         assert n_lobes == len(defined.lobes) - 2
 
     def test_saving_none_removes_a_stale_file(self, tmp_path, defined):
@@ -1502,14 +1506,14 @@ def _neck_mouth_reach_mm(lobe):
 class TestConnectorShape:
 
     def test_settings_reach_the_connector_params(self):
-        p = U.BorderSettings(lobe_height_mm=0.8, lobe_depth_mm=4.0,
+        p = BP.BorderSettings(lobe_height_mm=0.8, lobe_depth_mm=4.0,
                              lobe_width_mm=1.2, lobe_ratio=2.5
                              ).connector_params()
         assert (p.dovetail_mm, p.reach_mm, p.neck_mm) == (0.8, 4.0, 1.2)
         assert p.mouth_mm == pytest.approx(3.0)
 
     def test_shipped_shape_is_the_lib_default(self):
-        p = U.BorderSettings().connector_params()
+        p = BP.BorderSettings().connector_params()
         assert p.neck_mm == pytest.approx(1.6)
         assert p.mouth_mm == pytest.approx(3.2)
         assert p.dovetail_mm == pytest.approx(cfg("print.dovetail_mm"))
@@ -1548,21 +1552,21 @@ class TestConnectorShape:
     def test_reshaping_keeps_every_connector_where_it_stood(self, defined):
         wider = U.replace(defined.settings, lobe_width_mm=2.0,
                           lobe_ratio=1.5)
-        lobes, dropped = U.reshape_connectors(defined, wider)
+        lobes, dropped = CR.reshape_connectors(defined, wider)
         assert dropped == 0 and len(lobes) == len(defined.lobes)
         for old, new in zip(defined.lobes, lobes):
             neck, mouth, _ = _neck_mouth_reach_mm(new)
             assert neck == pytest.approx(2.0)
             assert mouth == pytest.approx(3.0)
-            assert U.lobe_pose(new, defined.border, wider.connector_params(
-            ))[:2] == pytest.approx(U.lobe_pose(
+            assert BC.lobe_pose(new, defined.border, wider.connector_params(
+            ))[:2] == pytest.approx(BC.lobe_pose(
                 old, defined.border, defined.settings.connector_params())[:2])
 
     def test_a_shape_that_collides_is_kept_red(self, tmp_path, defined):
         """Grown into each other, the connectors stay where they stood and
         go red: the shape is undone or changed back, not lost."""
         huge = U.replace(defined.settings, lobe_width_mm=10.0, lobe_ratio=5.0)
-        lobes, dropped = U.reshape_connectors(defined, huge)
+        lobes, dropped = CR.reshape_connectors(defined, huge)
         assert dropped == 0 and len(lobes) == len(defined.lobes)
         window = _edit_window(tmp_path, defined)
         window.lobe_width_spin.setValue(10.0)
@@ -1671,7 +1675,7 @@ class TestSelectedConnector:
         window.sel_angle_spin.setValue(30.0)
         assert window.connector_pose(1)[2] == pytest.approx(30.0)
         assert window.connector_pose(1)[:2] == pytest.approx(
-            U.lobe_pose(defined.lobes[1], defined.border,
+            BC.lobe_pose(defined.lobes[1], defined.border,
                         defined.settings.connector_params())[:2])
 
     def test_the_depth_box_grows_it_in_shape(self, tmp_path, defined):
@@ -1691,7 +1695,7 @@ class TestSelectedConnector:
         _select(window, 1)
         assert window.pose_selected(0.0, 0.2, "x")
         assert window.borders.faults()[1] == "thin"
-        assert U.STANDING_FAULTS["thin"] in window.status.text()
+        assert CR.STANDING_FAULTS["thin"] in window.status.text()
         assert window.sel_depth_spin.value() == pytest.approx(
             0.2 * _reach(window))
 

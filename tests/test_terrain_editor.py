@@ -35,6 +35,8 @@ from shapely.geometry import box
 import geopandas as gpd
 
 import UI_terrain_editor as U
+from lib import LIB_raster_plan as RP
+from lib.LIB_terrain_stl import triangle_count
 from lib.LIB_project_config import update_local
 
 pytestmark = pytest.mark.usefixtures("qapp")
@@ -695,12 +697,9 @@ class TestAutoResolution:
         window.res_spin.setValue(res)              # (turns Auto off)
         warp, clip = window._plan()
         with rasterio.open(str(window.raster_path)) as ds:
-            if warp is not None:
-                grid = U._warp_grid(ds, window.target_crs(), warp)
-            else:
-                grid = U._clip_grid(ds, U._read_window(
-                    ds, window._boundary_geom(), clip.crop), clip)
-        return U._triangle_count(grid.width, grid.height)
+            grid = RP.output_grid(ds, window.target_crs(), warp, clip,
+                                  window._boundary_geom())
+        return triangle_count(grid.width, grid.height)
 
     @staticmethod
     def _budget(window, monkeypatch, triangles):

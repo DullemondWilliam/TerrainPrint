@@ -26,7 +26,9 @@ import shapely
 from shapely.geometry import box
 from shapely.ops import linemerge
 
-import UI_terrain_editor as U
+from lib import LIB_border_connectors as BC
+from lib import LIB_border_plan as BP
+from lib import LIB_connector_rules as CR
 
 HERE = Path(__file__).parent
 
@@ -49,7 +51,7 @@ def regions():
 
 @pytest.fixture(scope="module")
 def defined(regions):
-    return U.define_borders(regions, {}, U.BorderSettings())
+    return BP.define_borders(regions, {}, BP.BorderSettings())
 
 
 @pytest.fixture(scope="module")
@@ -114,10 +116,10 @@ class TestVictoriaIslandBorders:
         """Valid before any repair: the repair is what broke the seam."""
         import geopandas as gpd
         from lib.LIB_border_simplification import topo_simplify_two_tolerances
-        s = U.BorderSettings()
+        s = BP.BorderSettings()
         frame = gpd.GeoDataFrame({"name": list(regions)},
                                  geometry=list(regions.values()),
-                                 crs=U.EPSG_WORKING)
+                                 crs=BP.EPSG_WORKING)
         simp, _, _ = topo_simplify_two_tolerances(
             frame, s.coast_tol_mm * s.mpm, s.internal_tol_mm * s.mpm,
             min_segment_m=s.min_segment_mm * s.mpm,
@@ -150,7 +152,7 @@ def _crossing(definition) -> list:
 @pytest.fixture(scope="module")
 def kept_apart(regions):
     """Defined with enclaves kept apart (see TestVictoriaIslandConnectors)."""
-    return U.define_borders(regions, {}, U.BorderSettings(enclave_mm2=0.0))
+    return BP.define_borders(regions, {}, BP.BorderSettings(enclave_mm2=0.0))
 
 
 class TestVictoriaIslandConnectors:
@@ -194,8 +196,8 @@ class TestVictoriaIslandConnectors:
         assert _crossing(kept_apart) == []
 
     def test_nor_with_the_enclaves_merged(self, regions):
-        assert _crossing(U.define_borders(regions, {},
-                                          U.BorderSettings())) == []
+        assert _crossing(BP.define_borders(regions, {},
+                                          BP.BorderSettings())) == []
 
     def test_the_corner_connector_is_the_one_refused(self, kept_apart):
         """So the test above cannot pass for want of a candidate: the one
@@ -209,9 +211,9 @@ class TestVictoriaIslandConnectors:
 
     def test_put_there_by_hand_it_is_allowed(self, kept_apart):
         """The graze is the same one a turned connector makes by design."""
-        x, y, angle, scale = U.lobe_pose(self._corner_connector(kept_apart),
+        x, y, angle, scale = BC.lobe_pose(self._corner_connector(kept_apart),
                                          kept_apart.border,
                                          kept_apart.settings.connector_params())
-        lobe, why = U.place_connector(kept_apart, x, y, angle_deg=angle,
+        lobe, why = CR.place_connector(kept_apart, x, y, angle_deg=angle,
                                       scale=scale, allow_faults=True)
         assert lobe is not None and why == ""

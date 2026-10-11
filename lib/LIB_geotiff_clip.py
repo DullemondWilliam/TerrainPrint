@@ -327,6 +327,20 @@ def _output_grid(ds, window, params):
     return _Grid(width, height, transform, (src_w / width, src_h / height))
 
 
+
+def read_window(ds, geom, crop):
+    """The source window a clip of ``geom`` reads (public: callers that must
+    agree with the clip on its grid -- a cost preview -- ask this rather
+    than redo the arithmetic)."""
+    return _read_window(ds, geom, crop)
+
+
+def output_grid(ds, window, params):
+    """The grid a clip of ``window`` with ``params`` produces: ``.width``,
+    ``.height`` and ``.transform``.  Public for the same reason."""
+    return _output_grid(ds, window, params)
+
+
 def _row_bands(grid, dtype, band_bytes):
     """Split the output into row bands that each fit the memory budget."""
     per_row = max(1, grid.width * np.dtype(dtype).itemsize)

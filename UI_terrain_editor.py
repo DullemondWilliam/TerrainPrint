@@ -250,36 +250,28 @@ built in any other CRS is refused rather than carved in the wrong place.
 """
 
 import logging
-import json
-import re
 import shutil
 import sys
 import tempfile
 import time
-from dataclasses import asdict, dataclass, field, replace
-from dataclasses import fields as dataclasses_fields
+from dataclasses import replace
 from pathlib import Path
 
 import geopandas as gpd
 import numpy as np
 import rasterio
-import trimesh
 import vispy
 from matplotlib import colormaps
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
-from matplotlib.backends.backend_qtagg import \
-    NavigationToolbar2QT as NavigationToolbar
+from matplotlib.backends.backend_qtagg import     NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
 from matplotlib.collections import PolyCollection
 from matplotlib.patches import PathPatch
 from matplotlib.path import Path as MplPath
 from rasterio.crs import CRS
 from rasterio.enums import Resampling
-from shapely.affinity import affine_transform
-from shapely.geometry import LineString, Point, Polygon
+from shapely.geometry import Point
 from shapely.geometry.polygon import orient
-from shapely import STRtree
-from shapely.ops import split as split_geom
 from shapely.ops import unary_union
 from vispy import scene
 
@@ -292,32 +284,28 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox,
                                QSizePolicy, QSpinBox, QTabWidget, QVBoxLayout,
                                QWidget)
 
-from lib.LIB_border_connectors import (CONNECTORS_NAME,
-                                       MIN_PART_AREA_MM2, ConnectorParams,
-                                       _edge_frame, _polys, _repair, _rings,
-                                       _safe_union,
-                                       build_border_pieces, generate_lobes,
-                                       load_connector_params, lobe_at,
-                                       lobe_pose,
+# The Borders stage, the connector rules, the bar and the raster planning are
+# libraries; this file is the window over them.
+from lib.LIB_border_bar import (BarResult, bar_vertex_colours, build_bar,
+                                build_draped_bar, split_at)
+from lib.LIB_border_connectors import (_polys, load_connector_params, lobe_at,
                                        notch_province)
-from lib.LIB_border_regions import build_border_regions, shared_borderlines
-from lib.LIB_border_split import bed_turn
-from lib.LIB_border_simplification import topo_simplify_two_tolerances
-from lib.LIB_shared_border import _count_short, _count_spikes
-from lib.LIB_geotiff_clip import ClipParams, clip_geotiff
-# The cost preview must agree with what the run actually does, so it asks the
-# libs for their grids rather than reimplementing the window/warp arithmetic.
-from lib.LIB_geotiff_clip import _output_grid as _clip_grid
-from lib.LIB_geotiff_clip import _read_window
-from lib.LIB_raster_reproject import (ReprojectParams, bounds_for,
-                                      reproject_geotiff)
-from lib.LIB_raster_reproject import _output_grid as _warp_grid
-from lib.LIB_terrain_stl import (EPSG_METRIC, TerrainParams, _finish,
-                                 _triangle_count, _validate, _write,
-                                 load_terrain_params, surface_sampler,
-                                 terrain_to_stl)
+from lib.LIB_border_plan import (EPSG_WORKING, SHAPE_FIELDS,
+                                 BorderDefinition, BorderSettings,
+                                 _vertex_count, define_borders,
+                                 load_border_settings, load_region,
+                                 read_borders, write_borders)
+from lib.LIB_connector_rules import (FAULT_COUNTS, STANDING_FAULTS,
+                                     angle_toward, connector_pose, handle_at,
+                                     place_connector, reshape_connectors)
+from lib.LIB_geotiff_clip import clip_geotiff
+from lib.LIB_raster_plan import (finest_res, needs_resample, needs_warp,
+                                 output_grid, plan_run, reduction)
+from lib.LIB_raster_reproject import ReprojectParams, reproject_geotiff
+from lib.LIB_terrain_stl import (TerrainParams, _finish, _validate, _write,
+                                 load_terrain_params, terrain_to_stl)
 from lib.LIB_project_config import get as _cfg
-from lib.LIB_project_config import (build_params, load_files, settings_files,
+from lib.LIB_project_config import (load_files, settings_files,
                                      update_local)
 from lib.LIB_project_config import shipped as _shipped
 
@@ -349,15 +337,10 @@ DEFAULT_SAVE_DIR = Path(__file__).resolve().parent / _cfg("paths.stl")
 #: a striped DEM's scanlines stay in memory, and the cache never changes the
 #: pixels that come out -- only how often they are read again.
 DEFAULT_CACHE_MB = 6144
-#: The Borders settings, written beside a saved Borders folder so loading it
-#: rebuilds the connectors in the shape they were saved in.
-BORDER_SETTINGS_NAME = "borders_settings.json"
 #: Sampling pitch on paper; the Res control is seeded from it via the scale.
 DEFAULT_SPACING_MM = _shipped("terrain.spacing_mm")
 DEFAULT_RESAMPLING = _shipped("terrain.resampling")
 
-# -- the Borders stage ------------------------------------------------------
-EPSG_WORKING = _cfg("crs.working")
 KEEP_COLOUR = "#AED6F1"       # blue  — a trimmed target, what gets printed
 RESULT_COLOUR = "#ABEBC6"     # green — the dovetail lobes
 SELECT_COLOUR = "#F5B041"     # orange — shared (internal) arcs
@@ -379,12 +362,6 @@ REFUSED_COLOUR = "#C0392B"    # red — where it cannot
 INVALID_COLOUR = REFUSED_COLOUR   # a connector that breaks a rule, until fixed
 PICKED_COLOUR = "#7D3C98"     # purple — the selected connector and its handle
 SPLIT_COLOUR = "#17202A"      # near-black — a planned split across the bar
-#: A split is a straight cut across the corridor, found by walking in from the
-#: edge nearest the click.  One that has not come out the other side within
-#: this many corridor widths is running *along* the corridor, not across it.
-SPLIT_REACH_WIDTHS = 3.0
-#: Where splits are saved beside a Borders folder.
-SPLITS_NAME = "splits.geojson"
 #: How near, in screen pixels, a click must be to a connector to pick it.
 PICK_PX = 8
 #: "Leave the selection as it is", where None would mean "select nothing".
@@ -402,13 +379,6 @@ DEPTH_STEP_MM = 0.25
 KEY_GESTURE_S = 0.5
 #: A press that travels further than this is a drag, not a click.
 CLICK_SLOP_PX = 4
-#: A lobe counts as reaching into a region past this fraction of its own area,
-#: so a lobe grazing a neighbour's corner at float precision is not an owner.
-_OWNER_FRAC = 1e-3
-#: How much of a pocket, as a fraction of its lobe's area, may lie outside its
-#: province before it counts as running out: only the slivers where the
-#: carved province edge and the corridor edge disagree by rounding.
-_ESCAPE_FRAC = 1e-3
 
 # -- the window's chrome (docs/UI_GUIDE.md) ---------------------------------
 #: How many points larger than the interface default the status line runs.
@@ -457,99 +427,15 @@ def _height_colors(mesh):
     return colormaps[DEM_CMAP](t).astype(np.float32)
 
 
-def _vertex_count(geom) -> int:
-    """Ring vertices in a (Multi)Polygon -- the number simplification moves."""
-    return sum(len(poly.exterior.coords)
-               + sum(len(ring.coords) for ring in poly.interiors)
-               for poly in _polys(geom))
-
-
-def _safe_name(name: str) -> str:
-    return re.sub(r"[^\w.-]+", "_", name).strip("_") or "region"
-
-
-def load_region(path):
-    """
-    One region file as ``(geometry in crs.working, the CRS it arrived in)``.
-
-    Dissolved to one geometry and repaired on the way in (FR-1.6): province
-    exports carry rings GEOS calls invalid, and an invalid input is a
-    TopologyException three stages later instead of a message now.
-    """
-    frame = gpd.read_file(str(path))
-    if frame.empty:
-        raise ValueError(f"{Path(path).name} has no features.")
-    if frame.crs is None:                       # bare GeoJSON is WGS 84 by spec
-        frame = frame.set_crs(_cfg("crs.source"))
-    source_crs = frame.crs
-    geom = _repair(unary_union(frame.to_crs(EPSG_WORKING).geometry.values))
-    if geom is None:
-        raise ValueError(f"{Path(path).name} has no polygon to work with.")
-    return geom, source_crs
-
-
-@dataclass
-class BorderSettings:
-    """What the Borders stage is asked for.  Lengths are **print-mm**."""
-    coast_tol_mm: float = _shipped("borders.coast_tol_mm")
-    internal_tol_mm: float = _shipped("borders.internal_tol_mm")
-    min_segment_mm: float = _shipped("seam.min_segment_mm")
-    min_angle_deg: float = _shipped("seam.min_angle_deg")
-    width_mm: float = _shipped("borders.width_mm")
-    #: Below this printed area (mm²) a piece the corridor cuts off from the
-    #: rest of its province is added to the border bar (see
-    #: :func:`_absorb_enclaves`); 0 keeps every piece.
-    enclave_mm2: float = _shipped("borders.enclave_mm2")
-    connectors: bool = _shipped("borders.connectors")
-    lobe_spacing_mm: float = _shipped("borders.lobe_spacing_mm")
-    #: The connector's shape.  Height is the lobe layer, and so the depth of
-    #: the pocket it drops into; depth is how far it reaches into the
-    #: province; width is the neck at the corridor, and the mouth at the far
-    #: end is ``ratio`` times that -- above 1, the wide end is captured.
-    lobe_height_mm: float = _shipped("print.dovetail_mm")
-    lobe_depth_mm: float = _shipped("borders.lobe_depth_mm")
-    lobe_width_mm: float = _shipped("borders.lobe_width_mm")
-    lobe_ratio: float = _shipped("borders.lobe_ratio")
-    #: The fit in the pocket: how much wider than the connector it is cut on
-    #: every side, and how much deeper than the connector layer is tall.
-    clearance_mm: float = _shipped("borders.clearance_mm")
-    height_clearance_mm: float = _shipped("borders.height_clearance_mm")
-    scale: float = _shipped("print.scale")
-
-    @property
-    def mpm(self) -> float:
-        """Metres per print-mm."""
-        return self.scale / 1000.0
-
-    def connector_params(self) -> ConnectorParams:
-        return load_connector_params(
-            *settings_files(), scale=self.scale,
-            spacing_mm=self.lobe_spacing_mm, dovetail_mm=self.lobe_height_mm,
-            reach_mm=self.lobe_depth_mm, neck_mm=self.lobe_width_mm,
-            mouth_mm=self.lobe_width_mm * self.lobe_ratio,
-            clearance_mm=self.clearance_mm,
-            height_clearance_mm=self.height_clearance_mm)
 
 
 
-#: The config key behind each field of :class:`BorderSettings`.
-_BORDER_SETTINGS_KEYS = {
-    "coast_tol_mm": "borders.coast_tol_mm",
-    "internal_tol_mm": "borders.internal_tol_mm",
-    "min_segment_mm": "seam.min_segment_mm",
-    "min_angle_deg": "seam.min_angle_deg",
-    "width_mm": "borders.width_mm",
-    "enclave_mm2": "borders.enclave_mm2",
-    "connectors": "borders.connectors",
-    "lobe_spacing_mm": "borders.lobe_spacing_mm",
-    "lobe_height_mm": "print.dovetail_mm",
-    "lobe_depth_mm": "borders.lobe_depth_mm",
-    "lobe_width_mm": "borders.lobe_width_mm",
-    "lobe_ratio": "borders.lobe_ratio",
-    "clearance_mm": "borders.clearance_mm",
-    "height_clearance_mm": "borders.height_clearance_mm",
-    "scale": "print.scale",
-}
+
+
+
+
+
+
 
 #: The Borders stage's controls, each written back to its config key as it is
 #: turned, so the next launch starts where this one left off.  Written to
@@ -593,929 +479,62 @@ MAX_TRIANGLES_STEP = 250_000
 #: write for a held arrow key rather than one per step.
 SETTINGS_WRITE_MS = 500
 
-#: The fields of :class:`BorderSettings` that shape a connector -- and its
-#: fit, since the clearance is also the gap kept between neighbouring pockets
-#: -- which the window changes on a defined map without defining it again.
-SHAPE_FIELDS = ("lobe_height_mm", "lobe_depth_mm", "lobe_width_mm",
-                "lobe_ratio", "clearance_mm", "height_clearance_mm")
-
-
-def load_border_settings(*config_files, **overrides):
-    """
-    A :class:`BorderSettings` filled from config files, later files winning,
-    as the libraries' ``load_*_params`` do.  ``BorderSettings()`` itself is
-    the shipped settings and reads no file.
-    """
-    return build_params(BorderSettings, _BORDER_SETTINGS_KEYS, *config_files,
-                        **overrides)
-
-@dataclass
-class BorderDefinition:
-    """Result of :func:`define_borders`.  Geometry is in ``crs.working``."""
-    settings: BorderSettings
-    simplified: dict = field(default_factory=dict)  #: every region, simplified
-    targets: dict = field(default_factory=dict)     #: trimmed targets
-    border: object = None                           #: the corridor
-    lobes: list = field(default_factory=list)       #: one owner each
-    coastal_segs: list = field(default_factory=list)
-    internal_segs: list = field(default_factory=list)
-    vertices_before: int = 0
-    vertices_after: int = 0
-    #: Shared arcs measured against the printer, not against the filters --
-    #: the same rule LIB_shared_border reports by.
-    short_segments: int = 0
-    spikes: int = 0
-    #: Area two simplified targets both claimed, before it was handed back.
-    #: A shared arc is one line for both sides, but straightened at the
-    #: internal tolerance it can cut across a *different* arc -- an island's
-    #: coast beside the seam (3.4 mm² of NWT/Nunavut at 0.5 mm).
-    overlap_mm2: float = 0.0
-    lobes_dropped: int = 0         #: generated lobes the rules refused
-    #: Why: fault code (see ``FAULTS``) -> how many.
-    drop_reasons: dict = field(default_factory=dict)
-    lobes_edited: bool = False     #: moved, added or deleted by hand since
-    #: The folder it was read back from (:func:`read_borders`), or "" when
-    #: Define made it.
-    loaded_from: str = ""
-    #: Where the bar is cut into printable pieces: straight lines across the
-    #: corridor (:func:`split_at`), planned by hand.  Define makes none --
-    #: the bar is never split for you.
-    splits: list = field(default_factory=list)
-    _pieces: list = field(default=None, repr=False, compare=False,
-                          init=False)
-    _pieces_key: tuple = field(default=None, repr=False, compare=False,
-                               init=False)
-    #: piece_lobes() and too_big(), with what they were worked out for:
-    #: asked several times a click, and on all of Canada each is a fifth of
-    #: a second.
-    _held: tuple = field(default=None, repr=False, compare=False, init=False)
-    _big: tuple = field(default=None, repr=False, compare=False, init=False)
-    #: Pieces the corridor cut off from their province, added to the bar
-    #: (see :func:`_absorb_enclaves`), and their printed area.
-    enclaves: int = 0
-    enclaves_mm2: float = 0.0
-    #: The targets merged into one, and which target geometries it was merged
-    #: from (see :meth:`land`).
-    _land: object = field(default=None, repr=False, compare=False,
-                          init=False)
-    _land_key: tuple = field(default=(), repr=False, compare=False,
-                             init=False)
-    #: Per connector, what it breaks on its own and its reach out of the
-    #: corridor, keyed by the connector itself (see :meth:`faults`).
-    _fault_cache: dict = field(default_factory=dict, repr=False,
-                               compare=False, init=False)
-    _fault_key: tuple = field(default=(), repr=False, compare=False,
-                              init=False)
-    _fault_answer: tuple = field(default=None, repr=False, compare=False,
-                                 init=False)
-    _line: object = field(default=None, repr=False, compare=False,
-                          init=False)
-    _line_key: tuple = field(default=None, repr=False, compare=False,
-                             init=False)
-
-    def land(self):
-        """Every target as one geometry, for the connector rules.
-
-        Merged once and kept: on all of Canada the merge is 78 ms, and the
-        rules ask for it on every placement -- every mouse move of a drag.
-        Keyed on the target geometries themselves, so a definition whose
-        targets are replaced merges again rather than serving the old land.
-        """
-        key = tuple(id(geom) for geom in self.targets.values())
-        if self._land is None or self._land_key != key:
-            self._land = _safe_union(list(self.targets.values()))
-            self._land_key = key
-        return self._land
-
-    def faults(self) -> list:
-        """Each connector's fault code (a key of ``FAULTS``), or "" for one
-        that may stand -- in the order of :attr:`lobes`.
-
-        Every rule, held against every *other* connector, so two that crowd
-        each other are both at fault.  Kept, because the window asks after
-        every edit and on all of Canada measuring 240 connectors afresh is a
-        second: what each breaks on its own is measured once per connector,
-        the neighbours come from a spatial index, and the whole answer stands
-        until the connectors change.
-        """
-        if self.border is None:
-            return ["" for _ in self.lobes]
-        self._check_fault_key()
-        ids = (tuple(map(id, self.lobes)), tuple(map(id, self.splits)))
-        if self._fault_answer is not None and self._fault_answer[0] == ids:
-            return list(self._fault_answer[1])
-        p = self.settings.connector_params()
-        land = self.land()
-        own = []
-        for lobe in self.lobes:
-            hit = self._fault_cache.get(id(lobe))
-            if hit is None or hit[0] is not lobe:
-                hit = (lobe, _own_fault(lobe, self, p, land), None)
-                self._fault_cache[id(lobe)] = hit
-            own.append(hit[1])
-        live = set(ids[0])
-        for gone in [k for k in self._fault_cache if k not in live]:
-            del self._fault_cache[gone]
-
-        codes = list(own)
-        gap = p.clearance_mm * p.mpm
-        if len(self.lobes) > 1:
-            tree = STRtree(self.lobes)
-            near = [lobe.buffer(gap, quad_segs=1) for lobe in self.lobes]
-            left, right = tree.query(near)
-            for i, j in zip(left.tolist(), right.tolist()):
-                if j <= i:
-                    continue
-                a, b = self.lobes[i], self.lobes[j]
-                if _crowds(a, self._reach(a), b, self._reach(b), gap):
-                    codes[i] = codes[i] or "crowded"
-                    codes[j] = codes[j] or "crowded"
-        for cut in self.splits:
-            for i, lobe in enumerate(self.lobes):
-                if not codes[i] and _near(lobe, cut, gap) \
-                        and lobe.distance(cut) < gap:
-                    codes[i] = "on_split"
-        self._fault_answer = (ids, codes)
-        return list(codes)
-
-    def _check_fault_key(self) -> None:
-        """Forget every measurement made under other settings, another
-        corridor or other provinces."""
-        key = (self.settings, id(self.border),
-               tuple(id(g) for g in self.targets.values()))
-        if self._fault_key != key:
-            self._fault_cache.clear()
-            self._fault_answer = None
-            self._fault_key = key
-
-    def _passed(self, lobes) -> None:
-        """Note ``lobes`` as breaking no rule of their own: Define has just
-        held each to every rule, so measuring them again would be waste."""
-        self._check_fault_key()
-        for lobe in lobes:
-            self._fault_cache[id(lobe)] = (lobe, "", None)
-
-    def pieces(self) -> list:
-        """The bar's corridor, cut at every split: one polygon per printed
-        piece.  Kept until the corridor or the splits change."""
-        if self.border is None:
-            return []
-        key = (id(self.border), tuple(map(id, self.splits)))
-        if self._pieces_key != key:
-            geoms = list(_polys(self.border))
-            for cut in self.splits:
-                out = []
-                for geom in geoms:
-                    if geom.intersects(cut):
-                        out += _polys(split_geom(geom, cut))
-                    else:
-                        out.append(geom)
-                geoms = out
-            self._pieces, self._pieces_key = geoms, key
-        return list(self._pieces)
-
-    def piece_lobes(self) -> list:
-        """For each piece, the connectors it carries: each goes with the
-        piece holding most of its root."""
-        pieces = self.pieces()
-        key = (self._pieces_key, tuple(map(id, self.lobes)))
-        if self._held is not None and self._held[0] == key:
-            return [list(lobes) for lobes in self._held[1]]
-        out = [[] for _ in pieces]
-        for lobe in self.lobes:
-            best, share = None, 0.0
-            for i, piece in enumerate(pieces):
-                if _near(lobe, piece, 0.0):
-                    area = lobe.intersection(piece).area
-                    if area > share:
-                        best, share = i, area
-            if best is not None:
-                out[best].append(lobe)
-        self._held = (key, out)
-        return [list(lobes) for lobes in out]
-
-    def too_big(self, bed_mm=None, margin_mm=None) -> list:
-        """Indices of the pieces that will not fit the bed at any turn -- a
-        slicer turns a part to fit, diagonally if it must, so each piece is
-        tried at every angle (:func:`bed_turn`), connectors included."""
-        bed = _cfg("print.bed_mm") if bed_mm is None else bed_mm
-        margin = _cfg("print.bed_margin_mm") if margin_mm is None \
-            else margin_mm
-        usable = (bed - 2 * margin) * self.settings.mpm
-        pieces, held = self.pieces(), self.piece_lobes()
-        key = (self._pieces_key, tuple(map(id, self.lobes)), usable)
-        if self._big is not None and self._big[0] == key:
-            return list(self._big[1])
-        big = []
-        for i, (piece, lobes) in enumerate(zip(pieces, held)):
-            shape = unary_union([piece, *lobes]) if lobes else piece
-            if bed_turn(shape, usable) is None:
-                big.append(i)
-        self._big = (key, big)
-        return list(big)
-
-    def border_line(self):
-        """The border line between the printed provinces -- the shared
-        edges of their simplified outlines, which the corridor between two
-        of them is carved along -- or None where none touch.  Merged once,
-        like :meth:`land`.  A frontier with a surrounding region is not part
-        of it: that corridor lies wholly on the surrounding side, and every
-        connector's root crosses its line by design."""
-        key = tuple(id(self.simplified.get(n)) for n in self.targets)
-        if self._line_key != key:
-            self._line = shared_borderlines(
-                [self.simplified[n] for n in self.targets
-                 if self.simplified.get(n) is not None])
-            self._line_key = key
-        return self._line
-
-    def _reach(self, lobe):
-        """``lobe`` outside the corridor, measured once."""
-        hit = self._fault_cache[id(lobe)]
-        if hit[2] is None:
-            hit = (hit[0], hit[1], lobe.difference(self.border))
-            self._fault_cache[id(lobe)] = hit
-        return hit[2]
-
-    def province_lobes(self, name) -> list:
-        """The lobes that key into target ``name`` -- its pockets."""
-        geom = self.targets.get(name)
-        if geom is None:
-            return []
-        return [lobe for lobe in self.lobes if lobe.intersects(geom)]
-
-
-def define_borders(targets: dict, surrounding: dict,
-                   settings: BorderSettings | None = None) -> BorderDefinition:
-    """
-    Simplify every region in one topology, carve the corridor, place the lobes.
-
-    ``targets`` / ``surrounding`` map name -> geometry in ``crs.working``.  Pure
-    geometry (no Qt), so it runs on a worker thread and tests call it directly.
-    """
-    s = settings or BorderSettings()
-    if not targets:
-        raise ValueError("Add at least one province to print.")
-    mpm = s.mpm
-    names = list(targets) + list(surrounding)
-    roles = dict.fromkeys(targets, "target") | dict.fromkeys(surrounding,
-                                                             "surrounding")
-    frame = gpd.GeoDataFrame(
-        {"name": names},
-        geometry=[targets.get(n, surrounding.get(n)) for n in names],
-        crs=EPSG_WORKING)
-
-    simp, coastal, internal = topo_simplify_two_tolerances(
-        frame, s.coast_tol_mm * mpm, s.internal_tol_mm * mpm,
-        min_segment_m=s.min_segment_mm * mpm, min_angle_deg=s.min_angle_deg)
-
-    result = BorderDefinition(settings=s, coastal_segs=coastal,
-                              internal_segs=internal)
-    for name, geom in zip(simp["name"], simp.geometry):
-        # Coastal DP runs with preserve_topology=False and can leave a ring
-        # crossing itself (British Columbia does at 0.3 mm); carving needs
-        # valid input, so repair here rather than fail inside the union.
-        fixed = _repair(geom) if geom is not None else None
-        if fixed is None:
-            raise ValueError(f"{name}: simplification left no land. Lower "
-                             "the coastal tolerance.")
-        result.simplified[name] = fixed
-    result.vertices_before = sum(_vertex_count(g) for g in frame.geometry)
-    result.vertices_after = sum(_vertex_count(g)
-                                for g in result.simplified.values())
-    nozzle = _cfg("seam.nozzle_mm") * mpm
-    spike = _cfg("seam.spike_angle_deg")
-    result.short_segments = sum(_count_short(seg.tolist(), nozzle)
-                                for seg in internal)
-    result.spikes = sum(_count_spikes(seg.tolist(), spike) for seg in internal)
-
-    target_names = [n for n in result.simplified if roles[n] == "target"]
-    surround_names = [n for n in result.simplified
-                      if roles[n] == "surrounding"]
-    result.overlap_mm2 = _resolve_overlaps(result.simplified, target_names,
-                                           targets) / mpm ** 2
-    simplified_targets = [result.simplified[n] for n in target_names]
-
-    regions = build_border_regions(
-        simplified_targets, [result.simplified[n] for n in surround_names],
-        border_width_km=s.width_mm * s.scale / 1e6)
-    for name, trimmed, before in zip(target_names, regions.core,
-                                     simplified_targets):
-        result.targets[name] = _repair(trimmed) if trimmed is not None \
-            else before
-    result.border = _repair(regions.border) if regions.border is not None \
-        else None
-    if result.border is not None and s.enclave_mm2 > 0:
-        result.enclaves, area = _absorb_enclaves(
-            result, s.enclave_mm2 * mpm ** 2)
-        result.enclaves_mm2 = area / mpm ** 2
-    if result.border is not None:
-        result.border = _fill_pinholes(result.border, result.targets.values(),
-                                       PINHOLE_MM2 * mpm ** 2)
-
-    if s.connectors and result.border is not None:
-        lobes = generate_lobes(result.border,
-                               result.land(),
-                               s.connector_params())
-        result.lobes, result.drop_reasons = _standing_lobes(
-            lobes, result, s.connector_params())
-        result._passed(result.lobes)
-        result.lobes_dropped = sum(result.drop_reasons.values())
-    return result
-
-
-def _absorb_enclaves(result, max_m2: float) -> tuple:
-    """
-    Add the small pieces the corridor cut off from their province to the
-    border bar: ``(how many, their area in m²)``.
-
-    Carving the corridor can split a province's land.  Where a border
-    zig-zags, two arms of the corridor all but meet and leave crumbs of
-    province in holes in the bar; where a border meets the coast, the bar
-    cuts slivers off between itself and the sea (both on the Quebec /
-    Labrador border).  A piece like that has no land of its own to hang on
-    to -- printed, it is a loose crumb -- so below ``max_m2`` it becomes
-    part of the bar.
-
-    A piece counts only if the carving made it: of each simplified part of
-    a province, the largest piece left is the province and the rest are cut
-    off.  An island that was an island before carving is never touched,
-    however small.
-    """
-    count, area = 0, 0.0
-    taken = []
-    for name in list(result.targets):
-        trimmed = result.targets[name]
-        if trimmed is None:
-            continue
-        pieces = _polys(trimmed)
-        parents = _polys(result.simplified[name])
-        keep = []
-        by_parent = {}
-        for piece in pieces:
-            probe = piece.representative_point()
-            parent = next((i for i, part in enumerate(parents)
-                           if part.covers(probe)), None)
-            by_parent.setdefault(parent, []).append(piece)
-        for parent, group in by_parent.items():
-            group.sort(key=lambda g: g.area, reverse=True)
-            main, rest = (group[0], group[1:]) if parent is not None \
-                else (None, group)
-            if main is not None:
-                keep.append(main)
-            for piece in rest:
-                if parent is not None and piece.area < max_m2 \
-                        and piece.distance(result.border) < 1.0:
-                    taken.append(piece)
-                    count += 1
-                    area += piece.area
-                else:
-                    keep.append(piece)
-        if len(keep) != len(pieces):
-            result.targets[name] = _repair(unary_union(keep))
-    if taken:
-        result.border = _repair(unary_union([result.border, *taken]))
-    return count, area
-
-
-#: Holes in the corridor below this printed area (mm²) with no province in
-#: them are filled.  Carving and merging leave specks where two outlines meet
-#: by rounding -- six along the Quebec/Labrador border, each under 0.001 mm²
-#: -- and a speck of nothing in a printed bar is a flaw, not a feature.
-PINHOLE_MM2 = 0.01
-
-
-def _fill_pinholes(border, targets, max_m2: float):
-    """``border`` with its specks of hole filled: rings under ``max_m2``
-    that hold no land of ``targets``."""
-    land = [geom for geom in targets if geom is not None]
-    out, changed = [], False
-    for poly in _polys(border):
-        keep = []
-        for ring in poly.interiors:
-            hole = Polygon(ring)
-            if hole.area < max_m2 and not any(hole.intersection(geom).area
-                                              > 0.5 * hole.area
-                                              for geom in land):
-                changed = True
-            else:
-                keep.append(ring)
-        out.append(Polygon(poly.exterior, keep))
-    return _repair(unary_union(out)) if changed else border
-
-
-def read_borders(folder: Path, settings: "BorderSettings | None" = None):
-    """
-    A :class:`BorderDefinition` read back from a folder Save Borders wrote:
-    the corridor (``borders.geojson``), each trimmed province
-    (``name_<province>.geojson``) and the connectors as they were left
-    (``connectors.geojson``), hand edits and all.
-
-    The connector settings come from the folder's ``borders_settings.json``
-    where there is one, else from ``settings`` (the window's own) -- a
-    connector's turn and size are read off its outline against them.
-    What Define measured on the way (vertex counts, seam reports, what it
-    dropped) is not saved, so it is not there to report.
-    """
-    folder = Path(folder)
-    border_path = folder / "borders.geojson"
-    names = sorted(folder.glob("name_*.geojson"))
-    if not border_path.exists() or not names:
-        raise ValueError(f"{folder} holds no saved borders: it needs "
-                         "borders.geojson and a name_<province>.geojson.")
-    saved = folder / BORDER_SETTINGS_NAME
-    if saved.exists():
-        values = json.loads(saved.read_text(encoding="utf-8"))
-        known = {f.name for f in dataclasses_fields(BorderSettings)}
-        settings = BorderSettings(**{k: v for k, v in values.items()
-                                     if k in known})
-    settings = settings or BorderSettings()
-
-    def read(path):
-        frame = gpd.read_file(path)
-        if frame.crs is not None:
-            frame = frame.to_crs(EPSG_WORKING)
-        return frame
-
-    border = _repair(unary_union(list(read(border_path).geometry)))
-    result = BorderDefinition(settings=settings, border=border,
-                              loaded_from=folder.name)
-    for path in names:
-        frame = read(path)
-        name = (str(frame["name"].iloc[0]) if "name" in frame.columns
-                else path.stem[len("name_"):])
-        geom = _repair(unary_union(list(frame.geometry)))
-        result.targets[name] = geom
-        result.simplified[name] = geom
-    connectors = folder / CONNECTORS_NAME
-    if connectors.exists():
-        # As written, corner order and all: a connector's turn and size are
-        # read off its corners (lobe_pose), so the ring is never re-oriented.
-        result.lobes = [Polygon(geom.exterior.coords)
-                        for geom in read(connectors).geometry]
-        result.lobes_edited = True
-    splits = folder / SPLITS_NAME
-    if splits.exists():
-        result.splits = [LineString(geom.coords)
-                         for geom in read(splits).geometry]
-    return result
-
-
-def _resolve_overlaps(simplified: dict, names: list, originals: dict) -> float:
-    """
-    Make the simplified targets a partition again; returns the area (m²) fixed.
-
-    Each overlap goes back to whichever province held more of it before
-    simplification, so the seam ends up on the side of the land it was
-    taken from.  Carving needs disjoint input: an overlap would be read as a
-    second, phantom seam.
-    """
-    total = 0.0
-    for i, a in enumerate(names):
-        for b in names[i + 1:]:
-            ga, gb = simplified[a], simplified[b]
-            ax0, ay0, ax1, ay1 = ga.bounds
-            bx0, by0, bx1, by1 = gb.bounds
-            if ax1 < bx0 or bx1 < ax0 or ay1 < by0 or by1 < ay0:
-                continue
-            both = ga.intersection(gb)
-            if both.area <= 0:
-                continue
-            total += both.area
-            held_a = originals[a].intersection(both).area
-            held_b = originals[b].intersection(both).area
-            loser = b if held_a >= held_b else a
-            trimmed = _repair(simplified[loser].difference(both))
-            if trimmed is not None:
-                simplified[loser] = trimmed
-    return total
-
-
-def _standing_lobes(lobes, definition, p: ConnectorParams):
-    """
-    The generated ``lobes`` that may stand, in order, and why the rest may
-    not: ``(kept, {fault code: count})``.
-
-    Each is held to the rules a hand-placed connector is (:func:`_fault`)
-    against the ones already kept, so no two pockets run together and none
-    leaves the province it keys into.  First come, first kept: along a seam
-    that is the order they were spaced in.
-
-    And to one more, here only: it must not cross the border line between
-    two printed provinces.  In the inside corner of a bend -- Victoria
-    Island's NWT/Nunavut seam has one -- a connector hung from one leg can
-    swing its root over the other leg's line.  By hand the same graze is
-    allowed: a connector turned past about 18 degrees puts its root corner
-    over the line by design, and the bar it sits in is one piece.
-    """
-    land = definition.land()
-    line = definition.border_line()
-    kept, reasons = [], {}
-    for lobe in lobes:
-        code = _fault(lobe, definition, kept, p, land)
-        if not code and line is not None and lobe.intersects(line):
-            code = "crosses_line"
-        if code:
-            reasons[code] = reasons.get(code, 0) + 1
-        else:
-            kept.append(lobe)
-    return kept, reasons
-
-
-def _owners(lobe, border, targets) -> int:
-    """How many of ``targets`` the lobe's far end reaches into."""
-    reach = lobe.difference(border)
-    return sum(1 for geom in targets
-               if reach.intersects(geom)
-               and reach.intersection(geom).area > _OWNER_FRAC * lobe.area)
-
-
-def place_connector(definition: BorderDefinition, x: float, y: float,
-                    ignore: int | None = None, angle_deg: float = 0.0,
-                    scale: float = 1.0, allow_faults: bool = False):
-    """
-    The connector a click at (x, y) puts on the corridor edge nearest it, and
-    why not when it cannot go there: ``(lobe, "")`` or ``(None, reason)``.
-
-    A hand-placed lobe is held to the rules a generated one is -- it reaches a
-    province to print, and only one (FR-3.7) -- and to one more: its far end
-    stays a clearance clear of every other lobe's, or two pockets run into
-    one.  ``ignore`` is the index of the lobe being moved, which may land
-    where it already was.  ``angle_deg`` and ``scale`` turn and size it, as
-    in :func:`lobe_at`.
-
-    ``allow_faults`` hands the connector back even when it breaks a rule,
-    as ``(lobe, reason)``: placed by hand, it is kept and drawn red until an
-    edit makes it valid.  Only a connector that cannot be built at all is
-    ``(None, reason)``.
-    """
-    d = definition
-    if d.border is None:
-        return None, "There is no corridor to put a connector on."
-    p = d.settings.connector_params()
-    lobe = lobe_at(d.border, x, y, p, angle_deg, scale)
-    if lobe is None:
-        return None, "No connector fits there."
-    others = [other for i, other in enumerate(d.lobes) if i != ignore]
-    why = _connector_fault(lobe, d, others, p, d.land())
-    if allow_faults:
-        return lobe, why
-    return (None, why) if why else (lobe, "")
-
-
-def split_at(definition, x: float, y: float):
-    """
-    The split a click at (x, y) puts across the corridor, and why not when it
-    cannot go there: ``(line, "")`` or ``(None, reason)``.
-
-    Straight across: through the corridor edge nearest the click, square to
-    it, from the bar's outer edge to its outer edge on the other side -- over
-    any hole the bar has there (where it rings an island of province), since
-    a cut that stops at a hole leaves the ring whole.  Refused where it does
-    not come out within ``SPLIT_REACH_WIDTHS`` corridor widths -- a click at
-    a junction, or running along a bend -- and where it would pass within a
-    clearance of a connector, which it would cut in two, and where it would
-    leave a piece under the bar's sliver floor (``MIN_PART_AREA_MM2``), which
-    would not be built.  Splits may otherwise sit as close as they like: one
-    on each arm is how a junction is taken apart.  The line runs a hair past
-    both edges, so it divides the corridor cleanly.
-    """
-    d = definition
-    if d.border is None:
-        return None, "There is no corridor to split."
-    p = d.settings.connector_params()
-    point = Point(x, y)
-    part = min(_polys(d.border), key=point.distance)
-    ring = min([part.exterior, *part.interiors], key=point.distance)
-    frame = _edge_frame(ring, ring.project(point), d.border, p.mpm)
-    if frame is None:
-        return None, "No clean cut across the corridor here."
-    at, _, (nx, ny) = frame
-    eps = 0.01 * p.mpm
-    reach = SPLIT_REACH_WIDTHS * d.settings.width_mm * p.mpm
-    # Both ways from the edge: into the bar, and -- from a hole's edge --
-    # back across the hole to the bar on its far side.  Holes filled, so
-    # the stretch through the click runs outer edge to outer edge.
-    probe = LineString([(at.x + nx * reach, at.y + ny * reach),
-                        (at.x - nx * reach, at.y - ny * reach)])
-    filled = Polygon(part.exterior)
-    inside = [g for g in _lines(probe.intersection(filled))
-              if g.distance(at) < 2 * eps]
-    outer = part.exterior
-    if not inside or inside[0].length >= 2 * reach - 4 * eps or any(
-            outer.distance(Point(c)) > 2 * eps
-            for c in (inside[0].coords[0], inside[0].coords[-1])):
-        return None, ("No clean cut across the corridor here: try a "
-                      "straighter stretch, away from a junction.")
-    (x0, y0), (x1, y1) = inside[0].coords[0], inside[0].coords[-1]
-    length = ((x1 - x0) ** 2 + (y1 - y0) ** 2) ** 0.5
-    ux, uy = (x1 - x0) / length, (y1 - y0) / length
-    cut = LineString([(x0 - ux * eps, y0 - uy * eps),
-                      (x1 + ux * eps, y1 + uy * eps)])
-    gap = p.clearance_mm * p.mpm
-    if any(cut.distance(lobe) < gap for lobe in d.lobes):
-        return None, "It would cut through a connector."
-    # Splits may sit as close as they like -- one on each arm of a junction
-    # is the usual way to take a junction apart -- but not so close that the
-    # piece between falls under the sliver floor the bar is built to, where
-    # it would not be built at all and that stretch of bar would be lost.
-    # Only the pieces this cut makes -- the two either side of it.  A map's
-    # corridor can hold specks under the floor already (where it rings a
-    # tiny island), and those are no reason to refuse a split elsewhere.
-    floor = MIN_PART_AREA_MM2 * p.mpm ** 2
-    trial = replace(d, splits=d.splits + [cut])
-    made = [piece for piece in trial.pieces() if piece.distance(cut) < eps]
-    if any(piece.area < floor for piece in made):
-        return None, (f"It would leave a piece under {MIN_PART_AREA_MM2:g} "
-                      "mm², too small to build -- move it a little further "
-                      "from the next split or the end of the bar.")
-    return cut, ""
-
-
-def _lines(geom) -> list:
-    """The LineStrings in ``geom``."""
-    if geom is None or geom.is_empty:
-        return []
-    if geom.geom_type == "LineString":
-        return [geom]
-    if hasattr(geom, "geoms"):
-        return [g for part in geom.geoms for g in _lines(part)]
-    return []
-
-
-#: Why a connector cannot stand: fault code -> what a refused placement says
-#: (``place_connector`` without ``allow_faults``).
-FAULTS = {
-    "no_province": ("That edge faces no province to print -- a surrounding "
-                    "region has nothing to key into."),
-    "two_provinces": ("It would reach into two provinces, with no one pocket "
-                      "to key into."),
-    "escapes": ("Its pocket would run out of the province -- past the coast "
-                "or into a neighbour."),
-    "crowded": "It would run into another connector.",
-    "detached": ("It would come loose from the bar: too little of its root "
-                 "is left in the corridor."),
-    "recrosses": ("It would meet the corridor in two places -- its far end "
-                  "runs back into the bar past a bend or a junction."),
-    "on_split": "It would sit on a split, and be cut in two.",
-    "thin": "Its neck would be too thin to print.",
-}
-
-#: The same, for a connector already placed: what the status line says of a
-#: red one.
-STANDING_FAULTS = {
-    "no_province": "it faces no province to print",
-    "two_provinces": "it reaches into two provinces",
-    "escapes": "its pocket runs out of the province",
-    "crowded": "it runs into another connector",
-    "detached": "too little of its root is in the corridor",
-    "recrosses": "it meets the corridor in two places",
-    "on_split": "it sits on a split, and would be cut in two",
-    "thin": "its neck is too thin to print",
-}
-
-#: The same, as the Borders report counts generated connectors it dropped.
-FAULT_COUNTS = {
-    "no_province": "faced no province",
-    "two_provinces": "reached into two provinces",
-    "escapes": "ran out of their province",
-    "crowded": "ran into another connector",
-    "detached": "came loose from the bar",
-    "recrosses": "met the corridor in two places",
-    "crosses_line": "crossed the border line between two provinces",
-    "on_split": "sat on a split",
-    "thin": "were too thin to print",
-}
-
-#: How much of a connector's root must stay in the corridor, as a fraction of
-#: what an unturned one of its size has there, for the bar to hold it.
-_ROOT_HOLD_FRAC = 0.5
-
-
-def _pieces(geom, lobe) -> int:
-    """How many separate pieces of ``geom`` count, against ``lobe``'s size:
-    a sliver where two outlines disagree by rounding is not a crossing."""
-    return sum(1 for poly in _polys(geom)
-               if poly.area > _OWNER_FRAC * lobe.area)
-
-
-def _connector_fault(lobe, definition, others, p, land) -> str:
-    """Why ``lobe`` cannot stand beside ``others``, or "" when it can.
-    ``land`` is the union of the targets, passed in so a caller checking
-    many lobes builds it once."""
-    code = _fault(lobe, definition, others, p, land)
-    return FAULTS[code] if code else ""
-
-
-def _fault(lobe, definition, others, p, land) -> str:
-    """
-    The code (a key of ``FAULTS``) of the first rule ``lobe`` breaks beside
-    ``others``, or "" when it breaks none.
-
-    * It must reach a province to print, and only one (FR-3.7).
-    * Its pocket -- the lobe grown by the clearance, outside the corridor --
-      must lie inside that one province: a pocket that crosses the coast or a
-      frontier opens in the side of the piece.
-    * It must not touch another connector, and its pocket must stay a
-      clearance clear of every other's, or two pockets run into one.
-    * Turned or shrunk by hand, it must keep enough root in the corridor to
-      hang on to the bar, and a neck the printer can hold.
-    * It must meet the corridor in one place only -- its root.  Near a bend
-      or a junction the far end can run back into the bar, which fuses the
-      connector to the bar there and leaves its pocket with a side open.
-    """
-    code = _own_fault(lobe, definition, p, land)
-    if code:
-        return code
-    reach = lobe.difference(definition.border)
-    gap = p.clearance_mm * p.mpm
-    for other in others:
-        if _crowds(lobe, reach, other, other.difference(definition.border)
-                   if _near(lobe, other, gap) else None, gap):
-            return "crowded"
-    return ""
-
-
-def _own_fault(lobe, definition, p, land) -> str:
-    """The first rule ``lobe`` breaks on its own -- every rule but
-    crowding, which needs the others -- or ""."""
-    d = definition
-    c = lobe.exterior.coords
-    neck_m = Point(c[0]).distance(Point(c[3]))
-    floor_m = min(2 * _cfg("seam.nozzle_mm"), p.neck_mm) * p.mpm
-    if neck_m < floor_m * (1 - 1e-6):
-        return "thin"
-    root_m2 = p.overlap_mm * p.mpm * neck_m          # an unturned root's area
-    in_bar = lobe.intersection(d.border)
-    if in_bar.area < _ROOT_HOLD_FRAC * root_m2:
-        return "detached"
-    if _pieces(in_bar, lobe) > 1 \
-            or _pieces(lobe.difference(d.border), lobe) > 1:
-        return "recrosses"
-    if lobe.intersection(land).area < p.min_overlap_frac * lobe.area:
-        return "no_province"
-    targets = list(d.targets.values())
-    if _owners(lobe, d.border, targets) != 1:
-        return "two_provinces"
-    gap = p.clearance_mm * p.mpm
-    pocket = lobe.buffer(gap).difference(d.border)
-    owner = max(targets, key=lambda geom: pocket.intersection(geom).area)
-    if pocket.difference(owner).area > _ESCAPE_FRAC * lobe.area:
-        return "escapes"
-    return ""
-
-
-def _near(lobe, other, gap) -> bool:
-    """Whether ``other``'s box comes within ``gap`` of ``lobe``'s: the cheap
-    test that spares the geometry for the many that are nowhere near."""
-    x0, y0, x1, y1 = lobe.bounds
-    ox0, oy0, ox1, oy1 = other.bounds
-    return not (ox1 < x0 - gap or ox0 > x1 + gap
-                or oy1 < y0 - gap or oy0 > y1 + gap)
-
-
-def _crowds(lobe, reach, other, other_reach, gap) -> bool:
-    """Whether two connectors touch, or their pockets come within ``gap``.
-    ``other_reach`` is None when the two are nowhere near."""
-    if other_reach is None:
-        return False
-    return lobe.intersects(other) or reach.distance(other_reach) < gap
-
-
-def reshape_connectors(definition: BorderDefinition,
-                       settings: BorderSettings):
-    """
-    ``definition``'s connectors in the shape ``settings`` asks for, each where
-    it stood: ``(lobes, dropped)``.
-
-    A lobe is rebuilt at its anchor on the corridor edge, turned and sized as
-    it was (:func:`lobe_pose`), so a connector put, turned or resized by hand
-    stays as it was left.  One the new shape no longer lets stand -- grown into
-    a neighbour, or now reaching into two provinces -- is kept, and drawn red
-    until it is fixed; only one that cannot be built at all is dropped and
-    counted.  The rest keep their order.
-    """
-    d = definition
-    if d.border is None or not d.lobes:
-        return list(d.lobes), 0
-    old, new = d.settings.connector_params(), settings.connector_params()
-    kept, dropped = [], 0
-    for lobe in d.lobes:
-        x, y, angle, scale = lobe_pose(lobe, d.border, old)
-        reshaped = lobe_at(d.border, x, y, new, angle, scale)
-        if reshaped is None:
-            dropped += 1
-        else:
-            kept.append(reshaped)
-    return kept, dropped
-
-
-@dataclass
-class BarResult:
-    """The border bar, split for the bed (result of :func:`build_bar`)."""
-    mesh: object = None
-    pieces: list = field(default_factory=list)
-    origin_m: tuple = (0.0, 0.0)   #: metres point at the bar's print-mm (0, 0)
-    mpm: float = 0.0
-    lobes: int = 0
-    lobes_cut: int = 0             #: connectors a split went through
-    draped: bool = False           #: top follows the terrain, not flat
-    too_big: int = 0               #: pieces that will not fit the bed
-    #: Per solid in ``pieces``: whether it is part of a piece too big for
-    #: the bed -- the 3D panel draws those red.
-    piece_too_big: list = field(default_factory=list)
-
-
-def build_bar(definition: BorderDefinition, bed_mm=None,
-              margin_mm=None, surface=None) -> BarResult:
-    """
-    The border bar (corridor + lobe layer), in the pieces the splits plan.
-
-    Nothing is split for you: each piece is a stretch of corridor between the
-    splits drawn on the Borders tab (:meth:`BorderDefinition.pieces`), with
-    the connectors it carries, extruded on its own.  All of them share one
-    local frame whose metres origin is known -- so they lie where they will
-    join, and the 3D panel can lay a terrain solid beside them.  A piece too
-    big for the bed is built all the same and counted (``too_big``):
-    ``bed_mm`` and ``margin_mm`` are what it is measured against.
-
-    ``surface`` -- ``(xs_m, ys_m) -> print-mm``, from :func:`bar_surface` --
-    drapes the bar's top over the terrain so it stands as tall as the solids
-    either side of it; without one the top is flat at the bar's thickness.
-    """
-    if definition.border is None:
-        raise ValueError("No corridor to print: the targets share no border "
-                         "and touch no surrounding region.")
-    params = definition.settings.connector_params()
-    lobes = definition.lobes
-    # Print-mm (0, 0) at the bottom-left of the corridor and lobes together,
-    # for every piece: they stay where they lie relative to each other.
-    bottom = _safe_union([definition.border] + list(lobes)) if lobes \
-        else definition.border
-    origin = tuple(bottom.bounds[:2])
-    big = set(definition.too_big(bed_mm, margin_mm))
-    pieces, flags = [], []
-    for i, (piece, mine) in enumerate(zip(definition.pieces(),
-                                          definition.piece_lobes())):
-        solids = build_border_pieces(piece, mine, params, surface,
-                                     origin_m=origin)
-        pieces += solids
-        flags += [i in big] * len(solids)
-    if not pieces:
-        raise ValueError("The corridor is too thin to extrude; widen it.")
-    mesh = pieces[0] if len(pieces) == 1 else trimesh.util.concatenate(pieces)
-    result = BarResult(mesh=mesh, pieces=pieces, origin_m=origin,
-                       mpm=params.mpm, lobes=len(lobes),
-                       draped=surface is not None, too_big=len(big),
-                       piece_too_big=flags)
-    result.lobes_cut = _lobes_cut(pieces, lobes, origin, params.mpm)
-    return result
-
-
-def bar_surface(raster, corridor, warp: ReprojectParams,
-                terrain: TerrainParams, warp_path):
-    """
-    The terrain's height over the corridor, for :func:`build_bar` to drape on.
-
-    The DEM is warped to the working CRS -- where the corridor is -- over the
-    corridor's extent, at the resolution and resampling the crop uses, then
-    read through the solid's own elevation -> mm rule.  So the bar's top meets
-    each solid at the height that solid has at the seam, whichever province's
-    crop it came from.
-    """
-    pad = 2 * max(warp.dst_res_m, 1.0)
-    params = replace(warp, bounds=bounds_for(corridor, EPSG_WORKING, pad))
-    reproject_geotiff(raster, EPSG_WORKING, warp_path, params)
-    return surface_sampler(warp_path, terrain)
-
-
-def build_draped_bar(definition: BorderDefinition, raster, warp, terrain,
-                     warp_path) -> BarResult:
-    """:func:`build_bar` with its top draped over ``raster``."""
-    return build_bar(definition, surface=bar_surface(
-        raster, definition.border, warp, terrain, warp_path))
-
-
-def _footprint(mesh):
-    """A solid's plan footprint, from its downward-facing triangles."""
-    down = mesh.face_normals[:, 2] < -0.5
-    tris = [Polygon(t[:, :2]) for t in mesh.triangles[down]]
-    return unary_union([t for t in tris if t.area > 0])
-
-
-def _lobes_cut(pieces, lobes, origin, mpm) -> int:
-    """How many lobes ended up in two or more bed pieces (FR-3.11)."""
-    if len(pieces) < 2 or not lobes:
-        return 0
-    prints = [_footprint(piece) for piece in pieces]
-    matrix = [1 / mpm, 0, 0, 1 / mpm, -origin[0] / mpm, -origin[1] / mpm]
-    cut = 0
-    for lobe in lobes:
-        lobe_mm = affine_transform(lobe, matrix)
-        holders = sum(1 for fp in prints
-                      if lobe_mm.intersection(fp).area > 1e-3 * lobe_mm.area)
-        cut += holders > 1
-    return cut
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def build_terrain(raster, boundary, out_path, params, lobes=None,
@@ -2637,7 +1656,6 @@ class TerrainEditorTester(QMainWindow):
 
     def _borders_text(self) -> str:
         d = self.borders
-        s = d.settings
         if d.loaded_from:
             # What Define measured on the way is not saved, so there is no
             # vertex count or seam report to give -- only where they came from.
@@ -2753,62 +1771,8 @@ class TerrainEditorTester(QMainWindow):
         self.status.setText(f"Saved {len(written)} file(s) to {folder}.")
 
     def write_borders(self, folder: Path) -> list:
-        """
-        ``borders.geojson`` + ``name_<province>.geojson`` per trimmed target,
-        each in the CRS its province arrived in -- the folder layout
-        ``build_border_from_dir`` reads.
-        """
-        folder.mkdir(parents=True, exist_ok=True)
-        default_crs = next(iter(self.region_crs.values()), EPSG_WORKING)
-        written = []
-
-        def write(name, geom, crs, path):
-            frame = gpd.GeoDataFrame({"name": [name]}, geometry=[geom],
-                                     crs=EPSG_WORKING).to_crs(crs)
-            frame.to_file(path, driver="GeoJSON")
-            written.append(path)
-
-        if self.borders.border is not None:
-            write("border", self.borders.border, default_crs,
-                  folder / "borders.geojson")
-        # The lobes as they stand, so a hand edit survives the folder being
-        # read back (build_border_from_dir uses these rather than its own).
-        connectors = folder / CONNECTORS_NAME
-        if self.borders.lobes:
-            p = self.borders.settings.connector_params()
-            poses = [lobe_pose(lobe, self.borders.border, p)
-                     for lobe in self.borders.lobes]
-            frame = gpd.GeoDataFrame(
-                {"name": [f"connector_{i}" for i in
-                          range(1, len(self.borders.lobes) + 1)],
-                 "angle_deg": [round(pose[2], 3) for pose in poses],
-                 "scale": [round(pose[3], 4) for pose in poses]},
-                geometry=list(self.borders.lobes), crs=EPSG_WORKING)
-            frame.to_crs(default_crs).to_file(connectors, driver="GeoJSON")
-            written.append(connectors)
-        elif connectors.exists():
-            connectors.unlink()      # a stale set would key into nothing
-        for name, geom in self.borders.targets.items():
-            write(name, geom, self.region_crs.get(name, default_crs),
-                  folder / f"name_{_safe_name(name)}.geojson")
-        splits = folder / SPLITS_NAME
-        if self.borders.splits:
-            gpd.GeoDataFrame(
-                {"name": [f"split_{i}" for i in
-                          range(1, len(self.borders.splits) + 1)]},
-                geometry=list(self.borders.splits), crs=EPSG_WORKING,
-            ).to_crs(default_crs).to_file(splits, driver="GeoJSON")
-            written.append(splits)
-        elif splits.exists():
-            splits.unlink()          # stale splits would cut the wrong bar
-        # The settings the connectors were shaped by, so Load Borders can
-        # rebuild them as they were -- a connector's turn and size are read
-        # off its outline against these.
-        settings = folder / BORDER_SETTINGS_NAME
-        settings.write_text(json.dumps(asdict(self.borders.settings),
-                                       indent=2) + "\n", encoding="utf-8")
-        written.append(settings)
-        return written
+        """Save Borders' files: see :func:`LIB_border_plan.write_borders`."""
+        return write_borders(self.borders, folder, self.region_crs)
 
     def load_borders(self) -> None:
         """Reload a folder Save Borders wrote, hand edits and all."""
@@ -3043,7 +2007,6 @@ class TerrainEditorTester(QMainWindow):
         if index is not None:
             self.select_split(index)
             return
-        p = self.borders.settings.connector_params()
         if self.borders.border.distance(Point(x, y)) > self._pick_distance():
             self.status.setText("Click on the corridor to split the bar "
                                 "there.")
@@ -3184,9 +2147,7 @@ class TerrainEditorTester(QMainWindow):
     # -- the selected connector ----------------------------------------------
     def connector_pose(self, index: int) -> tuple:
         """``(x, y, angle_deg, scale)`` of connector ``index``."""
-        d = self.borders
-        return lobe_pose(d.lobes[index], d.border,
-                         d.settings.connector_params())
+        return connector_pose(self.borders, index)
 
     def _faults_text(self) -> str:
         """What the status line adds about red connectors: why the selected
@@ -3303,20 +2264,12 @@ class TerrainEditorTester(QMainWindow):
             self.delete_connector(self._selected)
 
     def _handle_at(self, index: int) -> tuple:
-        """Where the turning handle of connector ``index`` is drawn: the
-        middle of its far end."""
-        c = self.borders.lobes[index].exterior.coords
-        return (c[1][0] + c[2][0]) / 2, (c[1][1] + c[2][1]) / 2
+        """Where the turning handle of connector ``index`` is drawn."""
+        return handle_at(self.borders, index)
 
     def _angle_toward(self, index: int, x: float, y: float) -> float:
-        """The angle that points connector ``index`` at (x, y), measured
-        from square to its edge as :func:`lobe_pose` measures it."""
-        ax_, ay_, angle, _ = self.connector_pose(index)
-        hx, hy = self._handle_at(index)
-        here = np.degrees(np.arctan2(hy - ay_, hx - ax_))
-        there = np.degrees(np.arctan2(y - ay_, x - ax_))
-        turn = (there - here + 180.0) % 360.0 - 180.0
-        return angle + turn
+        """The angle that points connector ``index`` at (x, y)."""
+        return angle_toward(self.borders, index, x, y)
 
     def _on_key(self, event) -> None:
         """Keys on the map act on the selected connector -- or, editing
@@ -3559,34 +2512,18 @@ class TerrainEditorTester(QMainWindow):
             return None          # half-typed EPSG code; the preview just waits
 
     def needs_warp(self) -> bool:
-        """Whether the output lands in a different CRS than the DEM.
-
-        This is the *frame* question, so it is what the panel-linking and the
-        CRS labels key off — not what decides which code path runs.
-        """
-        dst = self.target_crs()
-        return (dst is not None and self.raster_crs is not None
-                and dst != self.raster_crs)
+        """Whether the output lands in a different CRS than the DEM."""
+        return needs_warp(self.raster_crs, self.target_crs())
 
     def reduction(self) -> float:
         """Requested output resolution as a multiple of the DEM's native one."""
-        native = self.raster_res[0]
-        target = self.res_spin.value()
-        if not native or target <= 0:
-            return 1.0
-        return max(1.0, target / native)
+        return reduction(self.raster_res[0], self.res_spin.value())
 
     def needs_resample(self) -> bool:
-        """Whether the run goes through the warper rather than plain decimation.
-
-        A reprojection obviously needs it — but so does a pure **downsample**.
-        ``LIB_geotiff_clip`` can only decimate nearest-neighbour (GDAL's RasterIO
-        path cannot skip nodata), which costs 1363 m of Mount Caubvick against
-        the 1578 m ``max`` recovers.  Routing every coarsening through the
-        warper is what keeps the Resample control meaningful instead of
-        silently inert whenever the target CRS happened to match the DEM's.
-        """
-        return self.needs_warp() or self.reduction() > 1.001
+        """Whether the run goes through the warper rather than plain
+        decimation: see :func:`LIB_raster_plan.needs_resample`."""
+        return needs_resample(self.raster_crs, self.target_crs(),
+                              self.raster_res[0], self.res_spin.value())
 
     # -- axes helpers -------------------------------------------------------
 
@@ -3675,35 +2612,16 @@ class TerrainEditorTester(QMainWindow):
 
     # -- the plan both the preview and the run follow -----------------------
     def _plan(self):
-        """
-        The (warp_params | None, clip_params) the current settings imply.
-
-        Preview and run share this so they cannot disagree.  When a warp runs it
-        is handed the boundary's bounds, so the warp *is* the bbox crop and the
-        clip is left to apply only the polygon mask — which is also why the
-        final grid equals the warped grid exactly, and the preview can promise
-        the number the run produces.
-        """
-        res = self.res_spin.value()
-        cache = int(self.cache_spin.value())
-        if not self.needs_resample():
-            return None, ClipParams(crop=self.chk_crop.isChecked(),
-                                    all_touched=self.chk_touched.isChecked(),
-                                    target_res_m=res, gdal_cache_mb=cache)
-        # On a pure downsample this is the raster's own CRS, so the warp
-        # changes only scale — exactly what downsample_geotiff does.
-        dst = self.target_crs()
-        bounds = (bounds_for(self._boundary_geom(dst), dst)
-                  if self.chk_crop.isChecked() else None)
-        warp = ReprojectParams(dst_res_m=res, bounds=bounds,
-                               resampling=Resampling[
-                                   self.resample_combo.currentText()],
-                               gdal_cache_mb=cache)
-        # crop=False: the warp already cut to the bbox, and target_res_m=0
-        # because the warp already produced the requested resolution.
-        clip = ClipParams(crop=False, all_touched=self.chk_touched.isChecked(),
-                          target_res_m=0.0, gdal_cache_mb=cache)
-        return warp, clip
+        """The (warp_params | None, clip_params) the current settings imply --
+        shared by the preview and the run, so they cannot disagree (see
+        :func:`LIB_raster_plan.plan_run`)."""
+        return plan_run(
+            self.raster_crs, self.raster_res[0], self.target_crs(),
+            self.res_spin.value(), self._boundary_geom,
+            crop=self.chk_crop.isChecked(),
+            all_touched=self.chk_touched.isChecked(),
+            resampling=self.resample_combo.currentText(),
+            cache_mb=int(self.cache_spin.value()))
 
     def _cost_text(self) -> str:
         """
@@ -3721,12 +2639,7 @@ class TerrainEditorTester(QMainWindow):
         warp, clip = self._plan()
         try:
             with rasterio.open(str(self.raster_path)) as ds:
-                if warp is not None:
-                    grid = _warp_grid(ds, dst, warp)
-                else:
-                    window = _read_window(ds, self._boundary_geom(),
-                                          clip.crop)
-                    grid = _clip_grid(ds, window, clip)
+                grid = output_grid(ds, dst, warp, clip, self._boundary_geom())
         except ValueError as exc:          # disjoint boundary, usually a CRS slip
             return f"Cannot run: {exc}"
         except Exception:
@@ -3780,54 +2693,18 @@ class TerrainEditorTester(QMainWindow):
         self._invalidate_raster()
 
     def finest_res(self) -> float | None:
-        """
-        The finest resolution (m/px) the selected province can be built at,
-        or None when there is no DEM or boundary to size it against.
-
-        Finest such that the solid's grid fits ``max_triangles`` -- the limit
-        Build STL refuses beyond, counted the way the lib counts it, over the
-        crop's whole grid -- and never finer than the DEM's own pitch.  The
-        grid at each candidate comes from the libs' own grid helpers, so this
-        is the grid the run will produce, not an estimate of it.
-        """
+        """The finest resolution (m/px) the selected province can be built
+        at under the triangle limit, or None when there is no DEM or boundary
+        to size it against (see :func:`LIB_raster_plan.finest_res`)."""
         if self.raster_path is None or self.boundary is None \
                 or self.target_crs() is None:
             return None
-        native = float(self.raster_res[0]) or 1.0
-        budget = self._terrain_params().max_triangles
-        dst = self.target_crs()
-        crop = self.chk_crop.isChecked()
         try:
-            with rasterio.open(str(self.raster_path)) as ds:
-                bounds = (bounds_for(self._boundary_geom(dst), dst)
-                          if crop else None)
-                window = _read_window(ds, self._boundary_geom(), crop)
-                same_crs = not self.needs_warp()
-
-                def triangles(res):
-                    if same_crs and res <= native * 1.001:
-                        grid = _clip_grid(ds, window, ClipParams(
-                            crop=crop, target_res_m=0.0))
-                    else:
-                        grid = _warp_grid(ds, dst, ReprojectParams(
-                            dst_res_m=res, bounds=bounds))
-                    return _triangle_count(grid.width, grid.height)
-
-                if triangles(native) <= budget:
-                    return 0.0 if same_crs else native
-                lo, hi = native, native * 2
-                while triangles(hi) > budget:
-                    lo, hi = hi, hi * 2
-                for _ in range(40):           # to well under a metre
-                    if hi - lo < 0.5:
-                        break
-                    mid = (lo + hi) / 2
-                    lo, hi = (lo, mid) if triangles(mid) <= budget \
-                        else (mid, hi)
-                res = float(np.ceil(hi))
-                while triangles(res) > budget:
-                    res += 1.0
-                return res
+            return finest_res(self.raster_path, self.raster_crs,
+                              self.raster_res[0], self.target_crs(),
+                              self._boundary_geom,
+                              self.chk_crop.isChecked(),
+                              self._terrain_params().max_triangles)
         except Exception:
             return None                       # the preview says what is wrong
 
@@ -4024,25 +2901,8 @@ class TerrainEditorTester(QMainWindow):
 
     def _bar_colours(self):
         """Per-vertex colours for the bar: grey, and red on each piece too
-        big for the bed -- or None (all grey) when every piece fits.
-
-        The bar's mesh is its pieces concatenated in order, so their vertex
-        counts, in order, say which vertices are whose.
-        """
-        bar = self.bar
-        if bar is None or not any(bar.piece_too_big) \
-                or len(bar.piece_too_big) != len(bar.pieces):
-            return None
-        if len(bar.pieces) == 1:
-            counts = [len(bar.mesh.vertices)]
-        else:
-            counts = [len(piece.vertices) for piece in bar.pieces]
-        if sum(counts) != len(bar.mesh.vertices):
-            return None                    # not the concatenation: stay grey
-        return np.vstack([np.tile(TOO_BIG_BAR_COLOUR if big else BAR_COLOUR,
-                                  (n, 1))
-                          for n, big in zip(counts, bar.piece_too_big)]
-                         ).astype(np.float32)
+        big for the bed -- or None (all grey) when every piece fits."""
+        return bar_vertex_colours(self.bar, BAR_COLOUR, TOO_BIG_BAR_COLOUR)
 
     def _show_meshes(self, title: str, meshes) -> None:
         """Draw several meshes; ``None`` colours means the flat bar grey."""

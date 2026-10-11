@@ -403,6 +403,14 @@ def _triangle_count(cols, rows):
 # The slab
 # ---------------------------------------------------------------------------
 
+
+def triangle_count(cols, rows):
+    """The triangles a ``cols`` x ``rows`` grid meshes to -- what
+    ``max_triangles`` is checked against.  Public so the limit can be planned
+    for before a raster is cut."""
+    return _triangle_count(cols, rows)
+
+
 def _build_slab(elev, transform, nodata, params, result):
     """
     Two triangles per cell on top, a mirrored base at z=0, and four walls.
