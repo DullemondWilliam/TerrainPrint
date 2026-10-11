@@ -13,7 +13,7 @@ A standalone visual harness for the whole terrain pipeline, in three stages:
 3 · STL      ``LIB_raster_reproject`` -> ``LIB_geotiff_clip`` ->
              ``LIB_terrain_stl`` per province, cut to the province *after* the
              corridor was carved out of it and pocketed for the dovetails; and
-             the border bar, ``build_border_mesh`` -> ``split_to_bed``.
+             the border bar, in the pieces the splits planned on tab 2.
 
 Stage 3 is the original single-province harness, and still runs on its own:
 with no borders defined it cuts to the province as imported.  The workflow
@@ -231,10 +231,15 @@ a solid, both are the height of the ground there.  It never drops below
 top is flat at that thickness.  Changing any of those settings stales a draped
 bar.
 
-*The bed split cannot yet see connectors.*  ``split_to_bed`` cuts the bar
-without knowing where the lobes are (FR-3.11 is not enforced), so the status
-line counts the connectors a cut went through rather than letting a split lobe
-reach the printer unannounced.
+*The bar is cut where you plan it, never for you.*  **Edit Splits** (X) on
+the Borders tab puts a split straight across the corridor where you click;
+click one to select it, and **Remove** (Backspace) takes it away.  Each is one
+Undo step, saved and loaded with the borders (``splits.geojson``), and Define
+starts with none.  A split is refused through a connector (FR-3.11), and a
+connector moved onto one turns red.  **Build Border STL** extrudes each piece
+between the splits on its own, all in one frame so they meet where they
+were cut; a piece too big for the bed -- tried turned whichever way fits, as
+a slicer would -- is outlined in red on the map and counted, and still built.
 
 *Pockets need the print CRS.*  Lobes are generated in EPSG:3347 and the solid's
 ``origin_m`` is in whatever CRS the raster stage produced, so pocketing a solid
@@ -255,6 +260,7 @@ from pathlib import Path
 import geopandas as gpd
 import numpy as np
 import rasterio
+import trimesh
 import vispy
 from matplotlib import colormaps
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
@@ -267,9 +273,10 @@ from matplotlib.path import Path as MplPath
 from rasterio.crs import CRS
 from rasterio.enums import Resampling
 from shapely.affinity import affine_transform
-from shapely.geometry import Point, Polygon
+from shapely.geometry import LineString, Point, Polygon
 from shapely.geometry.polygon import orient
 from shapely import STRtree
+from shapely.ops import split as split_geom
 from shapely.ops import unary_union
 from vispy import scene
 
@@ -283,14 +290,14 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox,
                                QWidget)
 
 from lib.LIB_border_connectors import (CONNECTORS_NAME, ConnectorParams,
-                                       _polys, _repair, _safe_union,
-                                       build_border_mesh, generate_lobes,
+                                       _edge_frame, _polys, _repair, _rings,
+                                       _safe_union,
+                                       build_border_pieces, generate_lobes,
                                        load_connector_params, lobe_at,
                                        lobe_pose,
                                        notch_province)
 from lib.LIB_border_regions import build_border_regions, shared_borderlines
 from lib.LIB_border_simplification import topo_simplify_two_tolerances
-from lib.LIB_border_split import split_to_bed
 from lib.LIB_shared_border import _count_short, _count_spikes
 from lib.LIB_geotiff_clip import ClipParams, clip_geotiff
 # The cost preview must agree with what the run actually does, so it asks the
@@ -359,6 +366,16 @@ DRAG_COLOUR = "#1E8449"       # dark green — where a dragged connector lands
 REFUSED_COLOUR = "#C0392B"    # red — where it cannot
 INVALID_COLOUR = REFUSED_COLOUR   # a connector that breaks a rule, until fixed
 PICKED_COLOUR = "#7D3C98"     # purple — the selected connector and its handle
+SPLIT_COLOUR = "#17202A"      # near-black — a planned split across the bar
+#: A split is a straight cut across the corridor, found by walking in from the
+#: edge nearest the click.  One that has not come out the other side within
+#: this many corridor widths is running *along* the corridor, not across it.
+SPLIT_REACH_WIDTHS = 3.0
+#: The closest two splits may be, in print-mm: a shorter piece is a crumb to
+#: lose, and one under the bar's sliver floor would not be built at all.
+SPLIT_MIN_GAP_MM = 10.0
+#: Where splits are saved beside a Borders folder.
+SPLITS_NAME = "splits.geojson"
 #: How near, in screen pixels, a click must be to a connector to pick it.
 PICK_PX = 8
 #: "Leave the selection as it is", where None would mean "select nothing".
@@ -611,6 +628,14 @@ class BorderDefinition:
     #: The folder it was read back from (:func:`read_borders`), or "" when
     #: Define made it.
     loaded_from: str = ""
+    #: Where the bar is cut into printable pieces: straight lines across the
+    #: corridor (:func:`split_at`), planned by hand.  Define makes none --
+    #: the bar is never split for you.
+    splits: list = field(default_factory=list)
+    _pieces: list = field(default=None, repr=False, compare=False,
+                          init=False)
+    _pieces_key: tuple = field(default=None, repr=False, compare=False,
+                               init=False)
     #: Pieces the corridor cut off from their province, added to the bar
     #: (see :func:`_absorb_enclaves`), and their printed area.
     enclaves: int = 0
@@ -662,7 +687,7 @@ class BorderDefinition:
         if self.border is None:
             return ["" for _ in self.lobes]
         self._check_fault_key()
-        ids = tuple(map(id, self.lobes))
+        ids = (tuple(map(id, self.lobes)), tuple(map(id, self.splits)))
         if self._fault_answer is not None and self._fault_answer[0] == ids:
             return list(self._fault_answer[1])
         p = self.settings.connector_params()
@@ -674,7 +699,7 @@ class BorderDefinition:
                 hit = (lobe, _own_fault(lobe, self, p, land), None)
                 self._fault_cache[id(lobe)] = hit
             own.append(hit[1])
-        live = set(ids)
+        live = set(ids[0])
         for gone in [k for k in self._fault_cache if k not in live]:
             del self._fault_cache[gone]
 
@@ -691,6 +716,11 @@ class BorderDefinition:
                 if _crowds(a, self._reach(a), b, self._reach(b), gap):
                     codes[i] = codes[i] or "crowded"
                     codes[j] = codes[j] or "crowded"
+        for cut in self.splits:
+            for i, lobe in enumerate(self.lobes):
+                if not codes[i] and _near(lobe, cut, gap) \
+                        and lobe.distance(cut) < gap:
+                    codes[i] = "on_split"
         self._fault_answer = (ids, codes)
         return list(codes)
 
@@ -710,6 +740,62 @@ class BorderDefinition:
         self._check_fault_key()
         for lobe in lobes:
             self._fault_cache[id(lobe)] = (lobe, "", None)
+
+    def pieces(self) -> list:
+        """The bar's corridor, cut at every split: one polygon per printed
+        piece.  Kept until the corridor or the splits change."""
+        if self.border is None:
+            return []
+        key = (id(self.border), tuple(map(id, self.splits)))
+        if self._pieces_key != key:
+            geoms = list(_polys(self.border))
+            for cut in self.splits:
+                out = []
+                for geom in geoms:
+                    if geom.intersects(cut):
+                        out += _polys(split_geom(geom, cut))
+                    else:
+                        out.append(geom)
+                geoms = out
+            self._pieces, self._pieces_key = geoms, key
+        return list(self._pieces)
+
+    def piece_lobes(self) -> list:
+        """For each piece, the connectors it carries: each goes with the
+        piece holding most of its root."""
+        pieces = self.pieces()
+        out = [[] for _ in pieces]
+        for lobe in self.lobes:
+            best, share = None, 0.0
+            for i, piece in enumerate(pieces):
+                if _near(lobe, piece, 0.0):
+                    area = lobe.intersection(piece).area
+                    if area > share:
+                        best, share = i, area
+            if best is not None:
+                out[best].append(lobe)
+        return out
+
+    def too_big(self, bed_mm=None, margin_mm=None) -> list:
+        """Indices of the pieces that will not fit the bed, turned whichever
+        way fits best -- a slicer turns a part to fit, so the test is the
+        piece's smallest rotated rectangle, connectors included."""
+        bed = _cfg("print.bed_mm") if bed_mm is None else bed_mm
+        margin = _cfg("print.bed_margin_mm") if margin_mm is None \
+            else margin_mm
+        usable = (bed - 2 * margin) * self.settings.mpm
+        big = []
+        for i, (piece, lobes) in enumerate(zip(self.pieces(),
+                                               self.piece_lobes())):
+            shape = unary_union([piece, *lobes]) if lobes else piece
+            rect = shape.minimum_rotated_rectangle
+            xy = list(rect.exterior.coords) if rect.geom_type == "Polygon" \
+                else []
+            sides = sorted(Point(a).distance(Point(b))
+                           for a, b in zip(xy, xy[1:]))[-2:] if xy else [0, 0]
+            if max(sides) > usable * (1 + 1e-9):
+                big.append(i)
+        return big
 
     def border_line(self):
         """The border line between the printed provinces -- the shared
@@ -951,6 +1037,10 @@ def read_borders(folder: Path, settings: "BorderSettings | None" = None):
         result.lobes = [Polygon(geom.exterior.coords)
                         for geom in read(connectors).geometry]
         result.lobes_edited = True
+    splits = folder / SPLITS_NAME
+    if splits.exists():
+        result.splits = [LineString(geom.coords)
+                         for geom in read(splits).geometry]
     return result
 
 
@@ -1056,6 +1146,75 @@ def place_connector(definition: BorderDefinition, x: float, y: float,
     return (None, why) if why else (lobe, "")
 
 
+def split_at(definition, x: float, y: float):
+    """
+    The split a click at (x, y) puts across the corridor, and why not when it
+    cannot go there: ``(line, "")`` or ``(None, reason)``.
+
+    Straight across: through the corridor edge nearest the click, square to
+    it, from the bar's outer edge to its outer edge on the other side -- over
+    any hole the bar has there (where it rings an island of province), since
+    a cut that stops at a hole leaves the ring whole.  Refused where it does
+    not come out within ``SPLIT_REACH_WIDTHS`` corridor widths -- a click at
+    a junction, or running along a bend -- and where it would pass within a
+    clearance of a connector, which it would cut in two, and within
+    ``SPLIT_MIN_GAP_MM`` of another split.  The line runs a hair past both
+    edges, so it divides the corridor cleanly.
+    """
+    d = definition
+    if d.border is None:
+        return None, "There is no corridor to split."
+    p = d.settings.connector_params()
+    point = Point(x, y)
+    part = min(_polys(d.border), key=point.distance)
+    ring = min([part.exterior, *part.interiors], key=point.distance)
+    frame = _edge_frame(ring, ring.project(point), d.border, p.mpm)
+    if frame is None:
+        return None, "No clean cut across the corridor here."
+    at, _, (nx, ny) = frame
+    eps = 0.01 * p.mpm
+    reach = SPLIT_REACH_WIDTHS * d.settings.width_mm * p.mpm
+    # Both ways from the edge: into the bar, and -- from a hole's edge --
+    # back across the hole to the bar on its far side.  Holes filled, so
+    # the stretch through the click runs outer edge to outer edge.
+    probe = LineString([(at.x + nx * reach, at.y + ny * reach),
+                        (at.x - nx * reach, at.y - ny * reach)])
+    filled = Polygon(part.exterior)
+    inside = [g for g in _lines(probe.intersection(filled))
+              if g.distance(at) < 2 * eps]
+    outer = part.exterior
+    if not inside or inside[0].length >= 2 * reach - 4 * eps or any(
+            outer.distance(Point(c)) > 2 * eps
+            for c in (inside[0].coords[0], inside[0].coords[-1])):
+        return None, ("No clean cut across the corridor here: try a "
+                      "straighter stretch, away from a junction.")
+    (x0, y0), (x1, y1) = inside[0].coords[0], inside[0].coords[-1]
+    length = ((x1 - x0) ** 2 + (y1 - y0) ** 2) ** 0.5
+    ux, uy = (x1 - x0) / length, (y1 - y0) / length
+    cut = LineString([(x0 - ux * eps, y0 - uy * eps),
+                      (x1 + ux * eps, y1 + uy * eps)])
+    gap = p.clearance_mm * p.mpm
+    if any(cut.distance(lobe) < gap for lobe in d.lobes):
+        return None, "It would cut through a connector."
+    if any(cut.distance(other) < SPLIT_MIN_GAP_MM * p.mpm
+           for other in d.splits):
+        return None, (f"Too close to another split: keep them "
+                      f"{SPLIT_MIN_GAP_MM:g} mm apart, or the piece between "
+                      "is a crumb.")
+    return cut, ""
+
+
+def _lines(geom) -> list:
+    """The LineStrings in ``geom``."""
+    if geom is None or geom.is_empty:
+        return []
+    if geom.geom_type == "LineString":
+        return [geom]
+    if hasattr(geom, "geoms"):
+        return [g for part in geom.geoms for g in _lines(part)]
+    return []
+
+
 #: Why a connector cannot stand: fault code -> what a refused placement says
 #: (``place_connector`` without ``allow_faults``).
 FAULTS = {
@@ -1070,6 +1229,7 @@ FAULTS = {
                  "is left in the corridor."),
     "recrosses": ("It would meet the corridor in two places -- its far end "
                   "runs back into the bar past a bend or a junction."),
+    "on_split": "It would sit on a split, and be cut in two.",
     "thin": "Its neck would be too thin to print.",
 }
 
@@ -1082,6 +1242,7 @@ STANDING_FAULTS = {
     "crowded": "it runs into another connector",
     "detached": "too little of its root is in the corridor",
     "recrosses": "it meets the corridor in two places",
+    "on_split": "it sits on a split, and would be cut in two",
     "thin": "its neck is too thin to print",
 }
 
@@ -1094,6 +1255,7 @@ FAULT_COUNTS = {
     "detached": "came loose from the bar",
     "recrosses": "met the corridor in two places",
     "crosses_line": "crossed the border line between two provinces",
+    "on_split": "sat on a split",
     "thin": "were too thin to print",
 }
 
@@ -1228,18 +1390,23 @@ class BarResult:
     origin_m: tuple = (0.0, 0.0)   #: metres point at the bar's print-mm (0, 0)
     mpm: float = 0.0
     lobes: int = 0
-    lobes_cut: int = 0             #: connectors a bed split went through
+    lobes_cut: int = 0             #: connectors a split went through
     draped: bool = False           #: top follows the terrain, not flat
+    too_big: int = 0               #: pieces that will not fit the bed
 
 
 def build_bar(definition: BorderDefinition, bed_mm=None,
               margin_mm=None, surface=None) -> BarResult:
     """
-    The border bar (corridor + lobe layer), then split to the bed.
+    The border bar (corridor + lobe layer), in the pieces the splits plan.
 
-    Built by ``build_border_mesh`` with or without lobes, so the bar always sits
-    in one local frame whose metres origin is known -- which is what lets the
-    3D panel lay a terrain solid beside it.
+    Nothing is split for you: each piece is a stretch of corridor between the
+    splits drawn on the Borders tab (:meth:`BorderDefinition.pieces`), with
+    the connectors it carries, extruded on its own.  All of them share one
+    local frame whose metres origin is known -- so they lie where they will
+    join, and the 3D panel can lay a terrain solid beside them.  A piece too
+    big for the bed is built all the same and counted (``too_big``):
+    ``bed_mm`` and ``margin_mm`` are what it is measured against.
 
     ``surface`` -- ``(xs_m, ys_m) -> print-mm``, from :func:`bar_surface` --
     drapes the bar's top over the terrain so it stands as tall as the solids
@@ -1250,20 +1417,22 @@ def build_bar(definition: BorderDefinition, bed_mm=None,
                          "and touch no surrounding region.")
     params = definition.settings.connector_params()
     lobes = definition.lobes
-    mesh = build_border_mesh(definition.border, lobes, params, surface)
-    if mesh is None:
-        raise ValueError("The corridor is too thin to extrude; widen it.")
-    # build_border_pieces puts print-mm (0, 0) at the bottom-left of the
-    # corridor and lobes together; mirror that so the origin is known.
+    # Print-mm (0, 0) at the bottom-left of the corridor and lobes together,
+    # for every piece: they stay where they lie relative to each other.
     bottom = _safe_union([definition.border] + list(lobes)) if lobes \
         else definition.border
     origin = tuple(bottom.bounds[:2])
-    pieces = split_to_bed(
-        mesh, _cfg("print.bed_mm") if bed_mm is None else bed_mm,
-        _cfg("print.bed_margin_mm") if margin_mm is None else margin_mm)
+    pieces = []
+    for piece, mine in zip(definition.pieces(), definition.piece_lobes()):
+        pieces += build_border_pieces(piece, mine, params, surface,
+                                      origin_m=origin)
+    if not pieces:
+        raise ValueError("The corridor is too thin to extrude; widen it.")
+    mesh = pieces[0] if len(pieces) == 1 else trimesh.util.concatenate(pieces)
     result = BarResult(mesh=mesh, pieces=pieces, origin_m=origin,
                        mpm=params.mpm, lobes=len(lobes),
-                       draped=surface is not None)
+                       draped=surface is not None,
+                       too_big=len(definition.too_big(bed_mm, margin_mm)))
     result.lobes_cut = _lobes_cut(pieces, lobes, origin, params.mpm)
     return result
 
@@ -1482,6 +1651,7 @@ class TerrainEditorTester(QMainWindow):
         self._boundary_is_region = False     #: boundary came from the combo?
         # Connector editing: undo/redo hold whole lobe lists, the press is in
         # screen pixels, the drag is the index of the lobe being moved.
+        self._selected_split: int | None = None   #: the split clicked
         self._lobe_undo: list = []
         self._lobe_redo: list = []
         self._press = None
@@ -1672,6 +1842,28 @@ class TerrainEditorTester(QMainWindow):
         self.btn_lobe_redo = self._button("Redo", self.redo_connectors)
         self.btn_lobe_redo.setToolTip(
             "Step forward again through the connector edits.")
+        self.btn_edit_splits = self._button("Edit Splits", None,
+                                            enabled=False)
+        self.btn_edit_splits.setCheckable(True)
+        self.btn_edit_splits.setToolTip(
+            "Plan where the border bar is cut into printable pieces -- it is "
+            "never cut for you. With this on, click the corridor to put a "
+            "split straight across it there, click a split to select it, and "
+            "Remove takes the selected one away; drag to pan. A split is "
+            "refused through a connector, and a piece too big for the bed is "
+            "outlined in red.")
+        self.btn_edit_splits.toggled.connect(self._on_splits_toggled)
+        self.btn_remove_split = self._button("Remove", self.remove_split,
+                                             enabled=False)
+        self.btn_remove_split.setToolTip("Remove the selected split.")
+        self.lbl_pieces = QLabel()
+        self.lbl_pieces.setToolTip(
+            "How many pieces the bar prints in, and how many of them will not "
+            "fit the bed (print.bed_mm less print.bed_margin_mm each side), "
+            "turned whichever way fits best.")
+        self.lbl_pieces.setFixedWidth(
+            self.lbl_pieces.fontMetrics().horizontalAdvance(
+                "888 pieces, 888 too big") + 6)
         self.border_report = QLabel("Add provinces on the Import tab.")
         self.border_report.setWordWrap(True)
 
@@ -1734,6 +1926,9 @@ class TerrainEditorTester(QMainWindow):
         self.grp_by_hand = self._group(
             "By hand", self.btn_edit_lobes, self.btn_lobe_undo,
             self.btn_lobe_redo)
+        self.grp_splits = self._group(
+            "Splits", self.btn_edit_splits, self.btn_remove_split,
+            self.lbl_pieces)
         self.grp_selected = self._group(
             "Selected connector", self.sel_label,
             "Angle (°)", self.sel_angle_spin,
@@ -1753,7 +1948,8 @@ class TerrainEditorTester(QMainWindow):
         borders_layout.addLayout(self._row(
             self.grp_connectors, self.grp_shape, self.grp_fit))
         borders_layout.addLayout(self._row(self.grp_by_hand,
-                                           self.grp_selected))
+                                           self.grp_selected,
+                                           self.grp_splits))
         borders_layout.addWidget(self.border_report)
 
         # -- stage 3: STL -- the original harness ----------------------------
@@ -2139,7 +2335,8 @@ class TerrainEditorTester(QMainWindow):
         return (self.grp_dem, self.grp_regions, self.grp_simplify,
                 self.grp_seams, self.grp_corridor, self.grp_borders,
                 self.grp_connectors, self.grp_shape, self.grp_fit,
-                self.grp_by_hand, self.grp_selected, self.grp_province,
+                self.grp_by_hand, self.grp_selected, self.grp_splits,
+                self.grp_province,
                 self.grp_warp, self.grp_cut, self.grp_solid, self.grp_bar)
 
     @staticmethod
@@ -2209,6 +2406,8 @@ class TerrainEditorTester(QMainWindow):
                 (self.btn_save_borders, "Ctrl+B"),
                 (self.btn_load_borders, "Ctrl+L"),
                 (self.btn_edit_lobes, "E"),
+                (self.btn_edit_splits, "X"),
+                (self.btn_remove_split, "Backspace"),
                 (self.btn_sel_reset, "R"),
                 (self.btn_sel_delete, QKeySequence.StandardKey.Delete),
                 (self.btn_run, "C"),
@@ -2389,6 +2588,7 @@ class TerrainEditorTester(QMainWindow):
         """Adopt a border definition: report it, draw it, hand it to stage 3."""
         self.borders = definition
         self._selected = None
+        self._selected_split = None
         self._lobe_undo.clear()
         self._lobe_redo.clear()
         self._invalidate_bar()
@@ -2431,6 +2631,8 @@ class TerrainEditorTester(QMainWindow):
         if d.border is None:
             text += " No corridor: the provinces touch nothing."
         else:
+            text += (f" Bar in {self._pieces_text()} "
+                     f"({len(d.splits)} split(s)).")
             text += f" Corridor {s.width_mm:.2f} mm"
             if d.enclaves:
                 text += (f", {d.enclaves} enclave(s) "
@@ -2478,6 +2680,18 @@ class TerrainEditorTester(QMainWindow):
         self.btn_edit_lobes.setEnabled(editable)
         if not self.connectors_editable() and self.btn_edit_lobes.isChecked():
             self.btn_edit_lobes.setChecked(False)
+        splittable = self.splits_editable() and not busy
+        self.btn_edit_splits.setEnabled(splittable)
+        if not self.splits_editable() and self.btn_edit_splits.isChecked():
+            self.btn_edit_splits.setChecked(False)
+        if self._selected_split is not None and (
+                self.borders is None
+                or self._selected_split >= len(self.borders.splits)):
+            self._selected_split = None
+        self.btn_remove_split.setEnabled(
+            splittable and self._selected_split is not None)
+        self.lbl_pieces.setText(self._pieces_text())
+        editable = editable or splittable
         self.btn_lobe_undo.setEnabled(editable and bool(self._lobe_undo))
         if hasattr(self, "sel_angle_spin"):
             self._sync_selected()
@@ -2542,6 +2756,16 @@ class TerrainEditorTester(QMainWindow):
         for name, geom in self.borders.targets.items():
             write(name, geom, self.region_crs.get(name, default_crs),
                   folder / f"name_{_safe_name(name)}.geojson")
+        splits = folder / SPLITS_NAME
+        if self.borders.splits:
+            gpd.GeoDataFrame(
+                {"name": [f"split_{i}" for i in
+                          range(1, len(self.borders.splits) + 1)]},
+                geometry=list(self.borders.splits), crs=EPSG_WORKING,
+            ).to_crs(default_crs).to_file(splits, driver="GeoJSON")
+            written.append(splits)
+        elif splits.exists():
+            splits.unlink()          # stale splits would cut the wrong bar
         # The settings the connectors were shaped by, so Load Borders can
         # rebuild them as they were -- a connector's turn and size are read
         # off its outline against these.
@@ -2698,11 +2922,14 @@ class TerrainEditorTester(QMainWindow):
                if bar.draped else
                f"flat {d:.1f} mm top -- import a DEM to drape it")
         text = (f"Border bar {w:.0f} x {h:.0f} mm, {top}, {bar.lobes} "
-                f"connector(s), split into {len(bar.pieces)} bed piece(s).")
+                f"connector(s), in {len(bar.pieces)} piece(s) as planned.")
+        if bar.too_big:
+            text += (f" {bar.too_big} piece(s) will not fit the bed: add "
+                     "splits on the Borders tab (Edit Splits).")
         if bar.lobes_cut:
-            # FR-3.11 is not enforced by the splitter; never let it pass quietly.
-            text += (f" WARNING: {bar.lobes_cut} connector(s) cut by a split "
-                     "-- the splitter cannot yet avoid them.")
+            # Splits refuse connectors, and a connector on one is red and
+            # stops the build -- but never let it pass quietly.
+            text += f" WARNING: {bar.lobes_cut} connector(s) cut by a split."
         self.status.setText(text)
         if self.show_combo.currentText() == SHOW_CHOICES[0]:
             self.show_combo.setCurrentText(SHOW_CHOICES[1])
@@ -2741,7 +2968,103 @@ class TerrainEditorTester(QMainWindow):
         return (self.btn_edit_lobes.isChecked() and self._showing_borders()
                 and self._thread is None and self.connectors_editable())
 
+    def splits_editable(self) -> bool:
+        return self.borders is not None and self.borders.border is not None
+
+    def _editing_splits(self) -> bool:
+        return (self.btn_edit_splits.isChecked() and self._showing_borders()
+                and self._thread is None and self.splits_editable())
+
+    def _on_splits_toggled(self, on: bool) -> None:
+        if on:
+            # One tool on the map at a time: a click is a split or a
+            # connector, never both.
+            self.btn_edit_lobes.setChecked(False)
+            mode = str(self.mpl_toolbar.mode)
+            if "pan" in mode:
+                self.mpl_toolbar.pan()
+            elif "zoom" in mode:
+                self.mpl_toolbar.zoom()
+            self.status.setText(
+                "Editing splits: click the corridor to cut the bar there, "
+                f"click a split to select it, then Remove. "
+                f"{self._pieces_text()}.")
+        elif self._selected_split is not None:
+            self.select_split(None)
+
+    def split_near(self, x: float, y: float) -> int | None:
+        """The index of the split under (x, y), nearest first."""
+        if self.borders is None or not self.borders.splits:
+            return None
+        point = Point(x, y)
+        dist, index = min((cut.distance(point), i)
+                          for i, cut in enumerate(self.borders.splits))
+        return index if dist <= self._pick_distance() else None
+
+    def click_splits(self, x: float, y: float) -> None:
+        """A click with Edit Splits on: select the split under it, or put a
+        new one across the corridor there."""
+        index = self.split_near(x, y)
+        if index is not None:
+            self.select_split(index)
+            return
+        p = self.borders.settings.connector_params()
+        if self.borders.border.distance(Point(x, y)) > self._pick_distance():
+            self.status.setText("Click on the corridor to split the bar "
+                                "there.")
+            return
+        self.add_split(x, y)
+
+    def add_split(self, x: float, y: float) -> bool:
+        cut, why = split_at(self.borders, x, y)
+        if cut is None:
+            self.status.setText(f"No split added: {why}")
+            return False
+        self._commit_splits(self.borders.splits + [cut], "Added a split.",
+                            selected=len(self.borders.splits))
+        return True
+
+    def remove_split(self) -> None:
+        index = self._selected_split
+        if index is None or not self.splits_editable():
+            return
+        splits = list(self.borders.splits)
+        del splits[index]
+        self._commit_splits(splits, "Removed a split.", selected=None)
+
+    def select_split(self, index: int | None) -> None:
+        if self.borders is None or index is None \
+                or not 0 <= index < len(self.borders.splits):
+            index = None
+        self._selected_split = index
+        self._update_border_controls()
+        if self._showing_borders():
+            self._draw_lobes()
+
+    def _commit_splits(self, splits: list, message: str,
+                       selected=_KEEP) -> None:
+        """Make ``splits`` the bar's splits, as one undoable step."""
+        self._lobe_undo.append(self._snapshot())
+        self._lobe_redo.clear()
+        self.borders.splits = list(splits)
+        if selected is not _KEEP:
+            self._selected_split = selected
+        self.borders.lobes_edited = True
+        # The connectors stay; set again so the bar, report and map follow.
+        self._set_lobes(self.borders.lobes, message)
+
+    def _pieces_text(self) -> str:
+        """How many pieces the bar prints in, and how many will not fit."""
+        d = self.borders
+        if d is None or d.border is None:
+            return "no bar yet"
+        n, big = len(d.pieces()), len(d.too_big())
+        text = f"{n} piece{'s' if n != 1 else ''}"
+        return text + (f", {big} too big" if big else ", all fit")
+
     def _on_edit_toggled(self, on: bool) -> None:
+        if on:
+            self.btn_edit_splits.setChecked(False)
         if not on:
             if self._selected is not None:
                 self.select_connector(None)
@@ -2961,7 +3284,11 @@ class TerrainEditorTester(QMainWindow):
         return angle + turn
 
     def _on_key(self, event) -> None:
-        """Keys on the map act on the selected connector."""
+        """Keys on the map act on the selected connector -- or, editing
+        splits, Esc lets the selected split go."""
+        if self._editing_splits() and event.key == "escape":
+            self.select_split(None)
+            return
         if not self._editing() or self._selected is None:
             return
         key = event.key
@@ -3008,12 +3335,17 @@ class TerrainEditorTester(QMainWindow):
         self._set_lobes(lobes, message, edited=self.borders.lobes_edited)
 
     def _snapshot(self):
-        return self.borders.lobes, self.borders.settings
+        return (self.borders.lobes, self.borders.settings,
+                list(self.borders.splits))
 
     def _restore(self, snapshot, message: str) -> None:
-        lobes, settings = snapshot
+        lobes, settings, splits = snapshot
         edited = self.borders.lobes_edited
         self.borders.settings = settings
+        self.borders.splits = list(splits)
+        if self._selected_split is not None \
+                and self._selected_split >= len(splits):
+            self._selected_split = None
         for spin, value in zip(self._shape_spins(),
                                (getattr(settings, f) for f in SHAPE_FIELDS)):
             spin.blockSignals(True)
@@ -3154,6 +3486,11 @@ class TerrainEditorTester(QMainWindow):
             self._drag_artist.remove()
             self._drag_artist = None
             self.canvas.draw_idle()
+        if (press is not None and not moved and event.button == 1
+                and event.xdata is not None and event.inaxes is self.ax
+                and self._editing_splits()):
+            self.click_splits(event.xdata, event.ydata)
+            return
         if (press is None or event.button != 1 or event.xdata is None
                 or event.inaxes is not self.ax or not self._editing()):
             return
@@ -3910,6 +4247,20 @@ class TerrainEditorTester(QMainWindow):
                 edgecolors=EDGE_COLOUR, linewidths=0.4)
             ax.add_collection(lobes, autolim=False)
             drawn.append(lobes)
+        # A piece too big for the bed, outlined: the reason to add a split.
+        pieces = d.pieces()
+        for i in d.too_big():
+            for ring in (pieces[i].exterior, *pieces[i].interiors):
+                xs, ys = ring.xy
+                drawn += ax.plot(xs, ys, color=REFUSED_COLOUR, linewidth=1.4,
+                                 linestyle="--", zorder=8, scalex=False,
+                                 scaley=False)
+        for i, cut in enumerate(d.splits):
+            xs, ys = cut.xy
+            drawn += ax.plot(xs, ys, linewidth=2.6, zorder=9,
+                             color=PICKED_COLOUR if i == self._selected_split
+                             else SPLIT_COLOUR,
+                             scalex=False, scaley=False)
         if self._selected is not None and self._selected < len(d.lobes):
             xs, ys = d.lobes[self._selected].exterior.xy
             drawn += ax.plot(xs, ys, color=PICKED_COLOUR, linewidth=2.0,

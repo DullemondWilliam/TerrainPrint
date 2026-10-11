@@ -370,7 +370,7 @@ DRAPE_STEP_MM = 0.5
 
 
 def build_border_pieces(border_geom_m, lobes_m, p: ConnectorParams,
-                        top_mm=None):
+                        top_mm=None, origin_m=None):
     """
     Watertight stepped solids in print-mm – one per connected border part.
 
@@ -382,10 +382,14 @@ def build_border_pieces(border_geom_m, lobes_m, p: ConnectorParams,
     ``top_mm(xs_m, ys_m) -> print-mm`` drapes the bar's top over the terrain
     (see :func:`LIB_terrain_stl.surface_sampler`) instead of leaving it flat at
     ``thickness_mm``, so it meets the solids either side at their height.
+
+    ``origin_m`` is the metres point to put at print-mm (0, 0); by default
+    the bottom-left of the corridor and lobes together.  A bar built piece by
+    piece passes the whole bar's origin, so the pieces stay where they lie.
     """
     step = DRAPE_STEP_MM if top_mm is not None else 0.0
     bottom_m = _safe_union([border_geom_m] + list(lobes_m)) if lobes_m else border_geom_m
-    minx, miny = bottom_m.bounds[0], bottom_m.bounds[1]
+    minx, miny = (bottom_m.bounds[0], bottom_m.bounds[1]) if origin_m is None         else origin_m
     min_area_m = MIN_PART_AREA_MM2 * (p.mpm ** 2)
 
     pieces = []

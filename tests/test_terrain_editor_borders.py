@@ -322,11 +322,13 @@ class TestBorderBar:
     def test_origin_is_the_bars_print_mm_zero(self, bar):
         assert bar.mesh.bounds[0][:2] == pytest.approx((0.0, 0.0), abs=1e-6)
 
-    def test_cut_connectors_are_counted(self, defined):
-        """A tiny bed forces cuts through lobes; they must be counted."""
+    def test_nothing_is_split_for_you(self, defined):
+        """A bed too small for the bar no longer cuts it: the piece is built
+        whole and counted as too big, for the user to split."""
         bar = U.build_bar(defined, bed_mm=40.0, margin_mm=0.0)
-        assert len(bar.pieces) > 1
-        assert bar.lobes_cut > 0
+        assert len(bar.pieces) == 1
+        assert bar.too_big == 1
+        assert bar.lobes_cut == 0
 
     def test_window_shows_the_bar_and_offers_the_save(self, tmp_path, defined,
                                                       bar):
@@ -847,6 +849,195 @@ class TestLoadBorders:
         # Define's measurements are not saved, so none are reported as zero.
         assert after.border_report.text().startswith("Loaded from saved")
         assert "vertices" not in after.border_report.text()
+
+
+def _split_near(d, x, y, step_km=4.0, tries=40):
+    """A split at or beside (x, y) along the corridor -- the first spot,
+    walking either way, where no connector is in the way."""
+    for k in range(tries):
+        for sign in (1, -1):
+            for dx, dy in ((sign * k * step_km * KM, 0), (0, sign * k * step_km * KM)):
+                cut, _ = U.split_at(d, x + dx, y + dy)
+                if cut is not None:
+                    return cut, (x + dx, y + dy)
+    raise AssertionError("no free spot to split near there")
+
+
+#: On the A/B seam, half way up; and on the A/C and B/C frontier.
+SEAM_MID = (7_400 * KM, 1_200 * KM)
+FRONTIER_WEST = (7_200 * KM, 1_408 * KM)
+FRONTIER_EAST = (7_600 * KM, 1_408 * KM)
+
+
+class TestSplits:
+    """The bar is cut where the user plans it, on the Borders tab."""
+
+    def test_define_makes_no_splits(self, defined):
+        assert defined.splits == []
+        assert len(defined.pieces()) == 1
+
+    def test_a_split_goes_straight_across_the_corridor(self, defined):
+        cut, _ = _split_near(defined, *SEAM_MID)
+        width = defined.settings.width_mm * MPM
+        assert cut.length == pytest.approx(width, rel=0.02)
+        (x0, y0), (x1, y1) = cut.coords
+        assert abs(y1 - y0) < 0.01 * width        # square to the A/B seam
+
+    def test_a_split_divides_the_bar(self, defined):
+        d = _fresh(defined)
+        cut, _ = _split_near(d, *SEAM_MID)
+        d.splits = [cut]
+        assert len(d.pieces()) == 2
+        assert sum(p.area for p in d.pieces()) == pytest.approx(
+            d.border.area, rel=1e-6)
+
+    def test_a_split_through_a_connector_is_refused(self, defined):
+        lobe = defined.lobes[0]
+        x, y, _, _ = U.lobe_pose(lobe, defined.border,
+                                 defined.settings.connector_params())
+        cut, why = U.split_at(defined, x, y)
+        assert cut is None and "connector" in why
+
+    def test_splits_too_close_together_are_refused(self, defined):
+        """The piece between would be a crumb -- and below the bar's sliver
+        floor it would not be built at all, losing that stretch of bar."""
+        d = _fresh(defined)
+        cut, (x, y) = _split_near(d, *SEAM_MID)
+        # A spot inside the gap that would take a split if it stood alone.
+        spots = [(x, y + f * U.SPLIT_MIN_GAP_MM * MPM)
+                 for f in (0.3, 0.5, 0.7, -0.3, -0.5, -0.7)]
+        free = [xy for xy in spots if U.split_at(d, *xy)[0] is not None]
+        assert free
+        d.splits = [cut]
+        near, why = U.split_at(d, *free[0])
+        assert near is None and "Too close" in why
+        far, _ = _split_near(d, x, y + 2 * U.SPLIT_MIN_GAP_MM * MPM)
+        assert far.distance(cut) >= U.SPLIT_MIN_GAP_MM * MPM
+
+    def test_every_planned_piece_is_built(self, defined):
+        d = _fresh(defined)
+        d.splits = [_split_near(d, *SEAM_MID)[0],
+                    _split_near(d, *FRONTIER_WEST)[0],
+                    _split_near(d, *FRONTIER_EAST)[0]]
+        assert len(U.build_bar(d).pieces) == len(d.pieces()) == 4
+
+    def test_each_connector_goes_with_one_piece(self, defined):
+        d = _fresh(defined)
+        d.splits = [_split_near(d, *SEAM_MID)[0]]
+        held = d.piece_lobes()
+        assert sum(len(lobes) for lobes in held) == len(d.lobes)
+
+    def test_the_bar_is_built_in_the_planned_pieces(self, defined):
+        whole = U.build_bar(defined)
+        d = _fresh(defined)
+        d.splits = [_split_near(d, *SEAM_MID)[0],
+                    _split_near(d, *FRONTIER_WEST)[0]]
+        bar = U.build_bar(d)
+        assert len(bar.pieces) == 3
+        for piece in bar.pieces:
+            assert piece.is_watertight and piece.volume > 0
+        # Cut, not moved: the pieces fill what the whole bar filled.
+        assert sum(p.volume for p in bar.pieces) == pytest.approx(
+            whole.mesh.volume, rel=1e-3)
+        assert bar.mesh.bounds == pytest.approx(whole.mesh.bounds, abs=1e-6)
+
+    def test_splits_make_an_oversize_bar_fit(self, defined):
+        d = _fresh(defined)
+        assert d.too_big(bed_mm=60.0, margin_mm=0.0) == [0]
+        d.splits = [_split_near(d, *FRONTIER_WEST)[0],
+                    _split_near(d, *FRONTIER_EAST)[0]]
+        assert len(d.pieces()) == 3
+        assert d.too_big(bed_mm=60.0, margin_mm=0.0) == []
+
+    def test_a_connector_on_a_split_is_red(self, tmp_path, defined):
+        window = _edit_window(tmp_path, defined)
+        cut, at = _split_near(window.borders, *FREE_A)
+        window.borders.splits = [cut]
+        x, y = at
+        assert window.add_connector(x - 2 * MPM, y)
+        assert window.borders.faults()[-1] in ("on_split", "crowded")
+        assert "on_split" in window.borders.faults()
+
+
+class TestSplitTool:
+    """Edit Splits on the map, through the mouse."""
+
+    @staticmethod
+    def _click(window, xy):
+        event = TestConnectorMouse._event(window, xy)
+        window._on_press(event)
+        window._on_release(event)
+
+    @staticmethod
+    def _splitting(tmp_path, defined):
+        window = _window(tmp_path)
+        window.apply_borders(_fresh(defined))
+        window.tabs.setCurrentIndex(1)
+        window.btn_edit_splits.setChecked(True)
+        return window
+
+    def test_a_click_on_the_corridor_adds_a_split(self, tmp_path, defined):
+        window = self._splitting(tmp_path, defined)
+        _, at = _split_near(window.borders, *SEAM_MID)
+        self._click(window, at)
+        assert len(window.borders.splits) == 1
+        assert window._selected_split == 0
+        assert "2 pieces" in window.lbl_pieces.text()
+
+    def test_a_click_on_a_split_selects_it_and_remove_takes_it(self,
+                                                               tmp_path,
+                                                               defined):
+        window = self._splitting(tmp_path, defined)
+        _, at = _split_near(window.borders, *SEAM_MID)
+        self._click(window, at)
+        window.select_split(None)
+        self._click(window, at)                   # on the split: selects
+        assert len(window.borders.splits) == 1
+        assert window._selected_split == 0
+        assert window.btn_remove_split.isEnabled()
+        window.btn_remove_split.click()
+        assert window.borders.splits == []
+
+    def test_splits_undo_and_redo(self, tmp_path, defined):
+        window = self._splitting(tmp_path, defined)
+        _, at = _split_near(window.borders, *SEAM_MID)
+        self._click(window, at)
+        window.undo_connectors()
+        assert window.borders.splits == []
+        window.redo_connectors()
+        assert len(window.borders.splits) == 1
+
+    def test_a_refused_split_says_why(self, tmp_path, defined):
+        window = self._splitting(tmp_path, defined)
+        x, y, _, _ = U.lobe_pose(defined.lobes[0], defined.border,
+                                 defined.settings.connector_params())
+        window.add_split(x, y)
+        assert window.borders.splits == []
+        assert "connector" in window.status.text()
+
+    def test_one_tool_at_a_time(self, tmp_path, defined):
+        window = self._splitting(tmp_path, defined)
+        window.btn_edit_lobes.setChecked(True)
+        assert not window.btn_edit_splits.isChecked()
+        window.btn_edit_splits.setChecked(True)
+        assert not window.btn_edit_lobes.isChecked()
+
+    def test_a_split_stales_the_bar(self, tmp_path, defined, bar):
+        window = self._splitting(tmp_path, defined)
+        window.apply_bar(bar)
+        window.add_split(*_split_near(window.borders, *SEAM_MID)[1])
+        assert window.bar is None
+
+    def test_splits_are_saved_and_loaded(self, tmp_path, defined):
+        window = self._splitting(tmp_path, defined)
+        window.add_split(*_split_near(window.borders, *SEAM_MID)[1])
+        window.write_borders(tmp_path / "saved")
+        loaded = U.read_borders(tmp_path / "saved")
+        assert len(loaded.splits) == 1
+        assert loaded.splits[0].equals_exact(window.borders.splits[0], 1e-3)
+        window.borders.splits = []
+        window.write_borders(tmp_path / "saved")
+        assert U.read_borders(tmp_path / "saved").splits == []
 
 
 class TestPlaceConnector:
