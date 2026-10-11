@@ -1,5 +1,6 @@
 {
   "borders": {
+    "bridge_gap_ratio": 0.5,
     "clearance_mm": 0.2,
     "coast_tol_mm": 0.3,
     "connectors": true,

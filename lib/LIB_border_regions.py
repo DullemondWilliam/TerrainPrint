@@ -186,6 +186,49 @@ def build_surrounding_cut(core_union, surrounding_union, width_m: float):
     return _ensure_valid(grown.intersection(surrounding_union))
 
 
+def bridge_gaps(core_union, surrounding_union, gap_m: float):
+    """
+    The no-man's-land between the cores and the surrounding regions that is
+    narrower than ``gap_m`` -- to be treated as surrounding land, so the
+    corridor reaches the core across it.
+
+    Two datasets that never shared an edge (Quebec and the US states) meet
+    with slivers between them -- a kilometre here, a river there -- and a
+    corridor carved only out of surrounding land starts at the surrounding
+    edge, leaving the gap between it and the core: nothing for a connector to
+    key into.
+
+    The gap is found by *closing* the two together -- grown by half
+    ``gap_m``, shrunk back by as much -- which fills what lies between them
+    when it is narrower than ``gap_m`` and adds nothing round an outside
+    corner, so the bar does not flare where a frontier meets the sea.  Only
+    pieces touching both sides count: a narrow bay of the core alone is
+    not a gap between two regions.  Done only where the two come within
+    ``gap_m`` of each other, which keeps it quick on a whole province.
+
+    Returns the bridge (Polygon/MultiPolygon) or None.
+    """
+    if gap_m <= 0 or core_union is None or surrounding_union is None:
+        return None
+    near = core_union.buffer(gap_m).intersection(
+        surrounding_union.buffer(gap_m))
+    if near.is_empty:
+        return None
+    zone = near.buffer(gap_m)
+    core = core_union.intersection(zone)
+    other = surrounding_union.intersection(zone)
+    half = gap_m / 2.0
+    closed = unary_union([core, other]).buffer(half, join_style=1)         .buffer(-half, join_style=1)
+    gap = _ensure_valid(closed.intersection(near).difference(core)
+                        .difference(other))
+    if gap is None:
+        return None
+    touch = 1e-6 * max(gap_m, 1.0) + 1e-3
+    keep = [part for part in _polygonal_parts(gap)
+            if part.distance(core) <= touch and part.distance(other) <= touch]
+    return _union(keep)
+
+
 def carve(geoms, strip_geom):
     """
     Subtract ``strip_geom`` from every geometry in ``geoms``, preserving order.
@@ -210,7 +253,8 @@ def carve(geoms, strip_geom):
 # Orchestrator
 # ---------------------------------------------------------------------------
 def build_border_regions(core_geoms, surrounding_geoms=None,
-                         border_width_km: float = 1.0) -> BorderRegions:
+                         border_width_km: float = 1.0,
+                         bridge_gap_km: float = 0.0) -> BorderRegions:
     """
     Carve border regions between the core geometries and along the core edge of
     the surrounding geometries.
@@ -226,6 +270,11 @@ def build_border_regions(core_geoms, surrounding_geoms=None,
         never get a seam between them.
     border_width_km : float
         Total border corridor width in kilometres.
+    bridge_gap_km : float
+        Gaps between a core and a surrounding region up to this wide are
+        bridged (:func:`bridge_gaps`): the corridor runs across them to the
+        core's edge, rather than stopping at the surrounding's.  0 bridges
+        nothing.
 
     Geometries must be in a projected, metre-based CRS.
 
@@ -256,8 +305,13 @@ def build_border_regions(core_geoms, surrounding_geoms=None,
     core_strip = build_border_strip(border_lines, width_m, land)
 
     # Core ↔ surrounding: region taken out of the surrounding regions (corridor
-    # + any dataset overlap).
-    surrounding_cut = build_surrounding_cut(core_union, surrounding_union, width_m)
+    # + any dataset overlap) -- and out of the gaps between the two datasets,
+    # bridged as if they were surrounding land, so the corridor starts at the
+    # core's edge wherever the surrounding comes near it.
+    bridge = bridge_gaps(core_union, surrounding_union,
+                         bridge_gap_km * _M_PER_KM)
+    surrounding_cut = build_surrounding_cut(
+        core_union, _union([surrounding_union, bridge]), width_m)
 
     # Cores are carved by the core–core strip only, so they keep their full
     # extent along any core–surrounding frontier.

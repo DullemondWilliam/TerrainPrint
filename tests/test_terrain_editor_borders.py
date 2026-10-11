@@ -1555,7 +1555,8 @@ class TestConnectorShape:
     def test_connectors_have_a_row_of_their_own(self, tmp_path):
         window = _window(tmp_path)
         rows = window.tabs.widget(1).layout()
-        first, second, third = (rows.itemAt(i).layout() for i in range(3))
+        first, bar, second, third = (rows.itemAt(i).layout()
+                                     for i in range(4))
 
         def holds(row, widget):
             """Whether ``row`` holds ``widget``, inside one of its groups."""
@@ -1569,6 +1570,10 @@ class TestConnectorShape:
             assert holds(second, widget)
             assert not holds(first, widget)
         assert holds(first, window.btn_define)
+        # The bar has a row of its own: its width, what it takes in, splits.
+        for widget in (window.width_spin, window.enclave_spin,
+                       window.bridge_spin, window.btn_edit_splits):
+            assert holds(bar, widget)
         # Editing by hand sits with the connector it selects.
         assert holds(third, window.btn_edit_lobes)
         assert holds(third, window.sel_angle_spin)

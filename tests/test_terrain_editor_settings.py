@@ -31,6 +31,7 @@ TURNED = {
     "seam.min_angle_deg": 35.0,
     "borders.width_mm": 3.0,
     "borders.enclave_mm2": 2.5,
+    "borders.bridge_gap_ratio": 0.8,
     "borders.connectors": False,
     "borders.lobe_spacing_mm": 20.0,
     "print.dovetail_mm": 0.8,

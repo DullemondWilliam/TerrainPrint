@@ -103,6 +103,10 @@ class BorderSettings:
     #: rest of its province is added to the border bar (see
     #: :func:`_absorb_enclaves`); 0 keeps every piece.
     enclave_mm2: float = _shipped("borders.enclave_mm2")
+    #: Gaps between a printed province and a surrounding region up to this
+    #: share of ``width_mm`` are bridged by the corridor (see
+    #: ``LIB_border_regions.bridge_gaps``); 0 bridges none.
+    bridge_gap_ratio: float = _shipped("borders.bridge_gap_ratio")
     connectors: bool = _shipped("borders.connectors")
     lobe_spacing_mm: float = _shipped("borders.lobe_spacing_mm")
     #: The connector's shape.  Height is the lobe layer, and so the depth of
@@ -142,6 +146,7 @@ _BORDER_SETTINGS_KEYS = {
     "min_angle_deg": "seam.min_angle_deg",
     "width_mm": "borders.width_mm",
     "enclave_mm2": "borders.enclave_mm2",
+    "bridge_gap_ratio": "borders.bridge_gap_ratio",
     "connectors": "borders.connectors",
     "lobe_spacing_mm": "borders.lobe_spacing_mm",
     "lobe_height_mm": "print.dovetail_mm",
@@ -460,7 +465,8 @@ def define_borders(targets: dict, surrounding: dict,
 
     regions = build_border_regions(
         simplified_targets, [result.simplified[n] for n in surround_names],
-        border_width_km=s.width_mm * s.scale / 1e6)
+        border_width_km=s.width_mm * s.scale / 1e6,
+        bridge_gap_km=s.bridge_gap_ratio * s.width_mm * s.scale / 1e6)
     for name, trimmed, before in zip(target_names, regions.core,
                                      simplified_targets):
         result.targets[name] = _repair(trimmed) if trimmed is not None \

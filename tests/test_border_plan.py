@@ -83,6 +83,47 @@ class TestDefine:
         assert line.length == pytest.approx(400 * KM, rel=0.01)
 
 
+class TestBridgingGaps:
+    """A province and a surrounding region from different datasets never
+    quite meet (Quebec and the US states); the corridor bridges the gap so
+    the connectors have the province's edge to key into."""
+
+    @staticmethod
+    def _apart(gap_km, ratio=None):
+        north = box(7_000 * KM, 1_400 * KM + gap_km * KM,
+                    7_800 * KM, 1_800 * KM)
+        s = BP.BorderSettings() if ratio is None             else BP.BorderSettings(bridge_gap_ratio=ratio)
+        return BP.define_borders({"A": A, "B": B}, {"C": north}, s)
+
+    @staticmethod
+    def _against(d, name):
+        """How much of a province's north edge the corridor runs against."""
+        top = d.targets[name].bounds[3]
+        edge = d.targets[name].boundary.intersection(
+            box(0, top - 1, 1e8, top + 1))
+        return edge.intersection(d.border.buffer(1.0)).length / edge.length
+
+    def test_by_default_half_the_corridor_width(self):
+        assert BP.BorderSettings().bridge_gap_ratio == 0.5
+
+    def test_a_gap_is_bridged(self):
+        d = self._apart(3)                       # 3 km; half the width is 8
+        assert self._against(d, "A") == pytest.approx(1.0, abs=0.02)
+        assert any(lobe.intersects(d.targets["A"]) and
+                   lobe.distance(box(0, 1_399 * KM, 1e8, 1e8)) < 20 * KM
+                   for lobe in d.lobes)
+
+    def test_without_bridging_the_bar_never_reaches(self):
+        d = self._apart(3, ratio=0.0)
+        assert self._against(d, "A") < 0.05
+
+    def test_a_gap_wider_than_the_limit_is_left(self):
+        d = self._apart(12)                      # wider than 8 km
+        assert self._against(d, "A") < 0.05
+        assert self._apart(12, ratio=1.0) is not None
+        assert self._against(self._apart(12, ratio=1.0), "A") ==             pytest.approx(1.0, abs=0.02)
+
+
 class TestAnswers:
 
     def test_land_is_merged_once(self, defined):

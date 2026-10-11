@@ -138,7 +138,8 @@ question is what survives the nozzle.  Shared arcs then get
 printer limits (``seam.nozzle_mm`` / ``seam.spike_angle_deg``).
 
 *The settings are kept.*  Every control on the Borders tab -- the tolerances,
-the seam clean-up, the corridor width and enclave limit, the Connectors
+the seam clean-up, the corridor width, enclave limit and gap bridge, the
+Connectors
 group's Place tick,
 and the connectors' spacing and shape -- opens on what the config files say and is
 written back to ``project_config.local.json`` as it is turned
@@ -151,6 +152,16 @@ corridor came out of it -- otherwise the solid and the border bar overlap by
 half the corridor.  So once borders are defined, stage 3 cuts to the trimmed
 province and **Buffer** is locked at 0: growing the cut outward is growing it
 into the corridor.
+
+*Neighbours that never quite meet.*  A province and a surrounding region
+from different datasets share no line -- Quebec and the US states overlap in
+places and leave slivers a kilometre wide in others, and rivers between --
+and a corridor carved only out of surrounding land stopped at the
+surrounding's edge, short of the province: connectors had nothing to key
+into.  Gaps up to **Bridge** times the corridor width (``borders.
+bridge_gap_ratio``, half by default) are now bridged, so the bar starts at
+the province's edge; wider ones -- open sea -- are not.  On Quebec / US the
+bar now runs against 89% of the frontier, from 16%.
 
 *No crumbs.*  Carving the corridor can cut pieces off a province: between
 two arms of a zig-zag border the bar all but closes and leaves crumbs in
@@ -453,6 +464,7 @@ SAVED_BORDER_SETTINGS = (
     ("seam.min_angle_deg", "min_angle_spin"),
     ("borders.width_mm", "width_spin"),
     ("borders.enclave_mm2", "enclave_spin"),
+    ("borders.bridge_gap_ratio", "bridge_spin"),
     ("borders.connectors", "chk_connectors"),
     ("borders.lobe_spacing_mm", "spacing_spin"),
     ("print.dovetail_mm", "lobe_height_spin"),
@@ -808,6 +820,17 @@ class TerrainEditorTester(QMainWindow):
             "islands before are never touched. 0 keeps every piece "
             "(borders.enclave_mm2).")
         self.enclave_spin.setSingleStep(0.5)
+        self.bridge_spin = self._spin(
+            0.0, 2.0, defaults.bridge_gap_ratio, 2,
+            "Where a printed province and a surrounding region come from "
+            "different datasets they never quite meet -- Quebec and the US "
+            "states share no line at all, with slivers of a kilometre and "
+            "rivers between. Gaps up to this share of the corridor width are "
+            "bridged, so the bar starts at the province's edge and the "
+            "connectors have land to key into; wider ones, like open sea, are "
+            "not. 0.5 is half the width; 0 bridges nothing "
+            "(borders.bridge_gap_ratio).")
+        self.bridge_spin.setSingleStep(0.1)
         self.chk_connectors = QCheckBox("Place")
         self.chk_connectors.setChecked(defaults.connectors)
         self.chk_connectors.setToolTip(
@@ -818,7 +841,8 @@ class TerrainEditorTester(QMainWindow):
             "Gap between connectors along the corridor.")
         for widget in (self.coast_spin, self.internal_spin, self.min_seg_spin,
                        self.min_angle_spin, self.width_spin,
-                       self.enclave_spin, self.spacing_spin):
+                       self.enclave_spin, self.bridge_spin,
+                       self.spacing_spin):
             widget.valueChanged.connect(self._invalidate_borders)
         self.chk_connectors.toggled.connect(self._invalidate_borders)
         # The connector's shape.  Unlike the settings above these do not stale
@@ -962,7 +986,8 @@ class TerrainEditorTester(QMainWindow):
             "Min angle (°)", self.min_angle_spin)
         self.grp_corridor = self._group(
             "Corridor", "Width (mm)", self.width_spin,
-            "Enclaves (mm²)", self.enclave_spin)
+            "Enclaves (mm²)", self.enclave_spin,
+            "Bridge (× width)", self.bridge_spin)
         self.grp_borders = self._group(
             "Borders", self.btn_define, self.btn_save_borders,
             self.btn_load_borders)
@@ -989,21 +1014,22 @@ class TerrainEditorTester(QMainWindow):
             "Depth (mm)", self.sel_depth_spin,
             self.btn_sel_reset, self.btn_sel_delete)
 
-        # Row 1 defines the borders; row 2 is the connectors on them, a row
-        # of their own: where they go and what shape they are; row 3 is the
-        # editing by hand, and the one connector it has selected.
+        # One job a row: row 1 defines the borders (and saves and loads
+        # them); row 2 is the bar -- how wide, what it takes in, where it is
+        # cut; row 3 is the connectors on it, where they go and what shape
+        # they are; row 4 is editing them by hand, and the one selected.
         borders_page = QWidget()
         borders_layout = QVBoxLayout(borders_page)
         borders_layout.setContentsMargins(4, 4, 4, 4)   # docs/UI_GUIDE.md §1
         borders_layout.setSpacing(4)
         borders_layout.addLayout(self._row(
-            self.grp_simplify, self.grp_seams, self.grp_corridor,
-            self.grp_borders))
+            self.grp_simplify, self.grp_seams, self.grp_borders))
+        borders_layout.addLayout(self._row(self.grp_corridor,
+                                           self.grp_splits))
         borders_layout.addLayout(self._row(
             self.grp_connectors, self.grp_shape, self.grp_fit))
         borders_layout.addLayout(self._row(self.grp_by_hand,
-                                           self.grp_selected,
-                                           self.grp_splits))
+                                           self.grp_selected))
         borders_layout.addWidget(self.border_report)
 
         # -- stage 3: STL -- the original harness ----------------------------
@@ -1302,7 +1328,8 @@ class TerrainEditorTester(QMainWindow):
         # …and keep the text entries from swallowing them (see eventFilter).
         for entry in (self.coast_spin, self.internal_spin, self.min_seg_spin,
                       self.min_angle_spin, self.width_spin,
-                      self.enclave_spin, self.spacing_spin,
+                      self.enclave_spin, self.bridge_spin,
+                      self.spacing_spin,
                       *self._shape_spins(), self.sel_angle_spin,
                       self.sel_depth_spin, self.res_spin, self.buf_spin,
                       self.cache_spin, self.exag_spin, self.base_spin,
@@ -1617,6 +1644,7 @@ class TerrainEditorTester(QMainWindow):
             min_angle_deg=self.min_angle_spin.value(),
             width_mm=self.width_spin.value(),
             enclave_mm2=self.enclave_spin.value(),
+            bridge_gap_ratio=self.bridge_spin.value(),
             connectors=self.chk_connectors.isChecked(),
             lobe_spacing_mm=self.spacing_spin.value(),
             **self._shape_values())
@@ -1815,6 +1843,7 @@ class TerrainEditorTester(QMainWindow):
                               (self.min_angle_spin, s.min_angle_deg),
                               (self.width_spin, s.width_mm),
                               (self.enclave_spin, s.enclave_mm2),
+                              (self.bridge_spin, s.bridge_gap_ratio),
                               (self.spacing_spin, s.lobe_spacing_mm),
                               *zip(self._shape_spins(),
                                    (getattr(s, f) for f in SHAPE_FIELDS))):

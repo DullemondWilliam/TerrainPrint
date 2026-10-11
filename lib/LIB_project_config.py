@@ -192,6 +192,12 @@ DEFAULTS = {
         # below this printed area (mm^2), rather than printed as a crumb. 0
         # keeps every piece.
         "enclave_mm2": 5.0,
+        # Where a printed province and a surrounding region come from
+        # different datasets they never quite meet (Quebec and the US
+        # states: no shared line, slivers a kilometre wide, a river).  Gaps
+        # up to this share of the corridor width are bridged, so the bar
+        # starts at the province's edge; wider ones -- open sea -- are not.
+        "bridge_gap_ratio": 0.5,
         # Gap between dovetail keys along the corridor.
         "lobe_spacing_mm": 14.0,
         # Whether the corridor carries dovetail connectors at all.
