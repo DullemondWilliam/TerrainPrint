@@ -22,6 +22,7 @@ import rasterio
 from affine import Affine
 from rasterio.crs import CRS
 from shapely.geometry import Point, Polygon, box
+from shapely.ops import unary_union
 
 import geopandas as gpd
 
@@ -920,6 +921,47 @@ class TestSplits:
         d.splits = [cut]
         crumb, why = U.split_at(d, *alone[0])
         assert crumb is None and "too small to build" in why
+
+    @staticmethod
+    def _with_a_speck(defined):
+        """``defined`` with a corridor speck under the sliver floor far off --
+        as a real map's corridor has where it rings a tiny island."""
+        speck = box(6_000 * KM, 2_000 * KM, 6_000 * KM + 0.5 * MPM,
+                    2_000 * KM + 0.5 * MPM)          # 0.25 mm², alone
+        d = U.replace(defined, lobes=list(defined.lobes),
+                      border=unary_union([defined.border, speck]))
+        floor = U.MIN_PART_AREA_MM2 * MPM ** 2
+        assert any(piece.area < floor for piece in d.pieces())
+        return d
+
+    def test_a_speck_elsewhere_does_not_refuse_every_split(self, defined):
+        """The bug: every split was refused as leaving a crumb, because a
+        speck the corridor already had was counted as one the cut made."""
+        d = self._with_a_speck(defined)
+        _, at = _split_near(d, *SEAM_MID)
+        cut, why = U.split_at(d, *at)
+        assert cut is not None and why == ""
+
+    def test_a_speck_elsewhere_still_lets_the_window_split(self, tmp_path,
+                                                         defined):
+        window = _window(tmp_path)
+        window.apply_borders(self._with_a_speck(defined))
+        window.tabs.setCurrentIndex(1)
+        window.btn_edit_splits.setChecked(True)
+        n = len(window.borders.pieces())
+        _, at = _split_near(window.borders, *SEAM_MID)
+        assert window.add_split(*at)
+        assert len(window.borders.pieces()) == n + 1
+        assert "Added a split" in window.status.text()
+
+    def test_the_pieces_follow_a_new_connector(self, tmp_path, defined):
+        """piece_lobes and too_big are kept between clicks; a connector
+        added must still be counted on its piece."""
+        window = _edit_window(tmp_path, defined)
+        before = sum(len(held) for held in window.borders.piece_lobes())
+        window.borders.too_big()
+        assert window.add_connector(*FREE_A)
+        assert sum(len(held) for held in window.borders.piece_lobes()) ==             before + 1
 
     def test_a_piece_that_fits_only_diagonally_fits(self):
         """78 x 4 mm will not go on a 60 mm bed square, but it will corner

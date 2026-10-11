@@ -645,6 +645,11 @@ class BorderDefinition:
                           init=False)
     _pieces_key: tuple = field(default=None, repr=False, compare=False,
                                init=False)
+    #: piece_lobes() and too_big(), with what they were worked out for:
+    #: asked several times a click, and on all of Canada each is a fifth of
+    #: a second.
+    _held: tuple = field(default=None, repr=False, compare=False, init=False)
+    _big: tuple = field(default=None, repr=False, compare=False, init=False)
     #: Pieces the corridor cut off from their province, added to the bar
     #: (see :func:`_absorb_enclaves`), and their printed area.
     enclaves: int = 0
@@ -773,6 +778,9 @@ class BorderDefinition:
         """For each piece, the connectors it carries: each goes with the
         piece holding most of its root."""
         pieces = self.pieces()
+        key = (self._pieces_key, tuple(map(id, self.lobes)))
+        if self._held is not None and self._held[0] == key:
+            return [list(lobes) for lobes in self._held[1]]
         out = [[] for _ in pieces]
         for lobe in self.lobes:
             best, share = None, 0.0
@@ -783,7 +791,8 @@ class BorderDefinition:
                         best, share = i, area
             if best is not None:
                 out[best].append(lobe)
-        return out
+        self._held = (key, out)
+        return [list(lobes) for lobes in out]
 
     def too_big(self, bed_mm=None, margin_mm=None) -> list:
         """Indices of the pieces that will not fit the bed at any turn -- a
@@ -793,13 +802,17 @@ class BorderDefinition:
         margin = _cfg("print.bed_margin_mm") if margin_mm is None \
             else margin_mm
         usable = (bed - 2 * margin) * self.settings.mpm
+        pieces, held = self.pieces(), self.piece_lobes()
+        key = (self._pieces_key, tuple(map(id, self.lobes)), usable)
+        if self._big is not None and self._big[0] == key:
+            return list(self._big[1])
         big = []
-        for i, (piece, lobes) in enumerate(zip(self.pieces(),
-                                               self.piece_lobes())):
+        for i, (piece, lobes) in enumerate(zip(pieces, held)):
             shape = unary_union([piece, *lobes]) if lobes else piece
             if bed_turn(shape, usable) is None:
                 big.append(i)
-        return big
+        self._big = (key, big)
+        return list(big)
 
     def border_line(self):
         """The border line between the printed provinces -- the shared
@@ -1206,9 +1219,13 @@ def split_at(definition, x: float, y: float):
     # is the usual way to take a junction apart -- but not so close that the
     # piece between falls under the sliver floor the bar is built to, where
     # it would not be built at all and that stretch of bar would be lost.
+    # Only the pieces this cut makes -- the two either side of it.  A map's
+    # corridor can hold specks under the floor already (where it rings a
+    # tiny island), and those are no reason to refuse a split elsewhere.
     floor = MIN_PART_AREA_MM2 * p.mpm ** 2
     trial = replace(d, splits=d.splits + [cut])
-    if any(piece.area < floor for piece in trial.pieces()):
+    made = [piece for piece in trial.pieces() if piece.distance(cut) < eps]
+    if any(piece.area < floor for piece in made):
         return None, (f"It would leave a piece under {MIN_PART_AREA_MM2:g} "
                       "mm², too small to build -- move it a little further "
                       "from the next split or the end of the bar.")
