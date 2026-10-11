@@ -44,9 +44,12 @@ def split_at(definition, x: float, y: float):
     cannot go there: ``(line, "")`` or ``(None, reason)``.
 
     Straight across: through the corridor edge nearest the click, square to
-    it, from the bar's outer edge to its outer edge on the other side -- over
-    any hole the bar has there (where it rings an island of province), since
-    a cut that stops at a hole leaves the ring whole.  Refused where it does
+    it, from edge to edge of the bar -- over any small hole it has there
+    (where it rings an island of province), since a cut that stops at one
+    leaves the bar whole beside it, but not across a region the bar runs
+    right round (a whole province, with corridor on every side), where it
+    stops at the region's edge: such a ring of bar comes apart at its
+    second split, not its first.  Refused where it does
     not come out within ``SPLIT_REACH_WIDTHS`` corridor widths -- a click at
     a junction, or running along a bend -- and where it would pass within a
     clearance of a connector, which it would cut in two, and where it would
@@ -73,12 +76,20 @@ def split_at(definition, x: float, y: float):
     # the stretch through the click runs outer edge to outer edge.
     probe = LineString([(at.x + nx * reach, at.y + ny * reach),
                         (at.x - nx * reach, at.y - ny * reach)])
-    filled = Polygon(part.exterior)
+    # Small holes -- where the bar rings an island -- are crossed, or the
+    # cut would stop at the island and leave the bar whole beside it.  A
+    # hole too big to cross within the reach is a region the bar runs right
+    # round (a province with corridor on every side): the cut crosses the
+    # strip of bar to it and stops there.
+    # (Kept as a list: shapely makes new ring objects on every read.)
+    holes = list(part.interiors)
+    filled = Polygon(part.exterior, [ring for ring in holes
+                                     if _wider_than(Polygon(ring), reach)])
     inside = [g for g in _lines(probe.intersection(filled))
               if g.distance(at) < 2 * eps]
-    outer = part.exterior
+    edge = filled.boundary
     if not inside or inside[0].length >= 2 * reach - 4 * eps or any(
-            outer.distance(Point(c)) > 2 * eps
+            edge.distance(Point(c)) > 2 * eps
             for c in (inside[0].coords[0], inside[0].coords[-1])):
         return None, ("No clean cut across the corridor here: try a "
                       "straighter stretch, away from a junction.")
@@ -105,6 +116,17 @@ def split_at(definition, x: float, y: float):
                       "mm², too small to build -- move it a little further "
                       "from the next split or the end of the bar.")
     return cut, ""
+
+
+def _wider_than(shape, length: float) -> bool:
+    """Whether ``shape`` cannot be crossed in ``length`` whichever way: its
+    smallest rotated rectangle is wider than that on both sides."""
+    rect = shape.minimum_rotated_rectangle
+    if rect.geom_type != "Polygon":
+        return False
+    xy = list(rect.exterior.coords)
+    sides = [Point(a).distance(Point(b)) for a, b in zip(xy, xy[1:])]
+    return min(sides) > length
 
 
 def _lines(geom) -> list:

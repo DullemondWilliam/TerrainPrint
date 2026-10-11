@@ -1265,6 +1265,26 @@ class TestPieceTool:
         assert window.bar is None
 
 
+class TestSplittingARing:
+
+    def test_the_first_split_on_a_ring_says_why_it_is_still_whole(self,
+                                                                   tmp_path):
+        width = BP.BorderSettings().width_mm * MPM
+        outer = box(7_000 * KM, 1_000 * KM, 7_400 * KM + 2 * width,
+                    1_400 * KM + 2 * width)
+        inner = box(7_000 * KM + width, 1_000 * KM + width,
+                    7_400 * KM + width, 1_400 * KM + width)
+        window = _window(tmp_path)
+        window.apply_borders(BP.BorderDefinition(
+            settings=BP.BorderSettings(), border=outer.difference(inner)))
+        window.tabs.setCurrentIndex(1)
+        assert window.add_split(7_200 * KM, 1_000 * KM + width / 2)
+        assert len(window.borders.pieces()) == 1
+        assert "second split" in window.status.text()
+        assert window.add_split(7_200 * KM, 1_400 * KM + 1.5 * width)
+        assert len(window.borders.pieces()) == 2
+
+
 class TestPlaceConnector:
 
     def test_lands_on_the_side_clicked(self, defined):

@@ -2116,8 +2116,16 @@ class TerrainEditorTester(QMainWindow):
         if cut is None:
             self.status.setText(f"No split added: {why}")
             return False
+        before = len(self.borders.pieces())
         self._commit_splits(self.borders.splits + [cut], "Added a split.",
                             selected=len(self.borders.splits))
+        if len(self.borders.pieces()) == before:
+            # A ring of bar -- round a province with corridor on every side
+            # -- is cut but still one piece: say so, or it looks refused.
+            self.status.setText(
+                "Added a split. The bar runs in a ring here, right round a "
+                "province: it comes apart at a second split on the ring. "
+                f"{self._pieces_text()}.")
         return True
 
     def remove_split(self) -> None:

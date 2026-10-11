@@ -31,7 +31,7 @@ from pathlib import Path
 import geopandas as gpd
 from shapely import STRtree
 from shapely.geometry import LineString, Polygon
-from shapely.ops import split as split_geom
+from shapely.ops import polygonize
 from shapely.ops import unary_union
 
 from lib.LIB_border_connectors import (CONNECTORS_NAME, ConnectorParams,
@@ -335,15 +335,20 @@ class BorderDefinition:
             return []
         key = (id(self.border), tuple(map(id, self.splits)))
         if self._pieces_key != key:
-            geoms = list(_polys(self.border))
-            for cut in self.splits:
-                out = []
-                for geom in geoms:
-                    if geom.intersects(cut):
-                        out += _polys(split_geom(geom, cut))
-                    else:
-                        out.append(geom)
-                geoms = out
+            # Each part by every cut across it at once: a ring of bar (round a
+            # province with corridor on every side) does not come apart at
+            # one cut, and split one at a time each would be thrown away.
+            # The part's outline and its cuts are noded together and every
+            # face inside the part is a piece -- holes and all.
+            geoms = []
+            for geom in _polys(self.border):
+                cuts = [cut for cut in self.splits if geom.intersects(cut)]
+                if not cuts:
+                    geoms.append(geom)
+                    continue
+                faces = polygonize(unary_union([geom.boundary, *cuts]))
+                geoms += [face for face in faces
+                          if geom.contains(face.representative_point())]
             self._pieces, self._pieces_key = geoms, key
         return list(self._pieces)
 

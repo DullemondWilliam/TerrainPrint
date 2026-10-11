@@ -228,3 +228,46 @@ class TestRemovedPieces:
         d.removed = []
         BP.write_borders(d, tmp_path / "saved")
         assert BP.read_borders(tmp_path / "saved").removed == []
+
+
+
+class TestRingsAndIslands:
+    """A bar with holes: a small one -- where it rings an island -- is
+    crossed by a split; a big one -- a province with corridor on every side,
+    as Alberta and Saskatchewan are when defined beside the US -- is not."""
+
+    WIDTH = BP.BorderSettings().width_mm * MPM          # 16 km
+
+    def _definition(self, border):
+        return BP.BorderDefinition(settings=BP.BorderSettings(), border=border)
+
+    def _ring(self):
+        """A bar running right round a 400 km square region."""
+        outer = box(0, 0, 400 * KM + 2 * self.WIDTH, 400 * KM + 2 * self.WIDTH)
+        inner = box(self.WIDTH, self.WIDTH, 400 * KM + self.WIDTH,
+                    400 * KM + self.WIDTH)
+        return self._definition(outer.difference(inner))
+
+    def test_a_ring_is_cut_across_its_strip(self):
+        d = self._ring()
+        cut, why = BB.split_at(d, 200 * KM, self.WIDTH / 2)   # bottom strip
+        assert why == "" and cut.length == pytest.approx(self.WIDTH, rel=0.02)
+
+    def test_a_ring_comes_apart_at_its_second_split(self):
+        d = self._ring()
+        first, _ = BB.split_at(d, 200 * KM, self.WIDTH / 2)
+        d = _copy(d, splits=[first])
+        assert len(d.pieces()) == 1
+        second, why = BB.split_at(d, 200 * KM, 400 * KM + 1.5 * self.WIDTH)
+        assert why == ""
+        assert len(_copy(d, splits=[first, second]).pieces()) == 2
+
+    def test_a_small_island_is_crossed(self):
+        """A 4 km island in a 40 km wide stretch of bar: a cut that stopped
+        at it would leave the bar whole on the island's other side."""
+        strip = box(0, 0, 400 * KM, 40 * KM)
+        island = box(198 * KM, 18 * KM, 202 * KM, 22 * KM)
+        d = self._definition(strip.difference(island))
+        cut, why = BB.split_at(d, 200 * KM, 21 * KM)          # by the island
+        assert why == ""
+        assert len(_copy(d, splits=[cut]).pieces()) == 2
