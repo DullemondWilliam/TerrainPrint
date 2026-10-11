@@ -27,7 +27,7 @@ from shapely.ops import unary_union
 from lib.LIB_border_connectors import (MIN_PART_AREA_MM2, _edge_frame,
                                        _polys, _safe_union,
                                        build_border_pieces)
-from lib.LIB_border_plan import EPSG_WORKING, BorderDefinition
+from lib.LIB_border_plan import EPSG_WORKING, BorderDefinition, _safe_name
 from lib.LIB_raster_reproject import (ReprojectParams, bounds_for,
                                       reproject_geotiff)
 from lib.LIB_terrain_stl import TerrainParams, surface_sampler
@@ -140,6 +140,25 @@ def _lines(geom) -> list:
     return []
 
 
+#: Every bar piece's file name starts with it.
+BORDER_STEM = "border"
+
+
+def piece_province(definition: BorderDefinition, piece):
+    """The printed province with the largest share of ``piece``'s edge --
+    the length of its trimmed outline running alongside the piece -- or None
+    where none does (a piece wholly between surrounding regions)."""
+    zone = piece.buffer(0.5 * definition.settings.mpm)
+    best, share = None, 0.0
+    for name, geom in definition.targets.items():
+        if geom is None or not zone.intersects(geom):
+            continue
+        length = geom.boundary.intersection(zone).length
+        if length > share:
+            best, share = name, length
+    return best
+
+
 @dataclass
 class BarResult:
     """The border bar, split for the bed (result of :func:`build_bar`)."""
@@ -152,9 +171,25 @@ class BarResult:
     draped: bool = False           #: top follows the terrain, not flat
     too_big: int = 0               #: pieces that will not fit the bed
     removed: int = 0               #: pieces the user took out, not built
+    bare: int = 0                  #: pieces with no connector, not built
     #: Per solid in ``pieces``: whether it is part of a piece too big for
     #: the bed -- the 3D panel draws those red.
     piece_too_big: list = field(default_factory=list)
+    #: Per solid in ``pieces``: the province with the largest share of its
+    #: piece's edge (:func:`piece_province`), or None -- what it is named.
+    provinces: list = field(default_factory=list)
+
+    def file_names(self) -> list:
+        """A file name per solid in ``pieces``: ``border_<province>_NN.stl``,
+        numbered within each province, or ``border_NNN.stl`` for a piece no
+        printed province lies along."""
+        names, seen = [], {}
+        for province in (self.provinces or [None] * len(self.pieces)):
+            key = _safe_name(province) if province else ""
+            seen[key] = seen.get(key, 0) + 1
+            names.append(f"{BORDER_STEM}_{key}_{seen[key]:02d}.stl" if key
+                         else f"{BORDER_STEM}_{seen[key]:03d}.stl")
+        return names
 
 
 def build_bar(definition: BorderDefinition, bed_mm=None,
@@ -169,7 +204,8 @@ def build_bar(definition: BorderDefinition, bed_mm=None,
     join, and the 3D panel can lay a terrain solid beside them.  A piece too
     big for the bed is built all the same and counted (``too_big``); one
     the user took out (``BorderDefinition.removed``) is not built at all, and
-    neither are its connectors.  The frame is the whole bar's either way, so
+    neither are its connectors; nor is one that carries no connector
+    (``BorderDefinition.bare_flags``), which nothing would hold.  The frame is the whole bar's either way, so
     what is built still lies where it will join.  For ``too_big``,
     ``bed_mm`` and ``margin_mm`` are what it is measured against.
 
@@ -188,17 +224,21 @@ def build_bar(definition: BorderDefinition, bed_mm=None,
         else definition.border
     origin = tuple(bottom.bounds[:2])
     big = set(definition.too_big(bed_mm, margin_mm))
-    pieces, flags = [], []
-    for i, (piece, mine, out) in enumerate(zip(
+    pieces, flags, names = [], [], []
+    for i, (piece, mine, built) in enumerate(zip(
             definition.pieces(), definition.piece_lobes(),
-            definition.removed_flags())):
-        if out:
-            continue                     # taken out of the bar by the user
+            definition.built_flags())):
+        if not built:
+            continue                     # taken out, or nothing holds it
         solids = build_border_pieces(piece, mine, params, surface,
                                      origin_m=origin)
         pieces += solids
         flags += [i in big] * len(solids)
+        names += [piece_province(definition, piece)] * len(solids)
     if not pieces:
+        if any(definition.bare_flags()):
+            raise ValueError("No piece of the bar left in it carries a "
+                             "connector: nothing would hold it.")
         if any(definition.removed_flags()):
             raise ValueError("Every piece of the bar has been removed.")
         raise ValueError("The corridor is too thin to extrude; widen it.")
@@ -207,8 +247,9 @@ def build_bar(definition: BorderDefinition, bed_mm=None,
     result = BarResult(mesh=mesh, pieces=pieces, origin_m=origin,
                        mpm=params.mpm, lobes=len(kept),
                        removed=sum(definition.removed_flags()),
+                       bare=sum(definition.bare_flags()),
                        draped=surface is not None, too_big=len(big),
-                       piece_too_big=flags)
+                       piece_too_big=flags, provinces=names)
     result.lobes_cut = _lobes_cut(pieces, kept, origin, params.mpm)
     return result
 

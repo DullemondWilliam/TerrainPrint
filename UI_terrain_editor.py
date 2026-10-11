@@ -59,8 +59,8 @@ Workflow (stage 3)
 9. **Process All …**      — every province and the border bar in one run,
                             into one folder: ``<province>.stl`` with its
                             frame, pocketed, each at its own Auto resolution
-                            (or at Res), and ``border_001.stl`` onward, draped
-                            over the DEM (``LIB_print_all``).  Asks before
+                            (or at Res), and ``border_<province>_01.stl``
+                            onward, draped over the DEM (``LIB_print_all``).  Asks before
                             writing over files; a province that fails is
                             reported and the rest go on.
 
@@ -947,10 +947,12 @@ class TerrainEditorTester(QMainWindow):
         self.lbl_pieces.setToolTip(
             "How many pieces the bar prints in, and how many of them will not "
             "fit the bed (print.bed_mm less print.bed_margin_mm each side) "
-            "at any turn -- diagonally included, as a slicer would place it.")
+            "at any turn -- diagonally included, as a slicer would place it. "
+            "A piece that carries no connector is unconnected: nothing would "
+            "hold it to a province, so it is drawn pale and not built.")
         self.lbl_pieces.setFixedWidth(
             self.lbl_pieces.fontMetrics().horizontalAdvance(
-                "888 pieces, 888 too big") + 6)
+                "88 pieces (8 removed, 88 unconnected), 88 too big") + 6)
         self.border_report = QLabel("Add provinces on the Import tab.")
         self.border_report.setWordWrap(True)
 
@@ -1224,15 +1226,18 @@ class TerrainEditorTester(QMainWindow):
         self.btn_save_bar = self._button("Save Border Pieces …",
                                          self.save_border_pieces, enabled=False)
         self.btn_save_bar.setToolTip(
-            "Write each bed-sized piece of the border bar as its own STL.")
+            "Write each piece of the border bar as its own STL, named for "
+            "the province with the largest share of its edge: "
+            "border_<province>_01.stl, _02 ... Pieces with no connector are "
+            "not built.")
 
         self.btn_print_all = self._button("Process All …", self.process_all,
                                           enabled=False)
         self.btn_print_all.setToolTip(
             "Every province's solid and the border bar's pieces, in one run, "
             "into one folder (Data/STL to start): <province>.stl with its "
-            "frame for each, pocketed for its connectors, and border_001.stl "
-            "onward for the bar, draped over the DEM. Each province is "
+            "frame for each, pocketed for its connectors, and "
+            "border_<province>_01.stl onward for the bar, draped over the DEM. Each province is "
             "cropped at its own finest resolution with Auto on, or at Res, "
             "with the CRS, Resample, Cut and Solid settings here. A province "
             "that fails is reported and the rest go on. Asks before writing "
@@ -2102,8 +2107,8 @@ class TerrainEditorTester(QMainWindow):
         if not folder:
             return
         try:
-            for i, piece in enumerate(self.bar.pieces, start=1):
-                piece.export(str(Path(folder) / f"border_{i:03d}.stl"))
+            for piece, name in zip(self.bar.pieces, self.bar.file_names()):
+                piece.export(str(Path(folder) / name))
         except Exception as exc:
             QMessageBox.critical(self, "Save failed", str(exc))
             return
@@ -2272,10 +2277,11 @@ class TerrainEditorTester(QMainWindow):
         if d is None or d.border is None:
             return "no bar yet"
         n, big = len(d.pieces()), len(d.too_big())
-        out = sum(d.removed_flags())
+        out, bare = sum(d.removed_flags()), sum(d.bare_flags())
         text = f"{n} piece{'s' if n != 1 else ''}"
-        if out:
-            text += f" ({out} removed)"
+        skipped = ([f"{out} removed"] if out else [])             + ([f"{bare} unconnected"] if bare else [])
+        if skipped:
+            text += f" ({', '.join(skipped)})"
         return text + (f", {big} too big" if big else ", all fit")
 
     def _on_edit_toggled(self, on: bool) -> None:
@@ -3407,8 +3413,10 @@ class TerrainEditorTester(QMainWindow):
         # A piece too big for the bed, filled red over the slate bar -- the
         # reason to add a split -- and under the connectors it carries.
         pieces = d.pieces()
-        for piece, out in zip(pieces, d.removed_flags()):
-            if out:
+        # Pale and dashed where it is not built: taken out, or carrying no
+        # connector to hold it.
+        for piece, built in zip(pieces, d.built_flags()):
+            if not built:
                 for patch in self._fill(ax, piece, REMOVED_COLOUR,
                                         edge=CORRIDOR_COLOUR, extent=False):
                     patch.set_zorder(1.2)

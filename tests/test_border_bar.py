@@ -271,3 +271,86 @@ class TestRingsAndIslands:
         cut, why = BB.split_at(d, 200 * KM, 21 * KM)          # by the island
         assert why == ""
         assert len(_copy(d, splits=[cut]).pieces()) == 2
+
+
+class TestUnconnectedPieces:
+    """A piece of bar that carries no connector has nothing to hold it to a
+    province: it is not built, and never counted too big."""
+
+    @staticmethod
+    def _bare_seam(defined):
+        """The A/B arm split off at mid-seam, and its south half's
+        connectors deleted."""
+        d = TestRemovedPieces._split_twice(defined)
+        i = TestRemovedPieces._piece_at(d, 7_400 * KM, 1_100 * KM)
+        gone = set(map(id, d.piece_lobes()[i]))
+        assert gone
+        return _copy(d, lobes=[lobe for lobe in d.lobes
+                               if id(lobe) not in gone]), i
+
+    def test_it_is_bare(self, defined):
+        d, i = self._bare_seam(defined)
+        flags = d.bare_flags()
+        assert flags[i] and sum(flags) == 1
+        assert not d.built_flags()[i]
+        assert not any(TestRemovedPieces._split_twice(defined).bare_flags())
+
+    def test_it_is_not_built(self, defined):
+        whole = BB.build_bar(TestRemovedPieces._split_twice(defined))
+        d, _ = self._bare_seam(defined)
+        bar = BB.build_bar(d)
+        assert bar.bare == 1 and bar.removed == 0
+        assert len(bar.pieces) == len(whole.pieces) - 1
+
+    def test_it_is_never_too_big(self, defined):
+        d, i = self._bare_seam(defined)
+        assert i not in d.too_big(bed_mm=1.0, margin_mm=0.0)
+
+    def test_a_removed_piece_is_not_also_bare(self, defined):
+        d = TestRemovedPieces._split_twice(defined)
+        d.removed = [d.pieces()[0].representative_point()]
+        assert not d.bare_flags()[0]
+
+    def test_with_connectors_off_nothing_is_bare(self, defined):
+        off = replace(defined.settings, connectors=False)
+        d = _copy(defined, lobes=[], settings=off)
+        assert d.bare_flags() == [False]
+        assert len(BB.build_bar(d).pieces) == 1
+
+    def test_no_connector_anywhere_is_refused(self, defined):
+        with pytest.raises(ValueError, match="carries a connector"):
+            BB.build_bar(_copy(defined, lobes=[]))
+
+
+class TestNames:
+    """Each piece's file is named for the province with the largest share
+    of its edge."""
+
+    def test_a_piece_beside_one_province_is_named_for_it(self, defined):
+        d = TestRemovedPieces._split_twice(defined)
+        west = TestRemovedPieces._piece_at(d, *FRONTIER_WEST)
+        assert BB.piece_province(d, d.pieces()[west]) == "A"
+
+    def test_the_longer_share_wins(self, defined):
+        """A stretch of seam with a step of frontier on A's side only."""
+        seam = box(7_392 * KM, 1_000 * KM, 7_408 * KM, 1_300 * KM)
+        frontier = box(7_000 * KM, 1_300 * KM, 7_408 * KM, 1_316 * KM)
+        d = _copy(defined)
+        assert BB.piece_province(d, unary_union([seam, frontier])) == "A"
+
+    def test_none_beside_no_province(self, defined):
+        far = box(1_000 * KM, 1_000 * KM, 1_010 * KM, 1_010 * KM)
+        assert BB.piece_province(defined, far) is None
+
+    def test_built_pieces_carry_their_names(self, defined):
+        d = TestRemovedPieces._split_twice(defined)
+        bar = BB.build_bar(d)
+        assert len(bar.provinces) == len(bar.pieces)
+        assert set(bar.provinces) <= {"A", "B"}
+
+    def test_file_names_number_within_each_province(self):
+        bar = BB.BarResult(pieces=[None] * 4,
+                           provinces=["A", "A", None, "Prince Edward Island"])
+        assert bar.file_names() == ["border_A_01.stl", "border_A_02.stl",
+                                    "border_001.stl",
+                                    f"border_{BP._safe_name('Prince Edward Island')}_01.stl"]

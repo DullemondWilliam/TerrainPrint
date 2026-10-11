@@ -385,6 +385,22 @@ class BorderDefinition:
                     break
         return flags
 
+    def bare_flags(self) -> list:
+        """For each piece, whether it is still in the bar yet carries no
+        connector: nothing would hold it to a province, so it is not built.
+        With connectors turned off no piece is bare -- none has any."""
+        out = self.removed_flags()
+        if not self.settings.connectors:
+            return [False for _ in out]
+        return [not lobes and not gone
+                for lobes, gone in zip(self.piece_lobes(), out)]
+
+    def built_flags(self) -> list:
+        """For each piece, whether it is built: neither taken out by the
+        user nor bare of connectors."""
+        return [not (gone or bare) for gone, bare
+                in zip(self.removed_flags(), self.bare_flags())]
+
     def kept_lobes(self) -> list:
         """The connectors on pieces still in the bar: a removed piece takes
         its connectors with it -- from the bar, and from the pockets cut for
@@ -400,23 +416,24 @@ class BorderDefinition:
         """Indices of the pieces that will not fit the bed at any turn -- a
         slicer turns a part to fit, diagonally if it must, so each piece is
         tried at every angle (:func:`bed_turn`), connectors included.  A
-        piece taken out of the bar is never too big: it is not printed."""
+        piece taken out of the bar, or bare of connectors, is never too big:
+        it is not printed."""
         bed = _cfg("print.bed_mm") if bed_mm is None else bed_mm
         margin = _cfg("print.bed_margin_mm") if margin_mm is None \
             else margin_mm
         usable = (bed - 2 * margin) * self.settings.mpm
         pieces, held = self.pieces(), self.piece_lobes()
         key = (self._pieces_key, tuple(map(id, self.lobes)), usable)
-        out = self.removed_flags()
+        built = self.built_flags()
         if self._big is not None and self._big[0] == key:
-            return [i for i in self._big[1] if not out[i]]
+            return [i for i in self._big[1] if built[i]]
         big = []
         for i, (piece, lobes) in enumerate(zip(pieces, held)):
             shape = unary_union([piece, *lobes]) if lobes else piece
             if bed_turn(shape, usable) is None:
                 big.append(i)
         self._big = (key, big)
-        return [i for i in big if not out[i]]
+        return [i for i in big if built[i]]
 
     def border_line(self):
         """The border line between the printed provinces -- the shared

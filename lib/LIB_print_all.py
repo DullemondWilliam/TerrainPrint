@@ -16,8 +16,9 @@ Files written, into ``out_dir``:
 
 * ``<province>.stl`` + ``<province>.frame.json`` per province -- the frame
   sidecar each solid carries, so a later tool can recover its metres frame;
-* ``border_001.stl``, ``border_002.stl`` ... -- the bar's pieces, removed
-  ones left out.
+* ``border_<province>_01.stl`` ... -- the bar's pieces, each named for the
+  province with the largest share of its edge and numbered within it;
+  removed pieces, and pieces with no connector, left out.
 
 Pure (no Qt): the editor runs it off the UI thread, and tests call it.
 """
@@ -31,7 +32,7 @@ import rasterio
 from rasterio.crs import CRS
 from rasterio.enums import Resampling
 
-from lib.LIB_border_bar import build_bar, build_draped_bar
+from lib.LIB_border_bar import BORDER_STEM, build_bar, build_draped_bar
 from lib.LIB_border_connectors import load_connector_params, notch_province
 from lib.LIB_border_plan import EPSG_WORKING, _safe_name
 from lib.LIB_geotiff_clip import clip_geotiff
@@ -40,10 +41,6 @@ from lib.LIB_raster_plan import finest_res, needs_warp, plan_run
 from lib.LIB_raster_reproject import ReprojectParams, reproject_geotiff
 from lib.LIB_terrain_stl import (TerrainParams, _finish, _validate, _write,
                                  terrain_to_stl)
-
-#: The bar's pieces, numbered in the folder.
-BORDER_STEM = "border"
-
 
 def build_terrain(raster, boundary, out_path, params, lobes=None,
                   connector=None):
@@ -97,7 +94,7 @@ class ProvincePrint:
 class PrintAllReport:
     """What ``print_all`` wrote, and what it could not."""
     provinces: list = field(default_factory=list)   #: ProvincePrint each
-    bar_paths: list = field(default_factory=list)   #: border_NNN.stl written
+    bar_paths: list = field(default_factory=list)   #: border_*.stl written
     bar_too_big: int = 0                            #: pieces over the bed
     bar_error: str = ""
     cancelled: bool = False
@@ -115,7 +112,7 @@ class PrintAllReport:
 
 def outputs(out_dir, names) -> list:
     """The files ``print_all`` would write over in ``out_dir``: each
-    province's STL and frame, and every ``border_NNN.stl`` there."""
+    province's STL and frame, and every ``border_*.stl`` there."""
     out_dir = Path(out_dir)
     found = []
     for name in names:
@@ -123,7 +120,7 @@ def outputs(out_dir, names) -> list:
             path = out_dir / f"{_safe_name(name)}{suffix}"
             if path.exists():
                 found.append(path)
-    found += sorted(out_dir.glob(f"{BORDER_STEM}_[0-9][0-9][0-9].stl"))
+    found += sorted(out_dir.glob(f"{BORDER_STEM}_*.stl"))
     return found
 
 
@@ -233,14 +230,13 @@ def print_all(raster_path, out_dir, provinces: dict, work_dir, *,
             else:
                 result = build_bar(definition)
             report.bar_too_big = result.too_big
-            for i, piece in enumerate(result.pieces, start=1):
-                path = out_dir / f"{BORDER_STEM}_{i:03d}.stl"
+            for piece, name in zip(result.pieces, result.file_names()):
+                path = out_dir / name
                 piece.export(str(path))
                 report.bar_paths.append(path)
             # A run with fewer pieces than the last must not leave its extra
             # pieces lying in the folder to be printed by mistake.
-            for stale in sorted(out_dir.glob(
-                    f"{BORDER_STEM}_[0-9][0-9][0-9].stl")):
+            for stale in sorted(out_dir.glob(f"{BORDER_STEM}_*.stl")):
                 if stale not in report.bar_paths:
                     stale.unlink()
         except Exception as exc:

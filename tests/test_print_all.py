@@ -73,7 +73,9 @@ class TestEverything:
             assert trimesh.load(stl).is_watertight
         assert report.bar_paths
         assert all(trimesh.load(p).is_watertight for p in report.bar_paths)
-        assert [p.name for p in report.bar_paths][0] == "border_001.stl"
+        # One piece, as long beside A as beside B: named for one of them.
+        assert report.bar_paths[0].name in ("border_A_01.stl",
+                                            "border_B_01.stl")
 
     def test_each_is_pocketed_for_its_connectors(self, dem, tmp_path,
                                                  defined):
@@ -127,8 +129,10 @@ class TestTheBar:
         out = tmp_path / "out"
         out.mkdir()
         (out / "border_009.stl").write_text("old")
+        (out / "border_A_09.stl").write_text("old")
         report = _run(dem, tmp_path, defined)
         assert not (out / "border_009.stl").exists()
+        assert not (out / "border_A_09.stl").exists()
         assert len(list(out.glob("border_*.stl"))) == len(report.bar_paths)
 
     def test_removed_pieces_are_not_written(self, dem, tmp_path, defined):
@@ -160,6 +164,8 @@ class TestOutputs:
         (tmp_path / "A.stl").write_text("x")
         (tmp_path / "A.frame.json").write_text("{}")
         (tmp_path / "border_002.stl").write_text("x")
+        (tmp_path / "border_B_01.stl").write_text("x")
         (tmp_path / "other.stl").write_text("x")
         names = {p.name for p in PA.outputs(tmp_path, ["A", "B"])}
-        assert names == {"A.stl", "A.frame.json", "border_002.stl"}
+        assert names == {"A.stl", "A.frame.json", "border_002.stl",
+                         "border_B_01.stl"}

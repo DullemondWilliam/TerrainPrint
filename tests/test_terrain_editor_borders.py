@@ -996,7 +996,10 @@ class TestSplits:
         to corner -- and a slicer would place it so."""
         mm = BP.BorderSettings().mpm
         bar = box(0, 0, 78 * mm, 4 * mm)
-        d = BP.BorderDefinition(settings=BP.BorderSettings(), border=bar)
+        # No connectors on it: with them on it would be unconnected, and
+        # never built to be too big.
+        d = BP.BorderDefinition(settings=BP.BorderSettings(connectors=False),
+                                border=bar)
         assert d.too_big(bed_mm=60.0, margin_mm=0.0) == []
         assert d.too_big(bed_mm=50.0, margin_mm=0.0) == [0]
 
@@ -1226,6 +1229,16 @@ class TestPieceTool:
         self._click(window, self.SEAM_SOUTH)
         assert sum(window.borders.removed_flags()) == 0
         assert "Put a piece back" in window.status.text()
+
+    def test_a_piece_with_no_connector_is_counted_unconnected(self, tmp_path,
+                                                              defined):
+        window = self._picking(tmp_path, defined)
+        d = window.borders
+        i = window.piece_at(*self.SEAM_SOUTH)
+        gone = set(map(id, d.piece_lobes()[i]))
+        window._set_lobes([lobe for lobe in d.lobes if id(lobe) not in gone],
+                          "Deleted.")
+        assert "1 unconnected" in window.lbl_pieces.text()
 
     def test_a_removal_undoes_and_redoes(self, tmp_path, defined):
         window = self._picking(tmp_path, defined)

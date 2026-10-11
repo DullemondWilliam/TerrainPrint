@@ -190,7 +190,7 @@ This is today's raster row and mesh row, with three changes:
   print.bed_margin_mm)`. **Caveat:** the splitter is connector-blind, and its
   docstring reserves a `keepout` hook for exactly this. It can cut through a
   lobe, which breaks FR-3.11. See decision 3.
-* **Save Border Pieces …** writes `border_001.stl …` to a folder.
+* **Save Border Pieces …** writes `border_<province>_01.stl …` to a folder, each piece named for the province with the largest share of its edge.
 
 ### 5.3 Assembly view
 
