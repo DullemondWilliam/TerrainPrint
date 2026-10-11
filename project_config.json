@@ -3,6 +3,7 @@
     "clearance_mm": 0.2,
     "coast_tol_mm": 0.3,
     "connectors": true,
+    "enclave_mm2": 5.0,
     "height_clearance_mm": 0.0,
     "internal_tol_mm": 0.5,
     "lobe_depth_mm": 3.0,

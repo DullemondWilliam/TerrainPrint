@@ -181,6 +181,12 @@ DEFAULTS = {
         # Total corridor width carved between regions; the border bar is this
         # wide. 2 mm is 16 km at 1:8,000,000.
         "width_mm": 2.0,
+        # A piece of a province the corridor cuts off from the rest of its
+        # land -- between two arms of a zig-zag border, or between the bar and
+        # the sea where a border meets the coast -- is added to the border bar
+        # below this printed area (mm^2), rather than printed as a crumb. 0
+        # keeps every piece.
+        "enclave_mm2": 5.0,
         # Gap between dovetail keys along the corridor.
         "lobe_spacing_mm": 14.0,
         # Whether the corridor carries dovetail connectors at all.

@@ -129,7 +129,8 @@ question is what survives the nozzle.  Shared arcs then get
 printer limits (``seam.nozzle_mm`` / ``seam.spike_angle_deg``).
 
 *The settings are kept.*  Every control on the Borders tab -- the tolerances,
-the seam clean-up, the corridor width, the Connectors group's Place tick,
+the seam clean-up, the corridor width and enclave limit, the Connectors
+group's Place tick,
 and the connectors' spacing and shape -- opens on what the config files say and is
 written back to ``project_config.local.json`` as it is turned
 (``SAVED_BORDER_SETTINGS`` lists the keys), so the next launch starts where
@@ -141,6 +142,15 @@ corridor came out of it -- otherwise the solid and the border bar overlap by
 half the corridor.  So once borders are defined, stage 3 cuts to the trimmed
 province and **Buffer** is locked at 0: growing the cut outward is growing it
 into the corridor.
+
+*No crumbs.*  Carving the corridor can cut pieces off a province: between
+two arms of a zig-zag border the bar all but closes and leaves crumbs in
+holes in it, and where a border meets the coast it cuts slivers off between
+itself and the sea (both happen on the Quebec / Labrador border).  A piece
+the carving cut off, under **Enclaves** (``borders.enclave_mm2``, 5 mm²), is
+added to the border bar instead of printed loose; an island that was an
+island before carving is never touched.  Specks of hole the carving leaves in
+the bar with no province in them are filled.
 
 *A connector belongs to one province.*  A lobe whose far end lands in two
 targets (near a triple junction) has no single pocket to key into, so it is
@@ -434,6 +444,10 @@ class BorderSettings:
     min_segment_mm: float = _shipped("seam.min_segment_mm")
     min_angle_deg: float = _shipped("seam.min_angle_deg")
     width_mm: float = _shipped("borders.width_mm")
+    #: Below this printed area (mm²) a piece the corridor cuts off from the
+    #: rest of its province is added to the border bar (see
+    #: :func:`_absorb_enclaves`); 0 keeps every piece.
+    enclave_mm2: float = _shipped("borders.enclave_mm2")
     connectors: bool = _shipped("borders.connectors")
     lobe_spacing_mm: float = _shipped("borders.lobe_spacing_mm")
     #: The connector's shape.  Height is the lobe layer, and so the depth of
@@ -473,6 +487,7 @@ _BORDER_SETTINGS_KEYS = {
     "min_segment_mm": "seam.min_segment_mm",
     "min_angle_deg": "seam.min_angle_deg",
     "width_mm": "borders.width_mm",
+    "enclave_mm2": "borders.enclave_mm2",
     "connectors": "borders.connectors",
     "lobe_spacing_mm": "borders.lobe_spacing_mm",
     "lobe_height_mm": "print.dovetail_mm",
@@ -499,6 +514,7 @@ SAVED_BORDER_SETTINGS = (
     ("seam.min_segment_mm", "min_seg_spin"),
     ("seam.min_angle_deg", "min_angle_spin"),
     ("borders.width_mm", "width_spin"),
+    ("borders.enclave_mm2", "enclave_spin"),
     ("borders.connectors", "chk_connectors"),
     ("borders.lobe_spacing_mm", "spacing_spin"),
     ("print.dovetail_mm", "lobe_height_spin"),
@@ -554,6 +570,10 @@ class BorderDefinition:
     #: Why: fault code (see ``FAULTS``) -> how many.
     drop_reasons: dict = field(default_factory=dict)
     lobes_edited: bool = False     #: moved, added or deleted by hand since
+    #: Pieces the corridor cut off from their province, added to the bar
+    #: (see :func:`_absorb_enclaves`), and their printed area.
+    enclaves: int = 0
+    enclaves_mm2: float = 0.0
     #: The targets merged into one, and which target geometries it was merged
     #: from (see :meth:`land`).
     _land: object = field(default=None, repr=False, compare=False,
@@ -741,6 +761,13 @@ def define_borders(targets: dict, surrounding: dict,
             else before
     result.border = _repair(regions.border) if regions.border is not None \
         else None
+    if result.border is not None and s.enclave_mm2 > 0:
+        result.enclaves, area = _absorb_enclaves(
+            result, s.enclave_mm2 * mpm ** 2)
+        result.enclaves_mm2 = area / mpm ** 2
+    if result.border is not None:
+        result.border = _fill_pinholes(result.border, result.targets.values(),
+                                       PINHOLE_MM2 * mpm ** 2)
 
     if s.connectors and result.border is not None:
         lobes = generate_lobes(result.border,
@@ -751,6 +778,86 @@ def define_borders(targets: dict, surrounding: dict,
         result._passed(result.lobes)
         result.lobes_dropped = sum(result.drop_reasons.values())
     return result
+
+
+def _absorb_enclaves(result, max_m2: float) -> tuple:
+    """
+    Add the small pieces the corridor cut off from their province to the
+    border bar: ``(how many, their area in m²)``.
+
+    Carving the corridor can split a province's land.  Where a border
+    zig-zags, two arms of the corridor all but meet and leave crumbs of
+    province in holes in the bar; where a border meets the coast, the bar
+    cuts slivers off between itself and the sea (both on the Quebec /
+    Labrador border).  A piece like that has no land of its own to hang on
+    to -- printed, it is a loose crumb -- so below ``max_m2`` it becomes
+    part of the bar.
+
+    A piece counts only if the carving made it: of each simplified part of
+    a province, the largest piece left is the province and the rest are cut
+    off.  An island that was an island before carving is never touched,
+    however small.
+    """
+    count, area = 0, 0.0
+    taken = []
+    for name in list(result.targets):
+        trimmed = result.targets[name]
+        if trimmed is None:
+            continue
+        pieces = _polys(trimmed)
+        parents = _polys(result.simplified[name])
+        keep = []
+        by_parent = {}
+        for piece in pieces:
+            probe = piece.representative_point()
+            parent = next((i for i, part in enumerate(parents)
+                           if part.covers(probe)), None)
+            by_parent.setdefault(parent, []).append(piece)
+        for parent, group in by_parent.items():
+            group.sort(key=lambda g: g.area, reverse=True)
+            main, rest = (group[0], group[1:]) if parent is not None \
+                else (None, group)
+            if main is not None:
+                keep.append(main)
+            for piece in rest:
+                if parent is not None and piece.area < max_m2 \
+                        and piece.distance(result.border) < 1.0:
+                    taken.append(piece)
+                    count += 1
+                    area += piece.area
+                else:
+                    keep.append(piece)
+        if len(keep) != len(pieces):
+            result.targets[name] = _repair(unary_union(keep))
+    if taken:
+        result.border = _repair(unary_union([result.border, *taken]))
+    return count, area
+
+
+#: Holes in the corridor below this printed area (mm²) with no province in
+#: them are filled.  Carving and merging leave specks where two outlines meet
+#: by rounding -- six along the Quebec/Labrador border, each under 0.001 mm²
+#: -- and a speck of nothing in a printed bar is a flaw, not a feature.
+PINHOLE_MM2 = 0.01
+
+
+def _fill_pinholes(border, targets, max_m2: float):
+    """``border`` with its specks of hole filled: rings under ``max_m2``
+    that hold no land of ``targets``."""
+    land = [geom for geom in targets if geom is not None]
+    out, changed = [], False
+    for poly in _polys(border):
+        keep = []
+        for ring in poly.interiors:
+            hole = Polygon(ring)
+            if hole.area < max_m2 and not any(hole.intersection(geom).area
+                                              > 0.5 * hole.area
+                                              for geom in land):
+                changed = True
+            else:
+                keep.append(ring)
+        out.append(Polygon(poly.exterior, keep))
+    return _repair(unary_union(out)) if changed else border
 
 
 def _resolve_overlaps(simplified: dict, names: list, originals: dict) -> float:
@@ -1342,6 +1449,8 @@ class TerrainEditorTester(QMainWindow):
             self.btn_remove)
         import_page = QWidget()
         import_layout = QVBoxLayout(import_page)
+        import_layout.setContentsMargins(4, 4, 4, 4)   # docs/UI_GUIDE.md §1
+        import_layout.setSpacing(4)
         import_layout.addLayout(self._row(self.grp_dem, self.grp_regions))
         import_layout.addWidget(self.region_list)
 
@@ -1372,6 +1481,15 @@ class TerrainEditorTester(QMainWindow):
             "Corridor width carved between regions -- the border bar's width. "
             "Target/target seams split it evenly; target/surrounding takes it "
             "all from the surrounding side (borders.width_mm).")
+        self.enclave_spin = self._spin(
+            0.0, 100.0, defaults.enclave_mm2, 1,
+            "A piece of a province the corridor cuts off from the rest of its "
+            "land -- between two arms of a zig-zag border, or between the bar "
+            "and the sea -- is added to the border bar below this printed "
+            "area, rather than printed as a loose crumb. Islands that were "
+            "islands before are never touched. 0 keeps every piece "
+            "(borders.enclave_mm2).")
+        self.enclave_spin.setSingleStep(0.5)
         self.chk_connectors = QCheckBox("Place")
         self.chk_connectors.setChecked(defaults.connectors)
         self.chk_connectors.setToolTip(
@@ -1382,7 +1500,7 @@ class TerrainEditorTester(QMainWindow):
             "Gap between connectors along the corridor.")
         for widget in (self.coast_spin, self.internal_spin, self.min_seg_spin,
                        self.min_angle_spin, self.width_spin,
-                       self.spacing_spin):
+                       self.enclave_spin, self.spacing_spin):
             widget.valueChanged.connect(self._invalidate_borders)
         self.chk_connectors.toggled.connect(self._invalidate_borders)
         # The connector's shape.  Unlike the settings above these do not stale
@@ -1491,12 +1609,13 @@ class TerrainEditorTester(QMainWindow):
 
         self.grp_simplify = self._group(
             "Simplify", "Coast (mm)", self.coast_spin,
-            "Internal (mm)", self.internal_spin)
+            "Shared (mm)", self.internal_spin)
         self.grp_seams = self._group(
             "Seam clean-up", "Min seg (mm)", self.min_seg_spin,
             "Min angle (°)", self.min_angle_spin)
         self.grp_corridor = self._group(
-            "Corridor", "Width (mm)", self.width_spin)
+            "Corridor", "Width (mm)", self.width_spin,
+            "Enclaves (mm²)", self.enclave_spin)
         self.grp_borders = self._group(
             "Borders", self.btn_define, self.btn_save_borders)
         self.grp_connectors = self._group(
@@ -1524,6 +1643,8 @@ class TerrainEditorTester(QMainWindow):
         # editing by hand, and the one connector it has selected.
         borders_page = QWidget()
         borders_layout = QVBoxLayout(borders_page)
+        borders_layout.setContentsMargins(4, 4, 4, 4)   # docs/UI_GUIDE.md §1
+        borders_layout.setSpacing(4)
         borders_layout.addLayout(self._row(
             self.grp_simplify, self.grp_seams, self.grp_corridor,
             self.grp_borders))
@@ -1704,6 +1825,8 @@ class TerrainEditorTester(QMainWindow):
 
         stl_page = QWidget()
         stl_layout = QVBoxLayout(stl_page)
+        stl_layout.setContentsMargins(4, 4, 4, 4)   # docs/UI_GUIDE.md §1
+        stl_layout.setSpacing(4)
         stl_layout.addLayout(self._row(self.grp_province, self.grp_warp))
         stl_layout.addLayout(self._row(self.grp_cut))
         stl_layout.addLayout(self._row(self.grp_solid, self.grp_bar))
@@ -1790,7 +1913,8 @@ class TerrainEditorTester(QMainWindow):
                    "Ctrl+Shift+Z", "Ctrl+Y")
         # …and keep the text entries from swallowing them (see eventFilter).
         for entry in (self.coast_spin, self.internal_spin, self.min_seg_spin,
-                      self.min_angle_spin, self.width_spin, self.spacing_spin,
+                      self.min_angle_spin, self.width_spin,
+                      self.enclave_spin, self.spacing_spin,
                       *self._shape_spins(), self.sel_angle_spin,
                       self.sel_depth_spin, self.res_spin, self.buf_spin,
                       self.cache_spin, self.exag_spin, self.base_spin,
@@ -1865,6 +1989,7 @@ class TerrainEditorTester(QMainWindow):
     def _row(*groups) -> QHBoxLayout:
         """One row of groups, packed to the left."""
         row = QHBoxLayout()
+        row.setSpacing(4)
         for group in groups:
             row.addWidget(group)
         row.addStretch(1)
@@ -2098,6 +2223,7 @@ class TerrainEditorTester(QMainWindow):
             min_segment_mm=self.min_seg_spin.value(),
             min_angle_deg=self.min_angle_spin.value(),
             width_mm=self.width_spin.value(),
+            enclave_mm2=self.enclave_spin.value(),
             connectors=self.chk_connectors.isChecked(),
             lobe_spacing_mm=self.spacing_spin.value(),
             **self._shape_values())
@@ -2148,6 +2274,9 @@ class TerrainEditorTester(QMainWindow):
             text += " No corridor: the provinces touch nothing."
         else:
             text += f" Corridor {s.width_mm:.2f} mm"
+            if d.enclaves:
+                text += (f", {d.enclaves} enclave(s) "
+                         f"({d.enclaves_mm2:.2f} mm²) added to it")
             if s.connectors:
                 text += f", {len(d.lobes)} connector(s)"
                 bad = sum(1 for code in d.faults() if code)

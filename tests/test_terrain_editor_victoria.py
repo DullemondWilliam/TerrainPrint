@@ -147,6 +147,12 @@ def _crossing(definition) -> list:
             if lobe.intersects(line)]
 
 
+@pytest.fixture(scope="module")
+def kept_apart(regions):
+    """Defined with enclaves kept apart (see TestVictoriaIslandConnectors)."""
+    return U.define_borders(regions, {}, U.BorderSettings(enclave_mm2=0.0))
+
+
 class TestVictoriaIslandConnectors:
     """A connector keys one territory into the bar, from its own side of the
     border line.
@@ -158,45 +164,54 @@ class TestVictoriaIslandConnectors:
     legs' corridors join at the corner), and its far end was all in the NWT.
     Define now refuses a connector that crosses the line.  By hand the same
     graze stays allowed: a turned connector's root crosses it by design.
+
+    Run with enclaves kept apart (``enclave_mm2=0``): merged into the bar,
+    the two crumbs at the bend reshape the corridor there, Define spaces its
+    connectors differently, and the corner case these tests are about is
+    never generated at all.
     """
 
-    def _corner_connector(self, defined):
+    def _corner_connector(self, kept_apart):
         """The connector Define would have placed in the corner: of those it
         generates that cross the line, the one at the bend.  (The other, at
         the south leg's west end, breaks a rule of its own first.)"""
         from lib.LIB_border_connectors import generate_lobes
-        p = defined.settings.connector_params()
-        line = _border_line(defined)
-        candidates = [lobe for lobe in generate_lobes(defined.border,
-                                                      defined.land(), p)
+        p = kept_apart.settings.connector_params()
+        line = _border_line(kept_apart)
+        candidates = [lobe for lobe in generate_lobes(kept_apart.border,
+                                                      kept_apart.land(), p)
                       if lobe.intersects(line)]
         return min(candidates, key=shapely.Point(TURN).distance)
 
-    def test_connectors_are_placed_on_both_sides(self, defined):
-        owners = {name for lobe in defined.lobes
-                  for name, geom in defined.targets.items()
-                  if lobe.difference(defined.border).intersects(geom)}
+    def test_connectors_are_placed_on_both_sides(self, kept_apart):
+        owners = {name for lobe in kept_apart.lobes
+                  for name, geom in kept_apart.targets.items()
+                  if lobe.difference(kept_apart.border).intersects(geom)}
         assert owners == {"NWT", "NU"}
 
     def test_define_places_no_connector_across_the_border_line(self,
-                                                               defined):
-        assert _crossing(defined) == []
+                                                               kept_apart):
+        assert _crossing(kept_apart) == []
 
-    def test_the_corner_connector_is_the_one_refused(self, defined):
+    def test_nor_with_the_enclaves_merged(self, regions):
+        assert _crossing(U.define_borders(regions, {},
+                                          U.BorderSettings())) == []
+
+    def test_the_corner_connector_is_the_one_refused(self, kept_apart):
         """So the test above cannot pass for want of a candidate: the one
         crossing the line is in the corner of the bend, on the NWT side, and
         the report counts it."""
-        lobe = self._corner_connector(defined)
-        assert lobe.distance(shapely.Point(TURN)) < 4 * defined.settings.mpm
-        assert lobe.difference(defined.border).intersects(
-            defined.targets["NWT"])
-        assert defined.drop_reasons.get("crosses_line") == 1
+        lobe = self._corner_connector(kept_apart)
+        assert lobe.distance(shapely.Point(TURN)) < 4 * kept_apart.settings.mpm
+        assert lobe.difference(kept_apart.border).intersects(
+            kept_apart.targets["NWT"])
+        assert kept_apart.drop_reasons.get("crosses_line") == 1
 
-    def test_put_there_by_hand_it_is_allowed(self, defined):
+    def test_put_there_by_hand_it_is_allowed(self, kept_apart):
         """The graze is the same one a turned connector makes by design."""
-        x, y, angle, scale = U.lobe_pose(self._corner_connector(defined),
-                                         defined.border,
-                                         defined.settings.connector_params())
-        lobe, why = U.place_connector(defined, x, y, angle_deg=angle,
+        x, y, angle, scale = U.lobe_pose(self._corner_connector(kept_apart),
+                                         kept_apart.border,
+                                         kept_apart.settings.connector_params())
+        lobe, why = U.place_connector(kept_apart, x, y, angle_deg=angle,
                                       scale=scale, allow_faults=True)
         assert lobe is not None and why == ""
