@@ -28,6 +28,7 @@ from shapely.geometry import Polygon, box
 import geopandas as gpd
 
 from lib.LIB_terrain_stl import (TerrainParams, _triangle_count,
+                                 load_terrain_params, simplify_solid,
                                  surface_sampler, terrain_to_stl)
 
 PRINT_CRS = CRS.from_epsg(3347)        # the project's print CRS
@@ -47,8 +48,10 @@ def _elevation():
 
 
 def _params(**kw):
+    # Simplify off: these check the mesh as built, vertex by vertex;
+    # TestSimplify turns it on.
     defaults = dict(scale=SCALE, z_exaggeration=EXAG, base_height_mm=BASE,
-                    floor_m=0.0, expect_crs=PRINT_CRS)
+                    floor_m=0.0, expect_crs=PRINT_CRS, simplify_mm=0.0)
     defaults.update(kw)
     return TerrainParams(**defaults)
 
@@ -503,6 +506,86 @@ class TestSharedSettings:
         assert frame_matches_config({"origin_m": [0, 0]}) is False
 
 
+def _rough():
+    """Hills and noise over a flat plain: relief to keep and ground to lose."""
+    rng = np.random.default_rng(3)
+    cols, rows = 61, 41
+    x, y = np.meshgrid(np.arange(cols), np.arange(rows))
+    hills = 900.0 * np.exp(-((x - 20) ** 2 + (y - 20) ** 2) / 60.0)
+    data = hills + np.where(x > 30, rng.normal(0, 40, (rows, cols)), 0.0)
+    return np.clip(data, 0, None).astype("float32")
+
+
+def _vertical_gap(original, simplified):
+    """How far, straight up or down, each of ``original``'s top vertices is
+    from ``simplified``'s top surface."""
+    from matplotlib.tri import LinearTriInterpolator, Triangulation
+    up = simplified.faces[simplified.face_normals[:, 2] > 1e-6]
+    v = simplified.vertices
+    surface = LinearTriInterpolator(Triangulation(v[:, 0], v[:, 1], up),
+                                    v[:, 2])
+    top = original.vertices[original.vertices[:, 2] > BASE + 1e-9]
+    z = surface(top[:, 0], top[:, 1])
+    inside = ~np.ma.getmaskarray(z)
+    return np.abs(np.asarray(z)[inside] - top[inside, 2])
+
+
+class TestSimplify:
+    """After meshing, triangles merge wherever the surface moves by less than
+    ``simplify_mm`` -- flat ground goes, relief stays."""
+
+    def test_fewer_triangles_and_nothing_moves_past_the_tolerance(
+            self, tmp_path):
+        dem = _write_dem(tmp_path, data=_rough())
+        raw = terrain_to_stl(dem, params=_params(z_exaggeration=50.0))
+        done = terrain_to_stl(dem, params=_params(z_exaggeration=50.0,
+                                                  simplify_mm=0.01))
+        assert done.triangles < 0.8 * raw.triangles
+        assert done.meshed_triangles == raw.triangles
+        assert done.watertight
+        assert done.mesh.bounds == pytest.approx(raw.mesh.bounds, abs=1e-6)
+        assert done.volume_mm3 == pytest.approx(raw.volume_mm3, rel=1e-3)
+        assert _vertical_gap(raw.mesh, done.mesh).max() <= 0.011
+
+    def test_a_coarser_tolerance_merges_more(self, tmp_path):
+        dem = _write_dem(tmp_path, data=_rough())
+        fine, coarse = (terrain_to_stl(dem, params=_params(
+            z_exaggeration=50.0, simplify_mm=tol)) for tol in (0.01, 0.05))
+        assert coarse.triangles < fine.triangles
+
+    def test_a_plane_comes_down_to_almost_nothing(self, tmp_path):
+        """The ramp DEM's top is one plane: its 920 triangles were all for
+        show, and the shape is exactly the same without them."""
+        raw = terrain_to_stl(_write_dem(tmp_path), params=_params())
+        done = terrain_to_stl(_write_dem(tmp_path),
+                              params=_params(simplify_mm=0.01))
+        assert done.triangles <= 20
+        assert done.volume_mm3 == pytest.approx(raw.volume_mm3, rel=1e-9)
+        assert done.mesh.bounds == pytest.approx(raw.mesh.bounds, abs=1e-9)
+
+    def test_off_leaves_the_mesh_alone(self, tmp_path):
+        mesh = terrain_to_stl(_write_dem(tmp_path), params=_params()).mesh
+        assert simplify_solid(mesh, 0.0) is mesh
+        assert simplify_solid(mesh, -1.0) is mesh
+
+    def test_the_saved_file_is_the_simplified_one(self, tmp_path):
+        import trimesh
+        out = tmp_path / "s.stl"
+        done = terrain_to_stl(_write_dem(tmp_path, data=_rough()), None, out,
+                              _params(z_exaggeration=50.0, simplify_mm=0.01))
+        assert len(trimesh.load(str(out)).faces) == done.triangles
+
+    def test_it_ships_at_a_hundredth_of_a_mm(self):
+        from lib.LIB_project_config import shipped
+        assert shipped("terrain.simplify_mm") == 0.01
+        assert TerrainParams().simplify_mm == 0.01
+
+    def test_it_is_read_from_the_config(self, tmp_path):
+        cfg = tmp_path / "c.json"
+        cfg.write_text(json.dumps({"terrain": {"simplify_mm": 0.03}}))
+        assert load_terrain_params(cfg).simplify_mm == 0.03
+
+
 class TestCLI:
 
     def test_cli_builds_a_piece(self, tmp_path, capsys):
@@ -510,7 +593,8 @@ class TestCLI:
         dem = _write_dem(tmp_path)
         out = tmp_path / "cli.stl"
         assert main([str(dem), str(out), "--scale", str(SCALE),
-                     "--exaggeration", str(EXAG), "--base", str(BASE)]) == 0
+                     "--exaggeration", str(EXAG), "--base", str(BASE),
+                     "--simplify", "0"]) == 0
         assert out.exists() and (tmp_path / "cli.frame.json").exists()
         printed = capsys.readouterr().out
         assert "920 triangles" in printed

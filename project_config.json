@@ -90,6 +90,7 @@
     "floor_m": 0.0,
     "max_triangles": 3000000,
     "resampling": "max",
+    "simplify_mm": 0.01,
     "spacing_mm": 0.4
   },
   "thin": {

@@ -103,8 +103,10 @@ class TestCostPreview:
         window = _loaded(tmp_path, boundary=False)
         predicted = window.status.text()
         result = _run_build(window)
-        assert f"{result.triangles:,} triangles" in predicted
-        assert result.triangles == 920
+        assert f"{result.meshed_triangles:,} triangles" in predicted
+        assert result.meshed_triangles == 920
+        # A plane simplifies to almost nothing; the estimate says so.
+        assert result.triangles < 920 and "before simplifying" in predicted
 
     def test_cut_estimate_is_quoted_as_an_upper_bound(self, tmp_path):
         """The grid count is what gets meshed, not what survives the cut.
@@ -119,14 +121,14 @@ class TestCostPreview:
         result = _run_build(window)
         quoted = int(text.split("up to ")[1].split(" triangles")[0].replace(",", ""))
         assert quoted == 920                       # the ceiling is the full grid
-        assert result.triangles < quoted           # and the cut really reduces it
+        assert result.meshed_triangles < quoted    # and the cut really reduces it
 
     def test_slab_estimate_is_exact_not_a_bound(self, tmp_path):
         window = _loaded(tmp_path, boundary=False)
         text = window.status.text()
         assert "up to" not in text
         result = _run_build(window)
-        assert f"{result.triangles:,} triangles" in text
+        assert f"{result.meshed_triangles:,} triangles" in text
 
     def test_printed_size_estimate_matches_the_build(self, tmp_path):
         window = _loaded(tmp_path, boundary=False)

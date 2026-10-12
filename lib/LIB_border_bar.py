@@ -30,7 +30,8 @@ from lib.LIB_border_connectors import (MIN_PART_AREA_MM2, _edge_frame,
 from lib.LIB_border_plan import EPSG_WORKING, BorderDefinition, _safe_name
 from lib.LIB_raster_reproject import (ReprojectParams, bounds_for,
                                       reproject_geotiff)
-from lib.LIB_terrain_stl import TerrainParams, surface_sampler
+from lib.LIB_terrain_stl import (TerrainParams, simplify_solid,
+                                 surface_sampler)
 
 #: A split is a straight cut across the corridor, found by walking in from the
 #: edge nearest the click.  One that has not come out the other side within
@@ -193,7 +194,8 @@ class BarResult:
 
 
 def build_bar(definition: BorderDefinition, bed_mm=None,
-              margin_mm=None, surface=None) -> BarResult:
+              margin_mm=None, surface=None,
+              simplify_mm: float = 0.0) -> BarResult:
     """
     The border bar (corridor + lobe layer), in the pieces the splits plan.
 
@@ -212,6 +214,9 @@ def build_bar(definition: BorderDefinition, bed_mm=None,
     ``surface`` -- ``(xs_m, ys_m) -> print-mm``, from :func:`bar_surface` --
     drapes the bar's top over the terrain so it stands as tall as the solids
     either side of it; without one the top is flat at the bar's thickness.
+    ``simplify_mm`` simplifies each piece as the solids are
+    (:func:`~lib.LIB_terrain_stl.simplify_solid`); a flat bar has little
+    to lose.
     """
     if definition.border is None:
         raise ValueError("No corridor to print: the targets share no border "
@@ -230,8 +235,9 @@ def build_bar(definition: BorderDefinition, bed_mm=None,
             definition.built_flags())):
         if not built:
             continue                     # taken out, or nothing holds it
-        solids = build_border_pieces(piece, mine, params, surface,
-                                     origin_m=origin)
+        solids = [simplify_solid(solid, simplify_mm) for solid in
+                  build_border_pieces(piece, mine, params, surface,
+                                      origin_m=origin)]
         pieces += solids
         flags += [i in big] * len(solids)
         names += [piece_province(definition, piece)] * len(solids)
@@ -275,7 +281,8 @@ def build_draped_bar(definition: BorderDefinition, raster, warp, terrain,
                      warp_path) -> BarResult:
     """:func:`build_bar` with its top draped over ``raster``."""
     return build_bar(definition, surface=bar_surface(
-        raster, definition.border, warp, terrain, warp_path))
+        raster, definition.border, warp, terrain, warp_path),
+        simplify_mm=terrain.simplify_mm)
 
 
 def _footprint(mesh):

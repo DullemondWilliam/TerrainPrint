@@ -486,6 +486,7 @@ SAVED_BORDER_SETTINGS = (
 #: where the exaggeration, base and floor are the map's and stay shared.
 SAVED_TERRAIN_SETTINGS = (
     ("terrain.max_triangles", "tri_spin"),
+    ("terrain.simplify_mm", "simplify_spin"),
 )
 
 #: The triangle limit's range and step: a few thousand is a test fixture,
@@ -1187,6 +1188,21 @@ class TerrainEditorTester(QMainWindow):
             "down (terrain.max_triangles, kept for next time).")
         self.tri_spin.valueChanged.connect(self._on_max_triangles)
 
+        self.simplify_spin = self._spin(
+            0.0, 0.5, saved.simplify_mm, 3,
+            "After meshing, merge triangles wherever the surface moves by "
+            "less than this (print-mm) -- flat ground, lakes, the base and "
+            "the walls lose most of theirs, relief keeps what it needs. The "
+            "walls and pocket corners stay where they were cut, and the "
+            "solid stays watertight. Also applied to the draped border "
+            "pieces. 0 is off.\n\n"
+            "Far under a 0.1-0.2 mm layer: on Alberta 0.01 mm keeps 35% of "
+            "the triangles (87 MB to 30 MB), 0.02 mm 24%, 0.05 mm 12% "
+            "(terrain.simplify_mm, kept for next time).")
+        self.simplify_spin.setSingleStep(0.005)
+        self.simplify_spin.setSpecialValueText("off")
+        self.simplify_spin.valueChanged.connect(self._invalidate_mesh)
+
         self.chk_cut = QCheckBox("Cut coastline")
         self.chk_cut.setChecked(True)
         self.chk_cut.setToolTip(
@@ -1267,6 +1283,7 @@ class TerrainEditorTester(QMainWindow):
         self.grp_solid = self._group(
             "Solid", "Exag", self.exag_spin, "Base (mm)", self.base_spin,
             "Floor (m)", self.floor_spin, "Max triangles", self.tri_spin,
+            "Simplify (mm)", self.simplify_spin,
             self.chk_cut, self.chk_pockets,
             self.btn_build, self.btn_save_stl)
         self.grp_bar = self._group(
@@ -1372,7 +1389,7 @@ class TerrainEditorTester(QMainWindow):
                       *self._shape_spins(), self.sel_angle_spin,
                       self.sel_depth_spin, self.res_spin, self.buf_spin,
                       self.cache_spin, self.exag_spin, self.base_spin,
-                      self.floor_spin, self.tri_spin,
+                      self.floor_spin, self.tri_spin, self.simplify_spin,
                       self.crs_combo.lineEdit()):
             entry.installEventFilter(self)
 
@@ -3039,6 +3056,7 @@ class TerrainEditorTester(QMainWindow):
             base_height_mm=self.base_spin.value(),
             floor_m=self.floor_spin.value(),
             max_triangles=self.tri_spin.value(),
+            simplify_mm=self.simplify_spin.value(),
             buffer_mm=self.buf_spin.value(),
             # The cropped raster is in whatever CRS the raster stage produced,
             # which may deliberately be the DEM's own; the guard belongs to the
@@ -3088,8 +3106,11 @@ class TerrainEditorTester(QMainWindow):
         relief = z - result.base_height_mm
         pockets = (f", {self._pockets} dovetail pocket(s)" if self._pockets
                    else "")
+        simplified = (f" (simplified from {result.meshed_triangles:,})"
+                      if result.meshed_triangles > result.triangles else "")
         self.status.setText(
-            f"Built {result.triangles:,} triangles, {w:.0f} x {h:.0f} x "
+            f"Built {result.triangles:,} triangles{simplified}, "
+            f"{w:.0f} x {h:.0f} x "
             f"{z:.1f} mm ({relief:.1f} mm of relief on a "
             f"{result.base_height_mm:.1f} mm base){pockets}, "
             f"{self._fit_text(result)}, "

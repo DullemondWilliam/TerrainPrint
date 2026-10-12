@@ -224,6 +224,9 @@ class TestMeshStage:
 
     def test_cut_checkbox_controls_the_boundary(self, tmp_path):
         window = _loaded(tmp_path, target_crs=DEM_CRS)
+        # The crop already fits the box: the cut takes off only float noise,
+        # which simplifying would even out.
+        window.simplify_spin.setValue(0.0)
         _run_clip(window)
         cut = _run_mesh(window)
         window.chk_cut.setChecked(False)
@@ -780,6 +783,31 @@ class TestAutoResolution:
         window.tri_spin.setValue(10_000)
         with pytest.raises(ValueError, match="over max_triangles"):
             _run_mesh(window)
+
+    def test_simplify_ships_at_a_hundredth_and_reaches_the_build(
+            self, tmp_path):
+        window = _loaded(tmp_path)
+        assert window.simplify_spin.value() == 0.01
+        window.simplify_spin.setValue(0.03)
+        assert window._terrain_params().simplify_mm == 0.03
+        _run_clip(window)
+        built = _run_mesh(window)
+        assert built.triangles < built.meshed_triangles   # the ramp is a plane
+        assert "simplified from" in window.status.text()
+
+    def test_simplify_stales_only_the_solid(self, tmp_path):
+        window = _loaded(tmp_path)
+        _run_clip(window)
+        crop = window.result
+        _run_mesh(window)
+        window.simplify_spin.setValue(0.0)
+        assert window.result is crop and window.stl_result is None
+        assert window._terrain_params().simplify_mm == 0.0
+        assert window.simplify_spin.text() == "off"
+
+    def test_simplify_is_kept_for_next_time(self):
+        assert ("terrain.simplify_mm", "simplify_spin") in \
+            U.SAVED_TERRAIN_SETTINGS
 
     def test_choosing_a_res_turns_auto_off(self, tmp_path):
         window = _loaded(tmp_path)

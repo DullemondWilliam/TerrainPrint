@@ -94,7 +94,7 @@ from lib.LIB_project_config import DEFAULTS as _DEFAULTS
 from lib.LIB_project_config import build_params, load_files, settings_files
 from lib.LIB_project_config import get as _get
 from lib.LIB_project_config import shipped as _shipped
-from lib.LIB_terrain_trim import _clip
+from lib.LIB_terrain_trim import _clip, _man_to_trimesh, _to_manifold
 
 log = logging.getLogger(__name__)
 
@@ -108,6 +108,7 @@ DEFAULT_EXAGGERATION = _shipped("terrain.exaggeration")
 DEFAULT_BASE_MM = _shipped("terrain.base_mm")
 DEFAULT_FLOOR_M = _shipped("terrain.floor_m")
 DEFAULT_MAX_TRIANGLES = _shipped("terrain.max_triangles")
+DEFAULT_SIMPLIFY_MM = _shipped("terrain.simplify_mm")
 
 
 @dataclass
@@ -120,6 +121,8 @@ class TerrainParams:
     clamp_below_floor: bool = True          #: below-sea-level land sits at the floor
     buffer_mm: float = 0.0                  #: outward lip on the coastline cut
     max_triangles: int = DEFAULT_MAX_TRIANGLES   #: refuse before meshing beyond this
+    #: After meshing, simplify so no surface moves more than this (mm); 0 off.
+    simplify_mm: float = DEFAULT_SIMPLIFY_MM
     expect_crs: str = EPSG_METRIC           #: raster CRS guard; None to skip
     dovetail_mm: float = _shipped("print.dovetail_mm")   #: base must clear this
     bed_mm: float = _shipped("print.bed_mm")
@@ -145,6 +148,7 @@ _TERRAINPARAMS_KEYS = {
     "base_height_mm": "terrain.base_mm",
     "floor_m": "terrain.floor_m",
     "max_triangles": "terrain.max_triangles",
+    "simplify_mm": "terrain.simplify_mm",
     "expect_crs": "crs.working",
 }
 
@@ -184,6 +188,8 @@ class TerrainResult:
     #: The turn (degrees) it fits the bed at; 0 as it lies, None if never.
     bed_angle_deg: float = None
     triangles: int = 0
+    #: Triangles as meshed, before :func:`simplify_solid`.
+    meshed_triangles: int = 0
     volume_mm3: float = 0.0
     watertight: bool = False
     zmin_m: float = None                #: elevation range of the sampled terrain
@@ -337,6 +343,8 @@ def terrain_to_stl(raster, boundary=None, out_path=None, params=None,
         # recovering it by footprint IoU -- it built the mesh.
         mesh = _clip(mesh, geom_m, matrix, params.buffer_mm)
 
+    result.meshed_triangles = int(len(mesh.faces))
+    mesh = simplify_solid(mesh, params.simplify_mm)
     _finish(mesh, result, params)
     if params.validate:
         _validate(result, raster)
@@ -542,6 +550,28 @@ def _faces(cols, rows, n):
 # Finish, validate, write
 # ---------------------------------------------------------------------------
 
+def simplify_solid(mesh, tolerance_mm):
+    """
+    ``mesh`` with as few triangles as keep every surface within
+    ``tolerance_mm`` of where it was -- manifold3d's error-bounded simplify.
+
+    Flat ground, lakes, the base and the walls lose most of theirs; relief
+    keeps what it needs.  The result is built from a subset of the original
+    vertices, so the walls and pocket corners stay where they were cut, and
+    it stays watertight.  0 (or less) leaves ``mesh`` as it is, and so does a
+    simplify that fails or comes back unprintable.
+    """
+    if not tolerance_mm or tolerance_mm <= 0 or len(mesh.faces) == 0:
+        return mesh
+    try:
+        out = _man_to_trimesh(_to_manifold(mesh).simplify(float(tolerance_mm)))
+    except Exception:                  # a mesh manifold will not take
+        return mesh
+    if out is None or not out.is_watertight or out.volume <= 0:
+        return mesh
+    return out
+
+
 def _finish(mesh, result, params):
     result.mesh = mesh
     result.triangles = int(len(mesh.faces))
@@ -623,6 +653,9 @@ def main(argv=None):
                     help="outward lip on the coastline cut")
     ap.add_argument("--max-triangles", type=int,
                     default=saved.max_triangles)
+    ap.add_argument("--simplify", type=float, default=saved.simplify_mm,
+                    metavar="MM",
+                    help="after meshing, simplify within this many mm (0 off)")
     ap.add_argument("--any-crs", action="store_true",
                     help="skip the print-CRS guard")
     args = ap.parse_args(argv)
@@ -634,7 +667,7 @@ def main(argv=None):
             *settings_files(), scale=args.scale,
             z_exaggeration=args.exaggeration, base_height_mm=args.base,
             floor_m=args.floor, buffer_mm=args.buffer,
-            max_triangles=args.max_triangles,
+            max_triangles=args.max_triangles, simplify_mm=args.simplify,
             expect_crs=None if args.any_crs else EPSG_METRIC),
         config=load_files(*settings_files()))
     print(f"{res.triangles:,} triangles  "

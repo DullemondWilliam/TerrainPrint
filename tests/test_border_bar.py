@@ -123,6 +123,29 @@ class TestBuildBar:
             BB.build_bar(BP.define_borders({"A": A}, {}))
 
 
+class TestSimplified:
+    """Each piece is simplified as the solids are: a draped bar over flat
+    ground keeps its shape with a fraction of its triangles."""
+
+    @staticmethod
+    def _flat(xs, ys):
+        return np.full(len(xs), 2.5)
+
+    def test_fewer_triangles_same_solid(self, defined):
+        raw = BB.build_bar(defined, surface=self._flat)
+        done = BB.build_bar(defined, surface=self._flat, simplify_mm=0.01)
+        assert len(done.mesh.faces) < len(raw.mesh.faces)
+        assert all(p.is_watertight for p in done.pieces)
+        # The outline's short steps may shift by up to 0.01 mm.
+        assert done.mesh.volume == pytest.approx(raw.mesh.volume, rel=1e-3)
+        assert done.mesh.bounds == pytest.approx(raw.mesh.bounds, abs=1e-6)
+
+    def test_off_by_default(self, defined):
+        raw = BB.build_bar(defined, surface=self._flat)
+        again = BB.build_bar(defined, surface=self._flat, simplify_mm=0.0)
+        assert len(again.mesh.faces) == len(raw.mesh.faces)
+
+
 class TestColours:
 
     FIT, BIG = (0.5, 0.5, 0.5, 1.0), (0.8, 0.2, 0.2, 1.0)

@@ -412,6 +412,10 @@ class TerrainStlTester(QMainWindow):
         else:
             count = f"{triangles:,} triangles"
             cut = "rectangular slab"
+        if params.simplify_mm > 0:
+            # Simplifying merges what the surface does not need; how much
+            # depends on the relief, so the count meshed is all that is known.
+            count += " before simplifying"
         return (f"Would make {count}, "
                 f"{width:.0f} x {height:.0f} mm at {spacing:.2f} mm spacing, "
                 f"{cut}.{note} Click ‘Build Solid’.")
@@ -452,8 +456,11 @@ class TerrainStlTester(QMainWindow):
             result.mesh)
         self.btn_save.setEnabled(True)
         relief = z - result.base_height_mm
+        simplified = (f" (simplified from {result.meshed_triangles:,})"
+                      if result.meshed_triangles > result.triangles else "")
         self.status.setText(
-            f"Built {result.triangles:,} triangles, {w:.0f} x {h:.0f} x {z:.1f} mm "
+            f"Built {result.triangles:,} triangles{simplified}, "
+            f"{w:.0f} x {h:.0f} x {z:.1f} mm "
             f"({relief:.1f} mm of relief on a {result.base_height_mm:.1f} mm base), "
             f"{'fits' if result.bed_fits else 'DOES NOT FIT'} the bed, "
             f"watertight={result.watertight}. Inspect, then save.")
