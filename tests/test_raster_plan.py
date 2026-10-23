@@ -16,8 +16,7 @@ from rasterio.crs import CRS
 from shapely.geometry import box
 
 from lib import LIB_raster_plan as RP
-from lib.LIB_geotiff_clip import clip_geotiff
-from lib.LIB_raster_reproject import reproject_geotiff
+from lib.LIB_print_all import prepare_dem
 from lib.LIB_terrain_stl import triangle_count
 
 DEM_CRS = CRS.from_epsg(3979)
@@ -100,12 +99,8 @@ class TestOutputGrid:
         warp, clip = RP.plan_run(DEM_CRS, RES, dst, res, boundary)
         with rasterio.open(dem) as ds:
             grid = RP.output_grid(ds, dst, warp, clip, boundary(DEM_CRS))
-        source = str(dem)
-        if warp is not None:
-            reproject_geotiff(source, dst, str(tmp_path / "w.tif"), warp)
-            source = str(tmp_path / "w.tif")
-        result = clip_geotiff(source, boundary(dst if warp else DEM_CRS),
-                              str(tmp_path / "c.tif"), clip)
+        result = prepare_dem(dem, dst, boundary(dst if warp else DEM_CRS),
+                             warp, clip, tmp_path / "w.tif", tmp_path / "c.tif")
         assert (grid.width, grid.height) == (result.width, result.height)
 
 

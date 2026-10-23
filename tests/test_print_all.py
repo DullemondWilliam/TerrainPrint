@@ -61,6 +61,33 @@ def _run(dem, tmp_path, definition, **kw):
                         definition=definition, **kw)
 
 
+class TestPrepareDem:
+    """The crop every solid is built from: the editor's and print_all's."""
+
+    def test_without_a_warp_it_only_clips(self, dem, tmp_path):
+        from lib.LIB_raster_plan import plan_run
+        warp, clip = plan_run("EPSG:3347", RES, "EPSG:3347", 0.0,
+                              lambda crs: A)
+        assert warp is None
+        result = PA.prepare_dem(dem, "EPSG:3347", A, warp, clip,
+                                tmp_path / "w.tif", tmp_path / "c.tif",
+                                keep_array=True)
+        assert (tmp_path / "c.tif").exists()
+        assert not (tmp_path / "w.tif").exists()
+        assert result.data is not None
+
+    def test_with_a_warp_it_clips_the_warped_raster(self, dem, tmp_path):
+        from lib.LIB_raster_plan import plan_run
+        warp, clip = plan_run("EPSG:3347", RES, "EPSG:3347", 2 * RES,
+                              lambda crs: A)
+        assert warp is not None
+        PA.prepare_dem(dem, "EPSG:3347", A, warp, clip,
+                       tmp_path / "w.tif", tmp_path / "c.tif")
+        assert (tmp_path / "w.tif").exists()
+        with rasterio.open(tmp_path / "c.tif") as ds:
+            assert ds.res[0] == pytest.approx(2 * RES)
+
+
 class TestEverything:
 
     def test_every_province_and_the_bar(self, dem, tmp_path, defined):

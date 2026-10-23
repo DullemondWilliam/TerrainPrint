@@ -315,11 +315,10 @@ from lib.LIB_border_plan import (EPSG_WORKING, SHAPE_FIELDS,
 from lib.LIB_connector_rules import (FAULT_COUNTS, STANDING_FAULTS,
                                      angle_toward, connector_pose, handle_at,
                                      place_connector, reshape_connectors)
-from lib.LIB_geotiff_clip import clip_geotiff
-from lib.LIB_print_all import build_terrain, outputs, print_all
+from lib.LIB_print_all import build_terrain, outputs, prepare_dem, print_all
 from lib.LIB_raster_plan import (finest_res, needs_resample, needs_warp,
                                  output_grid, plan_run, reduction)
-from lib.LIB_raster_reproject import ReprojectParams, reproject_geotiff
+from lib.LIB_raster_reproject import ReprojectParams
 from lib.LIB_terrain_stl import TerrainParams, load_terrain_params
 from lib.LIB_project_config import get as _cfg
 from lib.LIB_project_config import settings_files, update_local
@@ -576,15 +575,11 @@ class RunWorker(QObject):
 
     def run(self) -> None:
         try:
-            source = self._raster
-            if self._warp is not None:
-                reproject_geotiff(self._raster, self._dst_crs, self._warp_path,
-                                  self._warp)
-                source = self._warp_path
             # The boundary arrives as a geometry already in the destination CRS,
             # so neither lib re-reads or re-projects the GeoJSON.
-            result = clip_geotiff(source, self._geom, self._out_path,
-                                  self._clip, keep_array=True)
+            result = prepare_dem(self._raster, self._dst_crs, self._geom,
+                                 self._warp, self._clip, self._warp_path,
+                                 self._out_path, keep_array=True)
         except Exception as exc:      # any raster/geometry failure reaches the UI
             self.failed.emit(str(exc))
             return

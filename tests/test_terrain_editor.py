@@ -111,21 +111,15 @@ def _run_clip(window):
     """
     Run the warp+crop synchronously, bypassing the worker thread.
 
-    Mirrors ``RunWorker.run`` step for step; if the two drift, these tests stop
-    describing the harness.
+    Makes the call ``RunWorker.run`` makes, with the arguments ``run`` hands it.
     """
-    from lib.LIB_geotiff_clip import clip_geotiff
-    from lib.LIB_raster_reproject import reproject_geotiff
+    from lib.LIB_print_all import prepare_dem
 
     warp, clip = window._plan()
-    source = str(window.raster_path)
-    if warp is not None:
-        reproject_geotiff(source, window.target_crs(),
-                          str(window._tempdir / "warp.tif"), warp)
-        source = str(window._tempdir / "warp.tif")
-    result = clip_geotiff(source, window._output_geom(),
-                          str(window._tempdir / "out.tif"), clip,
-                          keep_array=True)
+    result = prepare_dem(str(window.raster_path), window.target_crs(),
+                         window._output_geom(), warp, clip,
+                         window._tempdir / "warp.tif",
+                         window._tempdir / "out.tif", keep_array=True)
     window._on_done(result)
     return result
 

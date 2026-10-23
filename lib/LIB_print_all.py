@@ -43,6 +43,27 @@ from lib.LIB_raster_reproject import ReprojectParams, reproject_geotiff
 from lib.LIB_terrain_stl import (TerrainParams, _finish, _validate, _write,
                                  terrain_to_stl)
 
+def prepare_dem(raster, dst_crs, boundary, warp, clip, warp_path, crop_path,
+                keep_array: bool = False):
+    """
+    The crop a solid is built from: ``raster`` warped to ``dst_crs`` (into
+    ``warp_path``) when ``warp`` is given, then clipped to ``boundary`` (into
+    ``crop_path``).  Returns the ``ClipResult``.
+
+    ``warp`` and ``clip`` are ``LIB_raster_plan.plan_run``'s.  ``boundary``
+    is a geometry already in the CRS the clip reads -- ``dst_crs`` when
+    warping, the raster's own when not -- so neither lib re-projects it.
+    The editor's STL tab and ``print_all`` both crop through this, so a
+    preview and a full run cut the same raster.
+    """
+    source = str(raster)
+    if warp is not None:
+        reproject_geotiff(source, dst_crs, str(warp_path), warp)
+        source = str(warp_path)
+    return clip_geotiff(source, boundary, str(crop_path), clip,
+                        keep_array=keep_array)
+
+
 def build_terrain(raster, boundary, out_path, params, lobes=None,
                   connector=None):
     """
@@ -195,12 +216,9 @@ def print_all(raster_path, out_dir, provinces: dict, work_dir, *,
                                   crop=crop, all_touched=all_touched,
                                   resampling=resampling, cache_mb=cache_mb)
             stem = _safe_name(name)
-            source = str(raster_path)
-            if warp is not None:
-                source = str(work_dir / f"{stem}_warp.tif")
-                reproject_geotiff(str(raster_path), dst, source, warp)
             crop_path = work_dir / f"{stem}_crop.tif"
-            clip_geotiff(source, boundary(frame), str(crop_path), clip)
+            prepare_dem(raster_path, dst, boundary(frame), warp, clip,
+                        work_dir / f"{stem}_warp.tif", crop_path)
             lobes = []
             if definition is not None and pockets \
                     and definition.settings.connectors:
