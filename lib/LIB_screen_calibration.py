@@ -238,9 +238,10 @@ def load_config():
     return inherited
 
 
-def load_saved_ppi(monitor, config=None):
-    """A previously saved calibration for ``monitor``, or None."""
-    entry = (load_config() if config is None else config).get(monitor.key)
+def load_saved_ppi(monitor, config):
+    """A previously saved calibration for ``monitor`` in ``config`` -- the
+    calibrations :func:`load_config` read -- or None."""
+    entry = config.get(monitor.key)
     try:
         ppi = float(entry["ppi"])
     except (KeyError, TypeError, ValueError):

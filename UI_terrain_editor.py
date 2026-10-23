@@ -321,7 +321,7 @@ from lib.LIB_raster_plan import (finest_res, needs_resample, needs_warp,
 from lib.LIB_raster_reproject import ReprojectParams
 from lib.LIB_terrain_stl import TerrainParams, load_terrain_params
 from lib.LIB_project_config import get as _cfg
-from lib.LIB_project_config import settings_files, update_local
+from lib.LIB_project_config import load_files, settings_files, update_local
 from lib.LIB_project_config import shipped as _shipped
 
 GEOJSON_FILTER = "GeoJSON (*.geojson *.json);;All files (*)"
@@ -606,7 +606,8 @@ class MeshWorker(QObject):
         try:
             result = build_terrain(self._raster, self._boundary,
                                    self._out_path, self._params, self._lobes,
-                                   self._connector)
+                                   self._connector,
+                                   load_files(*settings_files()))
         except Exception as exc:      # any raster/geometry/mesh failure
             self.failed.emit(str(exc))
             return
@@ -2008,7 +2009,8 @@ class TerrainEditorTester(QMainWindow):
             terrain=self._terrain_params(), cut=self.chk_cut.isChecked(),
             pockets=self.chk_pockets.isChecked(),
             bar=self.borders is not None,
-            bar_res_m=self.bar_res_spin.value())
+            bar_res_m=self.bar_res_spin.value(),
+            config=load_files(*settings_files()))
 
     def process_all(self) -> None:
         """Ask where, then build every province and the bar there."""

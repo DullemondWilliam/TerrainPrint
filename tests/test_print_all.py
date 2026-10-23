@@ -163,7 +163,7 @@ class TestTheBar:
 
     def test_by_default_at_print_border_res_m(self, dem, tmp_path, defined,
                                               monkeypatch):
-        monkeypatch.setattr(PA, "_cfg", lambda key: {
+        monkeypatch.setattr(PA, "_shipped", lambda key: {
             "print.border_res_m": 5 * RES}[key])
         assert _run(dem, tmp_path, defined).bar_res_m == 5 * RES
 

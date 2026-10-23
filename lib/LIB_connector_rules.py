@@ -31,7 +31,6 @@ from shapely.geometry import Point
 
 from lib.LIB_border_connectors import (ConnectorParams, _polys, lobe_at,
                                        lobe_pose)
-from lib.LIB_project_config import get as _cfg
 
 if TYPE_CHECKING:                      # the plan imports these rules
     from lib.LIB_border_plan import BorderDefinition, BorderSettings
@@ -149,7 +148,7 @@ def _own_fault(lobe, definition, p, land) -> str:
     d = definition
     c = lobe.exterior.coords
     neck_m = Point(c[0]).distance(Point(c[3]))
-    floor_m = min(2 * _cfg("seam.nozzle_mm"), p.neck_mm) * p.mpm
+    floor_m = min(2 * d.settings.nozzle_mm, p.neck_mm) * p.mpm
     if neck_m < floor_m * (1 - 1e-6):
         return "thin"
     root_m2 = p.overlap_mm * p.mpm * neck_m          # an unturned root's area

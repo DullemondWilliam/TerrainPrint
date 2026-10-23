@@ -24,7 +24,7 @@ Pure geometry and files, no Qt: split out of ``UI_terrain_editor.py``.
 
 import json
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from dataclasses import fields as dataclasses_fields
 from pathlib import Path
 
@@ -36,20 +36,18 @@ from shapely.ops import unary_union
 
 from lib.LIB_border_connectors import (CONNECTORS_NAME, ConnectorParams,
                                        _polys, _repair, _safe_union,
-                                       generate_lobes, load_connector_params,
-                                       lobe_pose)
+                                       generate_lobes, lobe_pose)
 from lib.LIB_border_regions import build_border_regions, shared_borderlines
 from lib.LIB_border_simplification import topo_simplify_two_tolerances
 from lib.LIB_border_split import bed_turn
 from lib.LIB_connector_rules import (_crowds, _near, _own_fault,
                                      _standing_lobes)
-from lib.LIB_project_config import build_params, settings_files
-from lib.LIB_project_config import get as _cfg
+from lib.LIB_project_config import build_params
 from lib.LIB_project_config import shipped as _shipped
 from lib.LIB_shared_border import _count_short, _count_spikes
 
 #: The working CRS every region is held in (``crs.working``, EPSG:3347).
-EPSG_WORKING = _cfg("crs.working")
+EPSG_WORKING = _shipped("crs.working")
 
 #: The Borders settings, written beside a saved Borders folder so loading it
 #: rebuilds the connectors in the shape they were saved in.
@@ -85,7 +83,7 @@ def load_region(path):
     if frame.empty:
         raise ValueError(f"{Path(path).name} has no features.")
     if frame.crs is None:                       # bare GeoJSON is WGS 84 by spec
-        frame = frame.set_crs(_cfg("crs.source"))
+        frame = frame.set_crs(_shipped("crs.source"))
     source_crs = frame.crs
     geom = _repair(_safe_union(list(frame.to_crs(EPSG_WORKING).geometry.values)))
     if geom is None:
@@ -124,6 +122,15 @@ class BorderSettings:
     clearance_mm: float = _shipped("borders.clearance_mm")
     height_clearance_mm: float = _shipped("borders.height_clearance_mm")
     scale: float = _shipped("print.scale")
+    #: The printer, which the borders are drawn for but do not choose: the
+    #: bar's height, the shortest run and sharpest corner it prints (the
+    #: seam report's yardsticks, and a connector's thinnest neck), and the
+    #: bed a piece must fit.  See :data:`PRINTER_FIELDS`.
+    thickness_mm: float = _shipped("print.border_thickness_mm")
+    nozzle_mm: float = _shipped("seam.nozzle_mm")
+    spike_angle_deg: float = _shipped("seam.spike_angle_deg")
+    bed_mm: float = _shipped("print.bed_mm")
+    bed_margin_mm: float = _shipped("print.bed_margin_mm")
 
     @property
     def mpm(self) -> float:
@@ -131,8 +138,8 @@ class BorderSettings:
         return self.scale / 1000.0
 
     def connector_params(self) -> ConnectorParams:
-        return load_connector_params(
-            *settings_files(), scale=self.scale,
+        return ConnectorParams(
+            scale=self.scale, thickness_mm=self.thickness_mm,
             spacing_mm=self.lobe_spacing_mm, dovetail_mm=self.lobe_height_mm,
             reach_mm=self.lobe_depth_mm, neck_mm=self.lobe_width_mm,
             mouth_mm=self.lobe_width_mm * self.lobe_ratio,
@@ -158,7 +165,18 @@ _BORDER_SETTINGS_KEYS = {
     "clearance_mm": "borders.clearance_mm",
     "height_clearance_mm": "borders.height_clearance_mm",
     "scale": "print.scale",
+    "thickness_mm": "print.border_thickness_mm",
+    "nozzle_mm": "seam.nozzle_mm",
+    "spike_angle_deg": "seam.spike_angle_deg",
+    "bed_mm": "print.bed_mm",
+    "bed_margin_mm": "print.bed_margin_mm",
 }
+
+#: The fields of :class:`BorderSettings` that describe the printer rather
+#: than the borders.  A saved folder records them but never restores them:
+#: borders read back are printed on the printer this desk has now.
+PRINTER_FIELDS = ("thickness_mm", "nozzle_mm", "spike_angle_deg", "bed_mm",
+                  "bed_margin_mm")
 
 
 #: The fields of :class:`BorderSettings` that shape a connector -- and its
@@ -418,8 +436,8 @@ class BorderDefinition:
         tried at every angle (:func:`bed_turn`), connectors included.  A
         piece taken out of the bar, or bare of connectors, is never too big:
         it is not printed."""
-        bed = _cfg("print.bed_mm") if bed_mm is None else bed_mm
-        margin = _cfg("print.bed_margin_mm") if margin_mm is None \
+        bed = self.settings.bed_mm if bed_mm is None else bed_mm
+        margin = self.settings.bed_margin_mm if margin_mm is None \
             else margin_mm
         usable = (bed - 2 * margin) * self.settings.mpm
         pieces, held = self.pieces(), self.piece_lobes()
@@ -504,8 +522,8 @@ def define_borders(targets: dict, surrounding: dict,
     result.vertices_before = sum(_vertex_count(g) for g in frame.geometry)
     result.vertices_after = sum(_vertex_count(g)
                                 for g in result.simplified.values())
-    nozzle = _cfg("seam.nozzle_mm") * mpm
-    spike = _cfg("seam.spike_angle_deg")
+    nozzle = s.nozzle_mm * mpm
+    spike = s.spike_angle_deg
     result.short_segments = sum(_count_short(seg.tolist(), nozzle)
                                 for seg in internal)
     result.spikes = sum(_count_spikes(seg.tolist(), spike) for seg in internal)
@@ -633,9 +651,10 @@ def read_borders(folder: Path, settings: "BorderSettings | None" = None):
     (``name_<province>.geojson``) and the connectors as they were left
     (``connectors.geojson``), hand edits and all.
 
-    The connector settings come from the folder's ``borders_settings.json``
-    where there is one, else from ``settings`` (the window's own) -- a
-    connector's turn and size are read off its outline against them.
+    The settings are ``settings`` (the window's own) with the folder's
+    ``borders_settings.json`` over them where there is one -- a connector's
+    turn and size are read off its outline against them -- except the
+    :data:`PRINTER_FIELDS`, which always stay the window's.
     What Define measured on the way (vertex counts, seam reports, what it
     dropped) is not saved, so it is not there to report.
 
@@ -652,13 +671,14 @@ def read_borders(folder: Path, settings: "BorderSettings | None" = None):
     if not border_path.exists() or not names:
         raise ValueError(f"{folder} holds no saved borders: it needs "
                          "borders.geojson and a name_<province>.geojson.")
+    settings = settings or BorderSettings()
     saved = folder / BORDER_SETTINGS_NAME
     if saved.exists():
         values = json.loads(saved.read_text(encoding="utf-8"))
-        known = {f.name for f in dataclasses_fields(BorderSettings)}
-        settings = BorderSettings(**{k: v for k, v in values.items()
-                                     if k in known})
-    settings = settings or BorderSettings()
+        known = ({f.name for f in dataclasses_fields(BorderSettings)}
+                 - set(PRINTER_FIELDS))
+        settings = replace(settings, **{k: v for k, v in values.items()
+                                        if k in known})
 
     def read(path):
         frame = gpd.read_file(path)

@@ -1053,22 +1053,21 @@ class TestTooBigIsRed:
     the rest of the bar is not."""
 
     @staticmethod
-    def _small_bed(monkeypatch, bed_mm=60.0):
-        real = BP._cfg
-        monkeypatch.setattr(BP, "_cfg", lambda key, *a, **k: (
-            bed_mm if key == "print.bed_mm"
-            else 0.0 if key == "print.bed_margin_mm" else real(key, *a, **k)))
-
-    @staticmethod
     def _faces(window, colour):
         from matplotlib.colors import to_rgba
         want = to_rgba(colour)
         return [p for p in window.ax.patches
                 if tuple(p.get_facecolor())[:3] == want[:3]]
 
-    def _window(self, tmp_path, defined):
+    def _window(self, tmp_path, defined, small_bed=False):
+        """The window on ``defined``; on a 60 mm bed with no margin when
+        ``small_bed``, which the one-piece bar does not fit."""
+        from dataclasses import replace
         window = _window(tmp_path)
-        window.apply_borders(_fresh(defined))
+        d = _fresh(defined)
+        if small_bed:
+            d.settings = replace(d.settings, bed_mm=60.0, bed_margin_mm=0.0)
+        window.apply_borders(d)
         window.tabs.setCurrentIndex(1)
         return window
 
@@ -1077,17 +1076,13 @@ class TestTooBigIsRed:
         assert self._faces(window, U.CORRIDOR_COLOUR)
         assert not self._faces(window, U.TOO_BIG_COLOUR)
 
-    def test_a_piece_too_big_is_filled_red(self, tmp_path, defined,
-                                           monkeypatch):
-        self._small_bed(monkeypatch)
-        window = self._window(tmp_path, defined)
+    def test_a_piece_too_big_is_filled_red(self, tmp_path, defined):
+        window = self._window(tmp_path, defined, small_bed=True)
         assert window.borders.too_big() == [0]
         assert self._faces(window, U.TOO_BIG_COLOUR)
 
-    def test_splitting_it_to_fit_takes_the_red_away(self, tmp_path, defined,
-                                                    monkeypatch):
-        self._small_bed(monkeypatch)
-        window = self._window(tmp_path, defined)
+    def test_splitting_it_to_fit_takes_the_red_away(self, tmp_path, defined):
+        window = self._window(tmp_path, defined, small_bed=True)
         window.btn_edit_splits.setChecked(True)
         for spot in (FRONTIER_WEST, FRONTIER_EAST):
             window.add_split(*_split_near(window.borders, *spot)[1])

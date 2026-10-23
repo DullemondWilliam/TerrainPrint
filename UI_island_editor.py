@@ -196,8 +196,9 @@ from lib.LIB_stress_points import (StressParams, load_stress_params,
 from lib.LIB_thin_features import (ThinParams, ThinReport, load_thin_params,
                                    printable,
                                    thin_features)
-from lib.LIB_screen_calibration import (MM_PER_INCH, load_saved_ppi,
-                                        monitor_at, px_per_mm)
+from lib.LIB_screen_calibration import (MM_PER_INCH, load_config,
+                                        load_saved_ppi, monitor_at,
+                                        px_per_mm)
 
 GEOJSON_FILTER = "GeoJSON (*.geojson *.json);;All files (*)"
 #: Project print CRS (Statistics Canada Lambert, metres). Islands are worked in
@@ -1625,7 +1626,7 @@ class IslandEditor(QMainWindow):
         size = ((screen.geometry().width(), screen.geometry().height())
                 if screen is not None else None)
         monitor = monitor_at(centre.x(), centre.y(), size)
-        ppi = load_saved_ppi(monitor)
+        ppi = load_saved_ppi(monitor, load_config())
         return (px_per_mm(ppi) if ppi else None), monitor
 
     def zoom_to_real_size(self) -> None:

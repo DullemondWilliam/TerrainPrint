@@ -33,11 +33,10 @@ from rasterio.crs import CRS
 from rasterio.enums import Resampling
 
 from lib.LIB_border_bar import BORDER_STEM, build_bar, build_draped_bar
-from lib.LIB_border_connectors import load_connector_params, notch_province
+from lib.LIB_border_connectors import ConnectorParams, notch_province
 from lib.LIB_border_plan import EPSG_WORKING, _safe_name
 from lib.LIB_geotiff_clip import clip_geotiff
-from lib.LIB_project_config import get as _cfg
-from lib.LIB_project_config import load_files, settings_files
+from lib.LIB_project_config import shipped as _shipped
 from lib.LIB_raster_plan import finest_res, needs_warp, plan_run
 from lib.LIB_raster_reproject import ReprojectParams, reproject_geotiff
 from lib.LIB_terrain_stl import (TerrainParams, _finish, _validate, _write,
@@ -65,17 +64,19 @@ def prepare_dem(raster, dst_crs, boundary, warp, clip, warp_path, crop_path,
 
 
 def build_terrain(raster, boundary, out_path, params, lobes=None,
-                  connector=None):
+                  connector=None, config=None):
     """
     ``terrain_to_stl``, then the dovetail pockets when ``lobes`` are given.
 
     The solid's ``origin_m`` *is* its metres -> print-mm frame, so the pockets
     go straight in with ``notch_province`` -- no reconciliation.  That only
     holds when the solid was built in the CRS the lobes were (EPSG:3347).
+
+    ``config`` is the merged configuration the piece is built under
+    (``LIB_project_config.load_files``), which its sidecar fingerprints; a
+    window passes this desk's.  Without one, and without ``connector``, the
+    shipped settings.
     """
-    # The sidecar fingerprints the settings the piece is built under: the
-    # ones this desk has saved, not merely the shipped ones.
-    config = load_files(*settings_files())
     if not lobes:
         return terrain_to_stl(raster, boundary, out_path, params, config)
     result = terrain_to_stl(raster, boundary, None, params, config)
@@ -84,8 +85,7 @@ def build_terrain(raster, boundary, out_path, params, lobes=None,
             f"Pockets need the terrain built in {EPSG_WORKING}, where the "
             f"connectors are; this crop is in {result.crs}. Set CRS to "
             f"{EPSG_WORKING} and re-run the crop.")
-    connector = connector or load_connector_params(*settings_files(),
-                                                   scale=params.scale)
+    connector = connector or ConnectorParams(scale=params.scale)
     if connector.pocket_depth_mm >= params.base_height_mm:
         raise ValueError(
             f"The pockets are {connector.pocket_depth_mm:g} mm deep (Height "
@@ -153,7 +153,8 @@ def print_all(raster_path, out_dir, provinces: dict, work_dir, *,
               resampling: str = "max", cache_mb: int = 0,
               terrain: TerrainParams = None, cut: bool = True,
               pockets: bool = True, bar: bool = True, bar_res_m=None,
-              progress=None, cancelled=None) -> PrintAllReport:
+              config=None, progress=None,
+              cancelled=None) -> PrintAllReport:
     """
     Write every province's solid and the border bar's pieces to ``out_dir``.
 
@@ -167,7 +168,9 @@ def print_all(raster_path, out_dir, provinces: dict, work_dir, *,
     DEM's own), or None for each province's own finest under
     ``terrain.max_triangles`` (``LIB_raster_plan.finest_res``).
     ``bar_res_m`` is the bar's own -- the pitch its draped top is read at
-    (0 for the DEM's own) -- or None for ``print.border_res_m``.  The other
+    (0 for the DEM's own) -- or None for the shipped ``print.border_res_m``.
+    ``config`` is the merged configuration each solid's sidecar records
+    (see :func:`build_terrain`).  The other
     settings are the editor's STL tab's.  ``progress(step, total, text)`` is
     told before each step; ``cancelled()`` is asked between them, and a run
     stopped early reports what it had written.
@@ -226,7 +229,8 @@ def print_all(raster_path, out_dir, provinces: dict, work_dir, *,
             solid = build_terrain(
                 str(crop_path), boundary(frame) if cut else None,
                 str(out_dir / f"{stem}.stl"), terrain, lobes,
-                definition.settings.connector_params() if lobes else None)
+                definition.settings.connector_params() if lobes else None,
+                config)
             done.path = out_dir / f"{stem}.stl"
             done.triangles = solid.triangles
             done.pockets = len(lobes)
@@ -242,7 +246,7 @@ def print_all(raster_path, out_dir, provinces: dict, work_dir, *,
                 # Its own resolution: the bar's surface is read once over
                 # the whole corridor, where a province's could be a
                 # whole-country raster.
-                bar_res = (_cfg("print.border_res_m") if bar_res_m is None
+                bar_res = (_shipped("print.border_res_m") if bar_res_m is None
                            else bar_res_m) or native
                 report.bar_res_m = bar_res
                 result = build_draped_bar(

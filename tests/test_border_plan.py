@@ -228,6 +228,18 @@ class TestSaveAndLoad:
         assert back.border.area == pytest.approx(broken.area, rel=1e-3)
         assert back.targets["A"].area == pytest.approx(broken.area, rel=1e-3)
 
+    def test_the_printer_is_the_desks_not_the_folders(self, defined,
+                                                      tmp_path):
+        """A folder saved for one bed is printed on the bed this desk has
+        now; the borders themselves come back as they were saved."""
+        BP.write_borders(_copy(defined, settings=replace(
+            defined.settings, lobe_ratio=1.9, bed_mm=60.0)), tmp_path)
+        desk = replace(BP.BorderSettings(), bed_mm=300.0, nozzle_mm=0.25)
+        back = BP.read_borders(tmp_path, desk)
+        assert back.settings.lobe_ratio == 1.9
+        assert back.settings.bed_mm == 300.0
+        assert back.settings.nozzle_mm == 0.25
+
     def test_a_folder_without_borders_is_refused(self, tmp_path):
         with pytest.raises(ValueError):
             BP.read_borders(tmp_path)

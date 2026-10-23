@@ -66,7 +66,10 @@ def _value(widget):
 
 
 def test_the_table_covers_every_border_setting():
-    keyed = set(BP._BORDER_SETTINGS_KEYS.values()) - {"print.scale"}
+    # The scale and the printer have no control on the Borders tab: they are
+    # read from the config files, never turned there.
+    printer = {BP._BORDER_SETTINGS_KEYS[f] for f in BP.PRINTER_FIELDS}
+    keyed = set(BP._BORDER_SETTINGS_KEYS.values()) - {"print.scale"} - printer
     assert keyed == {key for key, _ in U.SAVED_BORDER_SETTINGS}
     assert set(TURNED) == keyed
 

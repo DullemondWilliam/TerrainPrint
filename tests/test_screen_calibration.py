@@ -103,7 +103,7 @@ class TestWritingCalibrations:
 
     def test_a_calibration_round_trips(self, config):
         C.save_ppi(MONITOR, 108.8)
-        assert C.load_saved_ppi(MONITOR) == pytest.approx(108.8)
+        assert C.load_saved_ppi(MONITOR, C.load_config()) == pytest.approx(108.8)
 
     def test_it_records_what_the_monitor_was(self, config):
         C.save_ppi(MONITOR, 108.8)
@@ -127,8 +127,8 @@ class TestWritingCalibrations:
         C.save_ppi(MONITOR, 108.8)
         C.save_ppi(OTHER, 96.0)
         C.save_ppi(MONITOR, 110.0)                 # recalibrate just the first
-        assert C.load_saved_ppi(MONITOR) == pytest.approx(110.0)
-        assert C.load_saved_ppi(OTHER) == pytest.approx(96.0)
+        assert C.load_saved_ppi(MONITOR, C.load_config()) == pytest.approx(110.0)
+        assert C.load_saved_ppi(OTHER, C.load_config()) == pytest.approx(96.0)
 
     def test_two_monitors_coexist(self, config):
         C.save_ppi(MONITOR, 108.8)
@@ -146,14 +146,14 @@ class TestReadingOneMonitorsCalibration:
 
     def test_a_monitor_never_seen_before(self, config):
         C.save_ppi(MONITOR, 108.8)
-        assert C.load_saved_ppi(OTHER) is None
+        assert C.load_saved_ppi(OTHER, C.load_config()) is None
 
     @pytest.mark.parametrize("stored", [
         {"ppi": 0}, {"ppi": -1}, {"ppi": "wide"}, {"ppi": None}, {}, None,
     ])
     def test_a_damaged_entry_reads_as_uncalibrated(self, config, stored):
         _write(config.legacy, {"version": 2, "monitors": {MONITOR.key: stored}})
-        assert C.load_saved_ppi(MONITOR) is None
+        assert C.load_saved_ppi(MONITOR, C.load_config()) is None
 
     def test_a_supplied_config_is_not_re_read(self, config):
         """The app loads once and asks about several monitors from that copy."""
@@ -170,13 +170,13 @@ class TestMonitorIdentity:
         C.save_ppi(MONITOR, 108.8)
         same_panel_new_mode = C.Monitor("DELA0C9@1920x1080", "Dell U2515H",
                                         1920, 1080)
-        assert C.load_saved_ppi(same_panel_new_mode) is None
+        assert C.load_saved_ppi(same_panel_new_mode, C.load_config()) is None
 
     def test_identical_panels_share_one_calibration(self, config):
         """Same model, same mode, same physical pixel size — one figure serves."""
         C.save_ppi(MONITOR, 108.8)
         twin = C.Monitor(MONITOR.key, "Dell U2515H", 2560, 1440)
-        assert C.load_saved_ppi(twin) == pytest.approx(108.8)
+        assert C.load_saved_ppi(twin, C.load_config()) == pytest.approx(108.8)
 
 
 @pytest.fixture(scope="module")
@@ -231,7 +231,7 @@ class TestTheAppAdoptsWhatIsStored:
         ruler = new_ruler()
         assert ruler.ppi == pytest.approx(LEGACY_PPI)
         assert ruler.mode == "ruler"               # not sent back to calibrate
-        assert C.load_saved_ppi(ruler.monitor) == pytest.approx(LEGACY_PPI)
+        assert C.load_saved_ppi(ruler.monitor, C.load_config()) == pytest.approx(LEGACY_PPI)
 
     def test_an_uncalibrated_monitor_asks_for_one(self, new_ruler, config):
         ruler = new_ruler()
@@ -243,7 +243,7 @@ class TestTheAppAdoptsWhatIsStored:
         ruler.ppi = 101.5
         ruler.accept_calibration()
         assert ruler.mode == "ruler"
-        assert C.load_saved_ppi(ruler.monitor) == pytest.approx(101.5)
+        assert C.load_saved_ppi(ruler.monitor, C.load_config()) == pytest.approx(101.5)
 
     def test_staying_put_changes_nothing(self, new_ruler, config):
         ruler = new_ruler()

@@ -18,13 +18,16 @@ reading the config on its own:
 Run with:  ./.venv/Scripts/python.exe -m pytest tests/test_settings_api.py -v
 """
 
+import ast
 import dataclasses
 import json
+from pathlib import Path
 
 import pytest
 
 from lib import LIB_project_config as config
 from lib.LIB_border_connectors import ConnectorParams, load_connector_params
+from lib.LIB_border_plan import BorderSettings, load_border_settings
 from lib.LIB_border_split import BedParams, load_bed_params
 from lib.LIB_island_bridges import BridgeParams, load_bridge_params
 from lib.LIB_shape_scores import ScoreParams, load_score_params
@@ -34,6 +37,7 @@ from lib.LIB_terrain_stl import TerrainParams, load_terrain_params
 from lib.LIB_thin_features import ThinParams, load_thin_params
 
 import lib.LIB_border_connectors as connectors
+import lib.LIB_border_plan as border_plan
 import lib.LIB_border_split as split
 import lib.LIB_island_bridges as bridges
 import lib.LIB_shape_scores as scores
@@ -59,6 +63,8 @@ LIBRARIES = [
     pytest.param(TerrainParams, load_terrain_params,
                  terrain._TERRAINPARAMS_KEYS, id="terrain"),
     pytest.param(BedParams, load_bed_params, split._BEDPARAMS_KEYS, id="bed"),
+    pytest.param(BorderSettings, load_border_settings,
+                 border_plan._BORDER_SETTINGS_KEYS, id="borders"),
 ]
 
 
@@ -185,14 +191,70 @@ class TestProjectConfig:
         assert config.load_files(None) == config.DEFAULTS
 
 
-class TestNoLibraryReadsTheConfigItself:
-    """A guard against the old habit creeping back: no library module calls
-    the file-reading ``get`` at import or in a default."""
+#: The ``LIB_project_config`` functions that reach the config files: the
+#: settings a library works with must arrive through its API instead.
+_FILE_READERS = {"get", "settings_files", "load_files", "update_local"}
 
-    @pytest.mark.parametrize("module", [thin, bridges, shared, scores, stress,
-                                        connectors, terrain, split])
-    def test_no_bare_config_reads(self, module):
-        import inspect
-        source = inspect.getsource(module)
-        assert "import get as _cfg" not in source
-        assert "_from_config(" not in source
+#: Where reaching the files is the job.  ``main`` is a command line, a front
+#: end like any window: the saved settings are its defaults.  The screen
+#: calibrations are a store, not settings, and these two are its reader and
+#: its writer.
+_ALLOWED = {"main"}
+_ALLOWED_IN = {"LIB_screen_calibration": {"load_config", "save_ppi"}}
+
+LIB_FILES = sorted(p for p in (Path(__file__).resolve().parent.parent
+                               / "lib").glob("LIB_*.py")
+                   if p.stem != "LIB_project_config")
+
+
+def _config_reads(path):
+    """``(line, function, call)`` for each call that reaches the config files
+    from outside the functions allowed to."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    readers = {alias.asname or alias.name
+               for node in ast.walk(tree)
+               if isinstance(node, ast.ImportFrom)
+               and node.module == "lib.LIB_project_config"
+               for alias in node.names if alias.name in _FILE_READERS}
+    allowed = _ALLOWED | _ALLOWED_IN.get(path.stem, set())
+    found = []
+
+    def visit(node, function):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            function = node.name if function is None else function
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id in readers and function not in allowed
+                # ``get(key, config=...)`` reads the configuration it is handed.
+                and not any(k.arg == "config" for k in node.keywords)):
+            found.append((node.lineno, function or "<module>", node.func.id))
+        for child in ast.iter_child_nodes(node):
+            visit(child, function)
+
+    visit(tree, None)
+    return found
+
+
+class TestNoLibraryReadsTheConfigItself:
+    """A guard against the old habit creeping back: no library reaches the
+    config files on its own -- at import, in a default, or mid-calculation.
+    Its settings arrive as a structure its ``load_*`` function filled."""
+
+    @pytest.mark.parametrize("path", LIB_FILES, ids=lambda p: p.stem)
+    def test_no_config_reads(self, path):
+        assert _config_reads(path) == []
+
+    def test_the_guard_sees_a_read(self, tmp_path):
+        """The test above passing means nothing unless it can fail."""
+        bad = tmp_path / "LIB_bad.py"
+        bad.write_text("\n".join([
+            "from lib.LIB_project_config import get as _cfg",
+            "X = _cfg('print.scale')",
+            "def f():",
+            "    return _cfg('seam.nozzle_mm')",
+            "def g(c):",
+            "    return _cfg('seam.nozzle_mm', config=c)",
+            "def main():",
+            "    return _cfg('print.scale')",
+        ]), encoding="utf-8")
+        found = [(line, fn) for line, fn, _ in _config_reads(bad)]
+        assert found == [(2, "<module>"), (4, "f")]
