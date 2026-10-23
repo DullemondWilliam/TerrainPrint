@@ -54,8 +54,8 @@ say, and it is more convincing than any number.
 
 Run with:  python harnesses/UI_stress_points.py
 
-A throwaway inspection tool, deliberately kept independent of the main ``app``
-window, and styled after ``UI_island_bridges.py`` and ``UI_shared_border.py``.
+A throwaway inspection tool, deliberately kept independent of the editors, and
+styled after ``UI_island_bridges.py``.
 """
 
 import sys

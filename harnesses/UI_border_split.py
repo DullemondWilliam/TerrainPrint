@@ -5,8 +5,8 @@ A standalone visual harness for ``LIB_border_split.split_to_bed``.
 
 Workflow
 --------
-1. **Import STL …**   — load a border solid (e.g. the ``borders.stl`` produced by
-                        ``UI_border_stl``).
+1. **Import STL …**   — load a border solid (e.g. a border bar saved by
+                        ``UI_terrain_editor``).
 2. **Bed / Margin**   — set the usable print-bed size (mm) and the keep-clear
                         margin taken off each edge.
 3. **Split**          — subdivide the bar into bed-fitting pieces (off the UI

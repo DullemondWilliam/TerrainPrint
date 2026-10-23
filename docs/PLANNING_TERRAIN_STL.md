@@ -29,10 +29,6 @@ clipped DEM (GeoTIFF)          │
    │  LIB_terrain_stl  ◀───────┘  (this plan)
    ▼
 province terrain solid (STL)
-   │
-   │  LIB_butterfly_keys
-   ▼
-keyed, printable piece
 ```
 
 It replaces the DEMto3D QGIS plugin for this step. Two consequences beyond
@@ -56,8 +52,8 @@ worth designing out.
 
 ## 2. The core decision: grid mesh, not Delaunay
 
-`REQUIREMENTS_AND_DESIGN.md` §5.6 specifies Delaunay triangulation over masked
-pixel centres, and records three watertightness bugs it caused — walls built from
+The earlier design specified Delaunay triangulation over masked pixel centres,
+and recorded three watertightness bugs it caused — walls built from
 polygon rings the triangulation did not follow, winding-dependent edge counting,
 and pinch faces where a coastline narrows to a one-triangle spit.
 
@@ -220,7 +216,7 @@ class TerrainResult:
 ```
 
 `origin_m` + `mpm` *is* the metres→print-mm affine. Written to a sidecar JSON
-next to the STL, it lets `LIB_butterfly_keys` skip the IoU search entirely and
+next to the STL, it lets `LIB_stl_reconcile` skip the IoU search entirely and
 removes the Y-flip ambiguity that search exists to resolve.
 
 ---
@@ -292,8 +288,7 @@ to find a shared minimum.
 
 Print extent comes from the boundary's bounds and the scale — arithmetic, no
 raster work. Newfoundland is 175.7 × 137.0 mm against a 256 mm bed, so it fits
-whole; Quebec and Ontario will not, and must go through `core.meshing`'s grid
-split. Checking first turns a wasted multi-second mesh into an instant answer.
+whole; Quebec and Ontario will not, and must be split. Checking first turns a wasted multi-second mesh into an instant answer.
 
 ### 5.7 Resampling: nearest loses summits — measured
 

@@ -156,38 +156,17 @@ DEFAULTS = {
         # Refuse a simplification that drags the border further than this from
         # where it really runs.
         "max_deviation_mm": 1.5,
-        # Will the two printed pieces mesh? (LIB_seam_fit, read by the Border
-        # Editor.) What each printed edge loses or gains, per side --
-        # over-extrusion, elephant's foot, slicer clearance. The same 0.2 mm
-        # the dovetail and butterfly-key pockets are oversized by.
-        "edge_loss_mm": 0.2,
-        # Narrow land within this distance of the seam is the seam's problem.
-        "fit_band_mm": 3.0,
-        # The widest tab head looked for: pockets narrower than this are
-        # closed over, and the land filling them is a tab. A bulge wider than
-        # this is just the border going somewhere.
-        "fit_tab_mm": 8.0,
-        # A tab whose head is wider than its neck by more than this factor is
-        # captured: the pieces only go together from above, and the tab pins
-        # them so shrinkage along the seam cannot spread out.
-        "lock_ratio": 1.05,
-        # The Border Editor's push brush, measured across the stroke.
-        "brush_mm": 2.0,
-        # The furthest the Border Editor's Auto Solve may move a border to fix
-        # a tab or a narrow patch. Twice the simplifier's drift cap: a repair
-        # is a deliberate move, not noise being smoothed away.
-        "solve_max_move_mm": 3.0,
     },
     "borders": {
         # Defining the borders between provinces, in printed millimetres
         # (converted through print.scale where a lib wants metres). Read by the
         # terrain editor's Borders stage.
         # Douglas-Peucker tolerance for arcs one region holds alone -- coasts and
-        # frontiers with nothing printed beyond them. 0.3 mm is the 2.4 km the
-        # main app shipped with.
+        # frontiers with nothing printed beyond them. 0.3 mm is 2.4 km at
+        # 1:8,000,000.
         "coast_tol_mm": 0.3,
         # The same for arcs two regions share. Looser than the coast (0.5 mm,
-        # the app's 4.0 km): a shared seam is hidden under the border bar, so
+        # 4.0 km): a shared seam is hidden under the border bar, so
         # its detail is never seen. Seam clean-up (seam.min_segment_mm,
         # seam.min_angle_deg) runs over these arcs after this pass.
         "internal_tol_mm": 0.5,
@@ -226,39 +205,9 @@ DEFAULTS = {
         # Where the province pipeline reads and writes, relative to the repo.
         "provinces_in": "Data/JSon-Provinces-Orig",
         "provinces_out": "Data/JSonProvinces-Cleaned",
-        # Provinces whose shared borders are cleaned, with the ledger of which
-        # borders are done (read by the UI_province_joins harness).
-        "provinces_bordered": "Data/JSonProvinces-Bordered",
         # Province terrain STLs (with their .frame.json sidecars) as the
-        # terrain editor saves them, and where the UI_province_joins harness writes them back
-        # with butterfly-key slots cut, alongside the keys to print.
+        # terrain editor saves them.
         "stl": "Data/STL",
-        "stl_keyed": "Data/STL-Keyed",
-    },
-    "keys": {
-        # Butterfly (bowtie) keys joining neighbouring province pieces from
-        # the back, in printed millimetres. Read by the UI_province_joins and
-        # UI_butterfly_keys harnesses; the slot depth is print.dovetail_mm, tied
-        # to the base it is cut into. One size map-wide, so any key fits any
-        # slot. The defaults are the border connectors' dovetail lobe.
-        # Key width at the seam (the waist).
-        "neck_mm": 1.6,
-        # Key width at each end: wider than the neck, or nothing is captured
-        # behind the waist and the pieces slide apart.
-        "mouth_mm": 3.2,
-        # How far each half reaches into its province from the seam.
-        "reach_mm": 3.0,
-        # Slot oversize per side, so a printed key presses in. The same 0.2 mm
-        # as seam.edge_loss_mm, for the same reason.
-        "clearance_mm": 0.2,
-        # The key is printed this much shorter than its slots are deep, so it
-        # seats below the base instead of standing proud of it.
-        "height_clearance_mm": 0.1,
-        # Pitch Auto Place spaces keys at along a seam.
-        "spacing_mm": 14.0,
-        # Extra keys printed on the plates: a key under a centimetre is easy
-        # to lose.
-        "spares": 4,
     },
     "island_editor": {
         # Printed sizes, converted to ground units through print.scale at the

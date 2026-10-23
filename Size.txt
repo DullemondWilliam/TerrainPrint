@@ -1,5 +1,0 @@
-/GeoJsonToSTL.py '.'  --scale 8000000 --thickness-mm 5 --simplify-m 0.5 --min-hole-area-m2 4
-
-1:8000000
-BASE 2
-monstertrain://runresult/112280aa-1ae6-440c-a650-ee60abfd29af

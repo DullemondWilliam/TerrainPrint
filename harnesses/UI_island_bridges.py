@@ -47,8 +47,8 @@ had no landing good enough to use, and how many separate landmasses are left.
 
 Run with:  python harnesses/UI_island_bridges.py
 
-A throwaway inspection tool, deliberately kept independent of the main ``app``
-window, and styled after ``UI_island_merge.py`` and ``UI_shared_border.py``.
+A throwaway inspection tool, deliberately kept independent of the editors, and
+styled after ``UI_island_merge.py``.
 """
 
 import sys

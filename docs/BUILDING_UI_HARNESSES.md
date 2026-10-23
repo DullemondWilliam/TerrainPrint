@@ -9,13 +9,10 @@ based on the ones that already exist. They all live in `harnesses/`:
 | `UI_island_removal.py`  | `LIB_island_removal`                   | live threshold preview (spinbox) |
 | `UI_island_merge.py`    | `LIB_island_merging.merge_islands`     | click-to-select islands on the map |
 | `UI_border_regions.py`  | `LIB_border_regions.build_border_regions` | two typed inputs + threaded carve with a progress bar |
-| `UI_border_stl.py`      | `LIB_border_stl.build_border_stl`      | flat 2-D footprint (matplotlib) + a 3-D mesh preview (vispy) |
 | `UI_border_split.py`    | `LIB_border_split.split_to_bed`        | mesh in, mesh out — two 3-D vispy panels |
 | `UI_island_bridges.py`  | `LIB_island_bridges.plan_bridges`      | a *plan* before a result: eleven print-mm parameters over two rows, the scored bridges drawn and labelled on the input panel, and a report of what the spanning tree could not reach |
 | `UI_terrain_trim.py`    | `LIB_terrain_trim.trim_terrain`        | mesh + GeoJSON in, mesh out: a 2-D placement overlay (slab extent vs reconciled province) beside a vispy solid coloured by elevation |
 | `UI_terrain_stl.py`    | `LIB_terrain_stl.terrain_to_stl`       | raster in, **mesh out**: matplotlib DEM on the left, vispy solid on the right; live triangle/bed estimate before meshing |
-| `UI_province_joins.py` | `LIB_province_joins.cut_all`          | the whole map, not one pair: every border in a list, keys placed by click and drag with undo, one key size map-wide, and a threaded cut that writes keyed STLs and key plates |
-| `UI_shared_border.py`  | `LIB_shared_border.simplify_shared_border` | a *pair* of GeoJSONs and the seam between them; before/after with vertex markers, the original seam ghosted behind the new one, and a Zoom-to-Seam because a border is invisible at full extent |
 
 The **editors stay in the project root**, not in `harnesses/`:
 `UI_island_editor.py` (the island harnesses folded into one tool with undo/redo),
@@ -23,8 +20,8 @@ The **editors stay in the project root**, not in `harnesses/`:
 `LIB_terrain_stl`, the whole pipeline in one window). They borrow the patterns below, but they
 are kept tools with state, not throwaways — the folder is the dividing line.
 
-Each is a **throwaway inspection tool**, deliberately independent of the main
-`app/` window, so a lib can be pointed at any GeoJSON without setting up a
+Each is a **throwaway inspection tool**, deliberately independent of the
+editors, so a lib can be pointed at any GeoJSON without setting up a
 project. They all follow the same shape; this guide is that shape.
 
 ---
@@ -37,7 +34,7 @@ after** so the effect is visible. It is not the product — keep it small, keep 
 in one file, and let the lib do the geometry.
 
 If you find yourself adding project state, multiple pipeline steps, or export
-logic beyond a single GeoJSON round-trip, it belongs in `app/`, not here.
+logic beyond a single GeoJSON round-trip, it belongs in an editor, not here.
 
 ---
 
@@ -606,7 +603,7 @@ def _teardown_thread(self) -> None:
 `setRange(0, 0)` gives the bar its busy animation. Both `_on_done` and
 `_on_failed` must call `_teardown_thread()` then `_set_busy(False)`.
 
-### D. 3-D mesh preview with vispy (`UI_border_stl`, `UI_border_split`)
+### D. 3-D mesh preview with vispy (`UI_terrain_stl`, `UI_border_split`)
 
 When the lib returns a **`trimesh` mesh** (an STL), preview it in a
 GPU-accelerated `vispy` scene, **not** matplotlib. matplotlib's `mplot3d`
@@ -664,7 +661,7 @@ def _rgba(hex_colour, alpha=1.0):
 ```
 
 **Mixing 2-D and 3-D.** A harness whose *input* is flat but *output* is a mesh
-(`UI_border_stl`) keeps a matplotlib footprint on the left and a vispy scene on
+(`UI_terrain_stl`) keeps a matplotlib view of its input on the left and a vispy scene on
 the right, side by side in a `QHBoxLayout`; the panels do **not** share a view.
 When both panels are meshes (`UI_border_split`), use two vispy scenes. Invalidate
 a stale mesh panel by detaching its visuals, exactly as a 2-D harness clears its

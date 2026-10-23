@@ -180,7 +180,7 @@ def _extrude(poly_mm, z0, z1):
     return _man_to_trimesh(_extrude_man(poly_mm, z0, z1))
 
 
-#: Public alias – the manifold-backed extruder, reused by ``core.meshing``.
+#: Public alias – the manifold-backed extruder.
 extrude_solid = _extrude
 
 

@@ -47,15 +47,6 @@ before calling in"*. The terrain has to be cut by the province **after** the
 corridor is carved out of it. Otherwise the terrain solid and the border bar
 overlap by half the corridor width.
 
-### The main app already tried this
-
-`app/main_window.py` has a four-step flow (`Import / Cleanup / Borders / Mesh &
-Export`) built on the same libs. It imports `from core import borders, cleanup,
-measure, meshing, terrain_preview`, and **there is no `core` package in the
-repo**, so that window cannot start. Decision 1 in §6 covers whether this plan
-should revive that window instead of growing the editor. This plan assumes the
-editor, because it runs and has 61 tests.
-
 ---
 
 ## 2. Window layout
@@ -151,8 +142,8 @@ given only the targets' union, so no lobe reaches into a surrounding region
 ### 4.4 Running and saving
 
 All three passes run in a `BorderWorker`, off the UI thread like `RunWorker`.
-`UI_shared_border` already measured Northwest Territories/Nunavut at 7.7 s for a
-*single pair*. A whole map with US states is *unmeasured* and will be slower.
+`LIB_shared_border` was measured on Northwest Territories/Nunavut at 7.7 s for
+a *single pair*. A whole map with US states is *unmeasured* and will be slower.
 
 **Save Borders …** writes a folder holding `borders.geojson` plus one
 `name_<province>.geojson` per trimmed target, in the source CRS. That is the
@@ -185,7 +176,7 @@ This is today's raster row and mesh row, with three changes:
 
 * **Build Border STL** runs `build_border_mesh(border, lobes, ConnectorParams())`.
   The result is the stepped bar: a 2 mm corridor on a 1 mm lobe layer. With
-  connectors turned off it runs `build_border_stl` for a plain bar instead.
+  connectors turned off it builds a plain bar with no lobes instead.
 * **Split to Bed** runs `split_to_bed(mesh, print.bed_mm,
   print.bed_margin_mm)`. **Caveat:** the splitter is connector-blind, and its
   docstring reserves a `keepout` hook for exactly this. It can cut through a
@@ -219,10 +210,6 @@ crop's polygon mask *is* the trimmed province.
 
 ## 6. Open decisions
 
-1. **Editor or app?** `app/main_window.py` already describes this flow, but it
-   cannot start without `core/`. Growing the editor (this plan) and reviving the
-   app would duplicate each other. *Recommendation:* grow the editor now, since
-   it runs and is tested. Retire or rebuild the app once this works.
 2. **Printability of the seams.** Topology simplification is Douglas-Peucker
    only. It leaves the sub-nozzle zigzag and spikes that `LIB_shared_border`
    exists to remove. That lib was measured on Ontario/Québec: 54.5% of segments
@@ -311,9 +298,7 @@ That happened whenever you cropped, changed any raster setting, and cropped
 again. Switching provinces makes that sequence routine, so the fix
 (`_drop_colorbar`) shipped with this work.
 
-**The plain bar uses `build_border_mesh` with no lobes**, not
-`build_border_stl`. The plan named the latter for a bar without connectors.
-`build_border_mesh` gives the bar the same known local origin either way, and
+**The plain bar uses `build_border_mesh` with no lobes.** `build_border_mesh` gives the bar the same known local origin either way, and
 the Assembly view needs that origin.
 
 **FR-3.11 is reported, not enforced.** With the Canada bar split to a 256 mm

@@ -2,29 +2,31 @@
 geopandas==0.14.1
 shapely==2.0.2
 pyproj==3.6.1
+# geopandas reads and writes GeoJSON through fiona
 fiona==1.9.6
 rasterio==1.3.9
+affine==2.4.0
 
 # Topology-aware simplification (shared-border simplification via TopoJSON)
 topojson
 
-# 2-D polygon triangulation for STL face generation
-mapbox-earcut
-
 # 3D model handling
 trimesh==4.0.1
+# Watertight booleans, extrusion and mesh simplification
+manifold3d==3.5.2
 numpy==1.24.3
 scipy==1.11.4
 
 # Data processing
 pandas==2.1.4
-Pillow==10.1.0
 matplotlib
 
-# GPU 3D mesh preview in the UI_* harnesses (replaces matplotlib mplot3d)
+# The editors and harnesses are Qt windows
+PySide6==6.11.1
+
+# GPU 3D mesh preview in the editors and harnesses (replaces matplotlib mplot3d)
 vispy==0.16.2
 
-# Utilities
-click==8.1.7
-tqdm==4.66.1
-networkx
+# Tests (pytest-qt runs the Qt UI tests)
+pytest==9.1.1
+pytest-qt==4.5.0

@@ -21,10 +21,6 @@ prepared DEM ───────────────────┤
    │  LIB_terrain_stl  ◀────────┘   (UI_terrain_stl)
    ▼
 province terrain solid (STL + .frame.json)
-   │
-   │  LIB_butterfly_keys
-   ▼
-keyed, printable piece
 ```
 
 **Hand it a raster that is already clipped, reprojected and coarsened.** The
@@ -33,8 +29,8 @@ keeps resampling in the one module that does it nodata-aware.
 
 ## A grid mesh, not a triangulation
 
-`REQUIREMENTS_AND_DESIGN.md` §5.6 specifies Delaunay over masked pixel centres,
-and records three watertightness bugs it caused: walls built from polygon rings
+An earlier design specified Delaunay over masked pixel centres, and recorded
+three watertightness bugs it caused: walls built from polygon rings
 an unconstrained triangulation did not follow, winding-dependent edge counting,
 and pinch faces where a coastline narrows to a one-triangle spit.
 

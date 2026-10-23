@@ -4,8 +4,8 @@ LIB_border_split.py
 
 Auto-subdivide a border STL into watertight pieces that each fit a print bed.
 
-The border bar produced by :func:`LIB_border_stl.build_border_stl` can be far
-longer than any print bed.  This engine recursively bisects it along its longer
+The border bar produced by :func:`LIB_border_connectors.build_border_mesh` can
+be far longer than any print bed.  This engine recursively bisects it along its longer
 over-bed axis until every piece's footprint fits the given bed, keeping each
 piece watertight:
 

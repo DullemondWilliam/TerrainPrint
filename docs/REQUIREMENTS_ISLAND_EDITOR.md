@@ -19,10 +19,7 @@ into one interactive editor, reusing:
 - `lib.LIB_lake_removal.remove_lakes(geom)`
 - `lib.LIB_screen_calibration.monitor_at` / `load_saved_ppi` / `px_per_mm`
 
-It stays independent of the `app`/`core` main window, like the other `UI_*`
-tools. (The `app` window already offers a combined, undoable cleanup editor via
-`core.cleanup`; this tool is the lib-based harness equivalent, and fulfils the
-`UI_island_editor.py` entry the README already names.)
+It stands on its own, like the other `UI_*` tools.
 
 ## 2. Data model & I/O
 
@@ -350,16 +347,14 @@ tools. (The `app` window already offers a combined, undoable cleanup editor via
 
 - **FR-4.1** One `QUndoCommand` per operation on a single `QUndoStack`,
   **snapshot-based**: capture the document geometry before and after and swap
-  between them (mirrors [app/commands.py](../app/commands.py) but over a single
-  geometry rather than a region dict).
+  between them.
 - **FR-4.2** No-op detection **by value (WKB)** so an operation that changes
   nothing does not enter the history.
 - **FR-4.3** **Undo/Redo** buttons plus shortcuts **Ctrl+Z** and
   **Ctrl+Shift+Z / Ctrl+Y**, disabled when the stack has nothing to undo/redo
   (use `QUndoStack.createUndoAction` / `createRedoAction`).
 - **FR-4.4** **Selection is kept across an edit** by remapping it onto the
-  result through part-correspondence (representative-point containment, in the
-  spirit of `_part_mapping` in [app/commands.py](../app/commands.py)): a merge
+  result through part-correspondence (representative-point containment): a merge
   leaves the merged landmass selected; a removed part drops out of the selection;
   undo/redo restores the selection for the direction moved.
 - **FR-4.5** Save is enabled whenever a document is loaded (not only after an

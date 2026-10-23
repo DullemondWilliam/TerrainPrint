@@ -31,8 +31,8 @@ one that does it nodata-aware.
 
 A grid mesh, not a triangulation
 --------------------------------
-``REQUIREMENTS_AND_DESIGN.md`` §5.6 specifies Delaunay over masked pixel centres
-and records three watertightness bugs it caused: walls built from polygon rings
+An earlier design specified Delaunay over masked pixel centres, and recorded
+three watertightness bugs it caused: walls built from polygon rings
 an unconstrained triangulation did not follow, winding-dependent edge counting,
 and pinch faces where a coastline narrows to a one-triangle spit.
 

@@ -84,9 +84,8 @@ flowchart TD
 │   ├── LIB_stl_reconcile.py           # Recover a printed STL's metres→print-mm frame
 │   ├── LIB_terrain_trim.py            # Clip a DEMto3D slab STL to the province coastline
 │   └── LIB_thin_features.py           # Find land too narrow to print (necks, spits, islets)
-├── ui/                                # Qt widgets shared by more than one window
-│   └── seam_editor.py                 # The seam editor (Shared Border harness)
-├── tests/                             # All pytest suites (lib + core + app)
+├── ScreenRuler.py                     # Measure the screen, for the island editor's Real Size
+├── tests/                             # All pytest suites (libs, editors, harnesses)
 └── README.md                          # This file
 ```
 
@@ -96,7 +95,7 @@ flowchart TD
 pip install -r requirements.txt
 ```
 
-**Key dependencies:** `geopandas`, `shapely`, `pyproj`, `trimesh`, `numpy`, `scipy`, `matplotlib`, `fiona`
+**Key dependencies:** `PySide6`, `geopandas`, `shapely`, `rasterio`, `trimesh`, `manifold3d`, `numpy`, `scipy`, `matplotlib`, `vispy`
 
 ---
 
@@ -133,53 +132,21 @@ py -3 UI_island_editor.py
 
 ---
 
-### 2. Pipeline Preview UI (`UI_simplify_geo_borders.py`)
+### 2. Terrain Editor (`UI_terrain_editor.py`)
 
-Three-stage wizard that previews and applies the full processing pipeline across all provinces, then exports STL files.
+The whole terrain pipeline in one window, from the national DEM to printable
+STLs, in three stages:
 
-```powershell
-py -3 UI_simplify_geo_borders.py
-```
-
-Adjust the coastal and internal tolerances, click **Apply** to preview the simplified borders, then **Export STL** when satisfied.
-
-| Control | Purpose |
-|---|---|
-| Coastal tolerance | Simplification applied to coastal and international borders |
-| Internal tolerance | Simplification applied to shared inter-provincial borders |
-| Slab height | Extrusion height used during STL export |
-
----
-
-### 3. Terrain STL Generator (`UI_terrain_to_stl.py`)
-
-Combines a province GeoJSON boundary with a GeoTIFF DEM to produce a 3D terrain STL.
+1. **Import**: the DEM, the provinces to print, and the regions around them.
+2. **Borders**: simplify every outline in one topology, carve the border
+   corridor between provinces, and place the dovetail connectors.
+3. **STL**: reproject and clip the DEM to each province, build its terrain STL,
+   and build the border bar in bed-sized pieces. **Process All** does every
+   province and the border bar in one run.
 
 ```powershell
-py -3 UI_terrain_to_stl.py
+py -3 UI_terrain_editor.py
 ```
-
-| Control | Default | Purpose |
-|---|---|---|
-| GeoJSON file | — | Province boundary in WGS84 |
-| GeoTIFF file | `Canada120m/Canada120m.tif` | Elevation model |
-| Terrain ×  | ×10 | Vertical exaggeration factor |
-| Scale (1:N) | 1:8 000 000 | Print scale denominator |
-| Base (mm) | 2 mm | Flat base thickness below terrain floor |
-
-Click **Preview DEM** to inspect the clipped elevation raster before generating.  Click **Generate STL …** to choose an output path and build the mesh.
-
----
-
-### 4. GeoTIFF Clipper (`UI_clip_geotiff.py`)
-
-Clip a GeoTIFF raster (DEM, satellite imagery) to province boundaries.
-
-```powershell
-py -3 UI_clip_geotiff.py dem.tif geojson/name_Ontario-fixed.geojson output/Ontario_dem.tif
-py -3 UI_clip_geotiff.py dem.tif dummy.geojson dummy.tif --info   # inspect metadata only
-```
-
 
 ## Settings
 
@@ -223,8 +190,8 @@ UI_island_editor.py      open each province, mark small/unwanted islands
 geojson/                 cleaned per-province files
        │
        ▼
-UI_simplify_geo_borders.py  tune merge gap, lake removal, and simplification
-       │                 tolerances interactively, then Export STL
+UI_terrain_editor.py     define the borders between provinces, then build
+       │                 each province's terrain STL and the border bar
        │
        ▼
 STL output directory     ready for 3D printing / viewing
@@ -261,8 +228,6 @@ STL output directory     ready for 3D printing / viewing
 **Map doesn't show anything** — confirm the file contains a `MultiPolygon` or `Polygon` geometry in EPSG:4326
 
 **Gap close produces no bridges** — no Merge-marked islands are within the chosen km distance of each other; try increasing the slider or marking more islands as Merge
-
-**STL export fails** — apply Stage 3 (Simplify Borders) before exporting; the Export button is disabled until then
 
 ---
 

@@ -31,7 +31,7 @@ import pytest
 
 from harnesses import UI_border_regions
 from harnesses import UI_island_bridges, UI_island_merge, UI_island_removal
-from harnesses import UI_lake_removal, UI_shared_border
+from harnesses import UI_lake_removal
 from harnesses import UI_terrain_stl
 from harnesses import UI_terrain_trim
 
@@ -47,7 +47,6 @@ HARNESSES = [
     (UI_island_merge, "IslandMergeTester"),
     (UI_island_removal, "IslandRemovalTester"),
     (UI_lake_removal, "LakeRemovalTester"),
-    (UI_shared_border, "SharedBorderTester"),
     (UI_terrain_stl, "TerrainStlTester"),
     (UI_terrain_trim, "TerrainTrimTester"),
 ]

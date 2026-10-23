@@ -118,9 +118,8 @@ and `--build-crs` (default EPSG:3347; use EPSG:3979 if you kept the DEM-native
 CRS in step 2) to match how the slab was built; `--buffer-mm` keeps a thin
 coastal lip.
 
-The trimmed STL now has a coastline-shaped base, which is also what
-`LIB_butterfly_keys` needs to key provinces to the border. Recommended
-order: **DEMto3D export → `LIB_terrain_trim` → `LIB_butterfly_keys`**.
+The trimmed STL now has a coastline-shaped base. Recommended order:
+**DEMto3D export → `LIB_terrain_trim`**.
 
 ---
 

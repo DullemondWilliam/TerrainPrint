@@ -7,7 +7,7 @@ Intersect a DEM GeoTIFF with a province GeoJSON.
 This is the raster half of the pipeline's front end: it takes the elevation
 raster and one boundary polygon and returns *only the elevations inside that
 boundary* -- everything outside the coastline becomes nodata.  The result is the
-clipped DEM that a DEM->STL step (DEMto3D, or ``core.meshing`` later) consumes,
+clipped DEM that a DEM->STL step (DEMto3D, or ``LIB_terrain_stl``) consumes,
 and the clip is what stops a province's mesh from carrying its neighbours'
 terrain.
 

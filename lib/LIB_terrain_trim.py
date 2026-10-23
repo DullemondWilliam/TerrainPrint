@@ -18,11 +18,8 @@ province polygon so the cut follows the true coastline regardless of elevation.
                        out_path="print/pei_trimmed.stl")
 
 The result is a watertight, coastline-accurate province solid with its base
-retained under the terrain.  Because the trimmed STL now has a province-shaped
-flat base, it also unblocks the downstream butterfly keys
-(:mod:`lib.LIB_butterfly_keys`), whose reconciliation matches that base against
-the same GeoJSON.  Recommended workflow: DEMto3D export -> ``trim_terrain`` ->
-``LIB_butterfly_keys``.
+retained under the terrain.  Recommended workflow: DEMto3D export ->
+``trim_terrain``.
 
 Reconciliation
 --------------
