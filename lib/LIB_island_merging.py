@@ -13,6 +13,7 @@ project uses EPSG:3347).
 
 import logging
 
+from shapely import make_valid
 from shapely.geometry import MultiPolygon, Polygon
 from shapely.ops import unary_union
 
@@ -30,6 +31,21 @@ def _polygons(geom) -> list:
     if geom.geom_type == "Polygon":
         return [geom]
     return [g for g in geom.geoms if g.geom_type == "Polygon"]
+
+
+def _valid(geom):
+    """
+    ``geom`` itself when it is valid, else its land repaired.
+
+    A self-intersecting ring makes every union throw -- the fallback union
+    included -- so an island is repaired before it is merged, keeping only
+    its polygons (a repair can leave stray lines and points beside them).
+    """
+    if geom.is_valid:
+        return geom
+    fixed = make_valid(geom)
+    parts = [p for g in getattr(fixed, "geoms", [fixed]) for p in _polygons(g)]
+    return parts[0] if len(parts) == 1 else MultiPolygon(parts)
 
 
 def _fill_new_holes(geom, keep_region):
@@ -92,10 +108,11 @@ def merge_islands(islands, buffer_km: float):
     Returns
     -------
     The merged geometry, or None if the list holds nothing to merge.  A single
-    island is returned unchanged.  On failure, falls back to the plain union so
-    no island is ever lost.
+    island is returned unchanged.  An invalid island is repaired first; on
+    failure, falls back to the plain union so no island is ever lost.
     """
-    present = [g for g in islands if g is not None and not g.is_empty]
+    present = [_valid(g) for g in islands if g is not None and not g.is_empty]
+    present = [g for g in present if not g.is_empty]
     if not present:
         return None
     if len(present) == 1:

@@ -184,15 +184,6 @@ def _extrude(poly_mm, z0, z1):
 extrude_solid = _extrude
 
 
-def _union(meshes):
-    meshes = [m for m in meshes if m is not None]
-    if not meshes:
-        return None
-    if len(meshes) == 1:
-        return meshes[0]
-    return trimesh.boolean.union(meshes)
-
-
 # ---------------------------------------------------------------------------
 # Dovetail lobes  (shared between the border piece and the province pockets)
 # ---------------------------------------------------------------------------
@@ -434,19 +425,6 @@ def build_border_mesh(border_geom_m, lobes_m, p: ConnectorParams, top_mm=None):
 # ---------------------------------------------------------------------------
 # Province pockets  (carved into the underside during terrain generation)
 # ---------------------------------------------------------------------------
-def pocket_cutters(lobes_m, x0_m, y0_m, p: ConnectorParams):
-    """Cutter prisms (local print-mm, z in [-0.1, pocket_depth_mm]) for one
-    province: each lobe grown by ``clearance_mm`` per side."""
-    cutters = []
-    for lobe in lobes_m:
-        lobe_c  = lobe.buffer(p.clearance_mm * p.mpm)    # pocket slightly oversized
-        poly_mm = _to_mm(lobe_c, p.mpm, x0_m, y0_m)
-        c = _extrude(poly_mm, -0.1, p.pocket_depth_mm)
-        if c is not None:
-            cutters.append(c)
-    return cutters
-
-
 def notch_province(mesh, lobes_m, x0_m, y0_m, p: ConnectorParams):
     """
     Carve dovetail pockets into the underside of a province mesh.

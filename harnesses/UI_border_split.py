@@ -21,10 +21,10 @@ renderer that cannot keep up when a dense mesh is rotated.
 
 Run with:  python harnesses/UI_border_split.py
 
-Like the other UI_* harnesses this stays independent of the main ``app`` window
-so it can be pointed at any STL without setting up a project.  It works purely on
-the mesh, so — like the lib — it has no knowledge of dovetail connectors and a
-cut may cross one; the plain ``build_border_stl`` bar has none.
+Like the other UI_* harnesses this stays independent of the editors so it can
+be pointed at any STL without setting up a project.  It works purely on the
+mesh, so — like the lib — it has no knowledge of dovetail connectors and a cut
+may cross one; the terrain editor plans its splits around them instead.
 """
 
 import sys

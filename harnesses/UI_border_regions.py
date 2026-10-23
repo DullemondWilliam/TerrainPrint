@@ -24,8 +24,8 @@ trimmed regions with the border region highlighted in red — on the right
 
 Run with:  python harnesses/UI_border_regions.py
 
-Like the other UI_* harnesses this stays independent of the main ``app`` window
-so it can be pointed at any GeoJSON without setting up a project.  Imported
+Like the other UI_* harnesses this stays independent of the editors so it can
+be pointed at any GeoJSON without setting up a project.  Imported
 features are reprojected into the print CRS (EPSG:3347, metres) because the lib
 works in metres and takes the width in kilometres; the carved result is written
 back out in the CRS the core files came from.

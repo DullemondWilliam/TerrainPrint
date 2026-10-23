@@ -166,7 +166,7 @@ from shapely import STRtree
 from shapely.geometry import LineString, Point, Polygon, box
 from shapely.ops import nearest_points, unary_union
 
-from lib.LIB_island_merging import _fill_new_holes, _polygons
+from lib.LIB_island_merging import _fill_new_holes, _polygons, _valid
 from lib.LIB_project_config import build_params
 from lib.LIB_project_config import shipped as _shipped
 
@@ -938,12 +938,14 @@ def apply_bridges(islands, bridges, keep_lagoons: bool = True):
 
     Returns
     -------
-    The bridged geometry, or None if there was nothing to bridge.  On failure
-    the plain union is returned, so no island is ever lost to an exception.
+    The bridged geometry, or None if there was nothing to bridge.  An invalid
+    island is repaired first; on failure the plain union is returned, so no
+    island is ever lost to an exception.
     """
     if isinstance(bridges, BridgePlan):
         bridges = bridges.bridges
-    present = [g for g in islands if g is not None and not g.is_empty]
+    present = [_valid(g) for g in islands if g is not None and not g.is_empty]
+    present = [g for g in present if not g.is_empty]
     if not present:
         return None
     slabs = [b.polygon for b in bridges
