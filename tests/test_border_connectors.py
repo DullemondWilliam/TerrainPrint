@@ -140,8 +140,3 @@ def test_repair_keeps_the_shape():
     assert _repair(_spiked_pair()).area == 200.0
     assert _safe_union([_spiked_pair()]).area == 200.0
 
-
-def test_the_stl_lib_reaches_in_too():
-    from shapely.validation import make_valid
-    from lib.LIB_border_stl import _polys
-    assert len(_polys(make_valid(_spiked_pair()))) == 2

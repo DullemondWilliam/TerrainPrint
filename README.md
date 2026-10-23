@@ -34,7 +34,7 @@ flowchart TD
     SB --> CLEANGJ["Cleaned per-province GeoJSON"]
 
     subgraph route1["Route A — boundary slab STL (in-repo)"]
-        EXT["Extrude 2D polygon → slab<br/>LIB_border_stl<br/>scale + slab height"]
+        EXT["Extrude 2D polygon → slab<br/>LIB_border_connectors<br/>scale + slab height"]
         STL1["Boundary STL<br/>(flat extruded outline)"]
     end
     CLEANGJ --> EXT --> STL1
@@ -68,8 +68,6 @@ flowchart TD
 ├── harnesses/                         # One throwaway visual harness per lib (UI_*.py)
 ├── docs/USING_DEMTO3D.md              # DEM -> STL is now done in QGIS (DEMto3D plugin)
 ├── lib/                               # Library modules (imported as lib.LIB_*)
-│   ├── LIB_border_ledger.py           # Find shared borders; record which are cleaned
-│   ├── LIB_seam_fit.py                # Where printed pieces will not mesh; push or solve
 │   ├── LIB_border_bar.py              # The border bar in planned pieces: splits, build, colours
 │   ├── LIB_border_connectors.py       # Border lobes / solid extrusion / province notching
 │   ├── LIB_border_plan.py             # The Borders stage as data: settings, Define, Save / Load
@@ -77,10 +75,7 @@ flowchart TD
 │   ├── LIB_border_simplification.py   # Topology-aware border simplification
 │   ├── LIB_border_split.py            # Bed fit at any turn; auto-split a border STL to the bed
 │   ├── LIB_connector_rules.py         # The rules a connector is held to; moving one
-│   ├── LIB_border_stl.py              # Extrude a border region to a slab STL
-│   ├── LIB_butterfly_keys.py          # Bowtie keys joining two province STLs from the back
 │   ├── LIB_print_all.py               # Every province and the border bar to STL in one run
-│   ├── LIB_province_joins.py          # Bowtie keys across every border of a map
 │   ├── LIB_raster_plan.py             # Plan a crop: its path, its grid, the finest buildable res
 │   ├── LIB_island_merging.py          # Merge two islands with a connecting neck of land
 │   ├── LIB_island_removal.py          # Small-island detection and removal
@@ -185,45 +180,6 @@ py -3 UI_clip_geotiff.py dem.tif geojson/name_Ontario-fixed.geojson output/Ontar
 py -3 UI_clip_geotiff.py dem.tif dummy.geojson dummy.tif --info   # inspect metadata only
 ```
 
----
-
-### 5. Province Joins harness (`harnesses/UI_province_joins.py`)
-
-Joins every province to its neighbours with butterfly (bowtie) keys pressed
-into slots in the back of the printed pieces, and writes the slotted STLs and
-the keys to print.
-
-```powershell
-py -3 harnesses/UI_province_joins.py
-```
-
-**Inputs:** *Provinces …* is the folder of bordered province
-GeoJSONs (`Data/JSonProvinces-Bordered`); *STLs …* is the terrain STLs cut from those
-same files, each with its `.frame.json` (`Data/STL`). Files pair by name,
-ignoring `_simplified` / `_trimmed` / `_keyed`. *Load* finds every border.
-Pieces built under other terrain settings, and files that do not pair, are
-listed under the borders.
-
-**Key (print-mm):** *Neck*, *Mouth*, *Reach*, *Depth*, *Clearance*, *Spacing*
-and *Spares* set one key size for the whole map, so any key fits any slot.
-They are saved as you turn them (`keys.*`; *Depth* is `print.dovetail_mm`) and
-every key is re-checked at once. A key whose neck is not narrower than its
-mouth, or a slot as deep as the terrain base, blocks cutting.
-
-**Placing:** pick a border in the list or click near its seam. *Auto Place*
-spaces keys along it (*Auto Place All* along every border); click the seam to
-add a key, click a key to remove it, drag a key along the seam. *Undo* / *Redo*
-(Ctrl+Z / Ctrl+Y). Borders are grey with no keys, green when every key passes,
-amber when some are refused (off the land, into a third province, colliding
-with a key on another border, or on land the fit check calls too thin), and
-red when an STL on that border was cut from a province that has changed since:
-rebuild it in the terrain editor.
-
-**Cut and Save All** writes into the save folder (`Data/STL-Keyed`):
-`<province>_keyed.stl` with its frame, `butterfly_keys_01.stl` … (every key
-plus the spares, on bed-sized plates), and `join_plan.json`, which reopens the
-keys on the next load. *3D* shows the selected border's two pieces cropped
-round the seam with the keys in their slots, seen from below, or a key plate.
 
 ## Settings
 
@@ -235,7 +191,7 @@ Settings live in two files, merged, local winning:
 
 **The libraries never read these files themselves.** Each takes its settings
 through its API as a structure (`ThinParams`, `StressParams`, `SeamParams`,
-`BridgeParams`, `FitParams`, …) whose defaults are the shipped values, so a
+`BridgeParams`, …) whose defaults are the shipped values, so a
 library behaves the same everywhere. Each library also has a
 `load_*_params(*config_files, **overrides)` that fills its structure from
 config files, later files winning:

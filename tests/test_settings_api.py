@@ -26,9 +26,7 @@ import pytest
 from lib import LIB_project_config as config
 from lib.LIB_border_connectors import ConnectorParams, load_connector_params
 from lib.LIB_border_split import BedParams, load_bed_params
-from lib.LIB_butterfly_keys import KeyParams, load_key_params
 from lib.LIB_island_bridges import BridgeParams, load_bridge_params
-from lib.LIB_seam_fit import FitParams, load_fit_params
 from lib.LIB_shape_scores import ScoreParams, load_score_params
 from lib.LIB_shared_border import SeamParams, load_seam_params
 from lib.LIB_stress_points import StressParams, load_stress_params
@@ -37,9 +35,7 @@ from lib.LIB_thin_features import ThinParams, load_thin_params
 
 import lib.LIB_border_connectors as connectors
 import lib.LIB_border_split as split
-import lib.LIB_butterfly_keys as keys
 import lib.LIB_island_bridges as bridges
-import lib.LIB_seam_fit as seam_fit
 import lib.LIB_shape_scores as scores
 import lib.LIB_shared_border as shared
 import lib.LIB_stress_points as stress
@@ -60,12 +56,8 @@ LIBRARIES = [
                  id="stress"),
     pytest.param(ConnectorParams, load_connector_params,
                  connectors._CONNECTORPARAMS_KEYS, id="connectors"),
-    pytest.param(KeyParams, load_key_params, keys._KEYPARAMS_KEYS,
-                 id="butterfly-keys"),
     pytest.param(TerrainParams, load_terrain_params,
                  terrain._TERRAINPARAMS_KEYS, id="terrain"),
-    pytest.param(FitParams, load_fit_params, seam_fit._FITPARAMS_KEYS,
-                 id="seam-fit"),
     pytest.param(BedParams, load_bed_params, split._BEDPARAMS_KEYS, id="bed"),
 ]
 
@@ -198,8 +190,7 @@ class TestNoLibraryReadsTheConfigItself:
     the file-reading ``get`` at import or in a default."""
 
     @pytest.mark.parametrize("module", [thin, bridges, shared, scores, stress,
-                                        connectors, keys, terrain, seam_fit,
-                                        split])
+                                        connectors, terrain, split])
     def test_no_bare_config_reads(self, module):
         import inspect
         source = inspect.getsource(module)
