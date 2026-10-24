@@ -40,7 +40,7 @@ before.
 
 Usage
 -----
-    python screen_ruler.py
+    python ScreenRuler.py
 
 Controls in calibration mode:
     Left/Right arrows, or +/- : nudge scale

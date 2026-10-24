@@ -88,8 +88,7 @@ CRS stays the same.
 
 Run with:  python UI_terrain_editor.py
 
-Like the other UI_* harnesses this stays independent of the main ``app`` window
-so the libs can be pointed at any DEM/GeoJSON pair without setting up a project.
+See ``docs/USAGE_GUIDE.md`` for the workflow it is part of.
 
 Why the projection matters
 --------------------------

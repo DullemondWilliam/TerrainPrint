@@ -145,8 +145,8 @@ Reuses ``lib.LIB_shape_scores``, ``lib.LIB_thin_features``,
 ``lib.LIB_island_merging``,
 ``lib.LIB_island_bridges``,
 ``lib.LIB_island_bridging``, ``lib.LIB_island_erasing``,
-``lib.LIB_island_removal`` and ``lib.LIB_lake_removal``; kept independent of the
-main ``app`` window like the other UI_* harnesses.
+``lib.LIB_island_removal`` and ``lib.LIB_lake_removal``.  See
+``docs/USAGE_GUIDE.md`` for the workflow it is part of.
 """
 
 import logging

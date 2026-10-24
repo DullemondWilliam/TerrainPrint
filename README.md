@@ -89,6 +89,9 @@ flowchart TD
 └── README.md                          # This file
 ```
 
+**New here? Start with the [Usage Guide](docs/USAGE_GUIDE.md)**: the whole
+workflow from province files to printable STLs, step by step.
+
 ## Installation
 
 ```powershell
