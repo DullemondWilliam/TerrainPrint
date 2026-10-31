@@ -106,7 +106,7 @@ cut the slab down to the actual coastline, run the trim lib on the exported STL
 with the same province GeoJSON the DEM was clipped by:
 
 ```powershell
-py -3 lib/LIB_terrain_trim.py print/pei_slab.stl `
+.\.venv\Scripts\python.exe -m lib.LIB_terrain_trim print/pei_slab.stl `
     "borders/w0.10_c0.05_i0.05/name_Prince_Edward_Island.geojson" -o print/pei_trimmed.stl
 ```
 

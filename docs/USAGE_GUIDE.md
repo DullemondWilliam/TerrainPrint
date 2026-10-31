@@ -19,9 +19,12 @@ given in printed millimetres.
 
 ## 1. Setup
 
+You need Python 3.10: the pinned requirements are not tested on anything newer.
+`py -0` lists the versions you have installed.
+
 ```powershell
-py -3 -m venv .venv
-.\.venv\Scripts\pip install -r requirements.txt
+py -3.10 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
 Check that everything works by running the test suite. Run it with pytest;
