@@ -154,9 +154,9 @@ Data/*
 !Data/JSon-Provinces-Orig/
 unused/
 
-# Claude Code: the shared project settings are tracked, the per-machine ones
-# (paths, one-off tool approvals) are not.
-.claude/settings.local.json
+# Claude Code: none of it is tracked. Settings here are paths and tool approvals,
+# and approvals in a public repo would apply to everyone who clones it.
+.claude/
 
 # Per-machine half of the project config: the screen calibration, and anything
 # else true of one desk rather than of the project. Measured against particular

@@ -27,7 +27,7 @@ other -- and losing it is what prompted the fixture.
 rather than somewhere else on a 371 mm² coast.
 
 **It is sound, and it is on the map anyway.** Its severity is about a quarter,
-well under the 1.0 anchor. ``UI_province_viewer``'s stress layer used to default
+well under the 1.0 anchor. The old province viewer's stress layer used to default
 to drawing only necks at 1.0 and worse, which hid this one completely -- found
 every single time, never drawn, and so indistinguishable from a measurement
 failure. The floor now starts at zero and is shared with the harness, and

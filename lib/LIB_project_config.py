@@ -22,9 +22,6 @@ Two files, merged, local winning
     principally the screen calibration, which is measured against particular
     monitors and is not merely useless on someone else's but wrong.
 
-This mirrors the split the repository already uses for ``.claude/settings.json``
-and ``.claude/settings.local.json``.
-
 Nothing here is required to exist.  Every value has a built-in default, so a
 missing, unreadable or half-written config costs you the customisation and not
 the program.

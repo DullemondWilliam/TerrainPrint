@@ -57,6 +57,8 @@ still possible as an alternative; see [USING_DEMTO3D.md](docs/USING_DEMTO3D.md).
 
 ## Installation
 
+The project is developed and tested on Python 3.10.
+
 ```powershell
 py -3 -m venv .venv
 .\.venv\Scripts\pip install -r requirements.txt
@@ -221,6 +223,11 @@ are not installed in the venv you are running.
 
 - Province boundaries: [SimpleMaps](https://simplemaps.com)
 - Natural Earth data: [Natural Earth](https://www.naturalearthdata.com)
+
+## License
+
+The code is under the [MIT License](LICENSE). That license does not cover the
+files in `Data/`: they remain under their providers' terms.
 
 ---
 
