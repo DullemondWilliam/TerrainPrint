@@ -13,7 +13,7 @@ project uses EPSG:3347).
 
 import logging
 
-from shapely import make_valid
+from shapely import STRtree, make_valid
 from shapely.geometry import MultiPolygon, Polygon
 from shapely.ops import unary_union
 
@@ -134,9 +134,10 @@ def merge_islands(islands, buffer_km: float):
         # span two or more islands — that discards each island's own filled bays,
         # so only the connecting necks are added and the coastlines stay intact.
         closed = originals.buffer(buffer_m).buffer(-buffer_m)
+        island_tree = STRtree(present)
         necks = [p.buffer(weld_m)
                  for p in _polygons(closed.difference(originals))
-                 if sum(p.intersects(isl) for isl in present) >= 2]
+                 if len(island_tree.query(p, predicate="intersects")) >= 2]
         merged = unary_union([*present, *necks])
 
         # Bridging can enclose straits between islands into holes; fill those,

@@ -21,6 +21,7 @@ stops working, this suite starts rewriting the config of whoever ran it.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -46,12 +47,12 @@ def saved(key):
 class TestTheSandboxIsInPlace:
     """The guard that lets every other test here turn a box."""
 
-    def test_the_fixed_config_is_a_copy(self, _fixed_config):
+    def test_the_fixed_config_is_a_copy(self, _fixed_config, tmp_path):
         assert config.LOCAL_CONFIG_PATH == str(_fixed_config)
-        assert "Temp" in config.LOCAL_CONFIG_PATH or "tmp" in config.LOCAL_CONFIG_PATH
+        assert Path(config.LOCAL_CONFIG_PATH).parent == tmp_path
 
-    def test_the_project_file_is_a_fixed_copy_too(self):
-        assert "Temp" in config.CONFIG_PATH or "tmp" in config.CONFIG_PATH
+    def test_the_project_file_is_a_fixed_copy_too(self, tmp_path):
+        assert Path(config.CONFIG_PATH).parent == tmp_path
 
     def test_the_settings_are_the_shipped_ones(self):
         """Fixed, whatever this desk has saved: the suite's answer must not

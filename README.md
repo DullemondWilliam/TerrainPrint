@@ -108,6 +108,9 @@ Use pytest, not `unittest`: the Qt UI tests need pytest-qt and `unittest`
 silently skips them. The tests use the shipped settings rather than whatever
 this computer has saved; see `tests/conftest.py`.
 
+For measured performance changes, reproducible benchmarks and deferred
+findings, see [Performance](docs/PERFORMANCE.md).
+
 ## Data Sources
 
 - Province boundaries: [SimpleMaps](https://simplemaps.com)

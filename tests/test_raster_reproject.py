@@ -167,6 +167,12 @@ class TestGrid:
 
 class TestBoundsFor:
 
+    def test_all_features_contribute_to_buffered_bounds(self):
+        frame = gpd.GeoDataFrame(geometry=[box(10, 20, 30, 40), None,
+                                           box(25, 35, 50, 60), box(70, 5, 80, 15),
+                                           box(0, 0, 0, 0).buffer(0)], crs=SRC_CRS)
+        assert bounds_for(frame, SRC_CRS, buffer_m=2) == pytest.approx((8, 3, 82, 62))
+
     def test_bounds_come_back_in_the_destination_crs(self, tmp_path):
         geom = box(*_src_bounds())
         frame = gpd.GeoDataFrame(geometry=[geom], crs=SRC_CRS)
@@ -420,6 +426,32 @@ class TestDownsample:
 class TestStreaming:
     """Row-banded output must be identical to a single-shot warp."""
 
+    @pytest.mark.parametrize("cache_mb", [0, 16])
+    @pytest.mark.parametrize("disjoint", [False, True])
+    def test_cache_uses_megabytes_and_restores_previous_limit(
+            self, tmp_path, monkeypatch, cache_mb, disjoint):
+        from rasterio.env import get_gdal_config
+
+        src = _write_raster(tmp_path)
+        bounds = (0, 0, 1, 1) if disjoint else None
+        params = ReprojectParams(dst_res_m=RES, bounds=bounds, gdal_cache_mb=cache_mb)
+        original_open = rasterio.open
+        limits = []
+
+        def observe_open(*args, **kwargs):
+            limits.append(get_gdal_config("GDAL_CACHEMAX"))
+            return original_open(*args, **kwargs)
+
+        monkeypatch.setattr(rasterio, "open", observe_open)
+        with rasterio.Env(GDAL_CACHEMAX=32 << 20):
+            if disjoint:
+                with pytest.raises(ValueError, match="do not overlap"):
+                    reproject_geotiff(src, DST_CRS, params=params)
+            else:
+                reproject_geotiff(src, DST_CRS, params=params)
+            assert get_gdal_config("GDAL_CACHEMAX") == 32 << 20
+        assert limits == [(cache_mb or 32) << 20]
+
     def test_row_bands_produce_the_same_array(self, tmp_path):
         src = _write_raster(tmp_path, hole=(slice(50, 90), slice(60, 140)))
         params = dict(dst_res_m=RES)
@@ -443,11 +475,13 @@ class TestStreaming:
 
 class TestOutputFile:
 
-    def test_written_file_round_trips(self, tmp_path):
+    @pytest.mark.parametrize("band_bytes", [512, 64 << 20])
+    def test_written_file_round_trips(self, tmp_path, band_bytes):
         src = _write_raster(tmp_path)
         out = tmp_path / "warped.tif"
         result = reproject_geotiff(src, DST_CRS, out,
-                                   params=ReprojectParams(dst_res_m=RES),
+                                   params=ReprojectParams(dst_res_m=RES,
+                                                          band_bytes=band_bytes),
                                    keep_array=True)
         with rasterio.open(out) as ds:
             assert ds.transform == pytest.approx(result.transform)

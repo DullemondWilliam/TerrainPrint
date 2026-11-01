@@ -8,6 +8,8 @@ cut against volume conservation, footprint area, and watertightness.
 """
 
 import geopandas as gpd
+import manifold3d as m3d
+import numpy as np
 import pytest
 import trimesh
 from shapely.affinity import affine_transform
@@ -44,7 +46,16 @@ def _synthesize_demto3d(geom_m, mpm=PARAMS.mpm, base_mm=2.0, terrain_mm=6.0,
                          0.0, base_mm)
     terrain = extrude_solid(affine_transform(geom_m, matrix),
                             base_mm - 0.01, base_mm + terrain_mm)
-    return trimesh.boolean.union([base, terrain])
+    # The pinned trimesh version needs an external Blender/OpenSCAD install
+    # for booleans; manifold3d is already a required project dependency.
+    def solid(mesh):
+        return m3d.Manifold(m3d.Mesh(
+            vert_properties=np.asarray(mesh.vertices, dtype=np.float32),
+            tri_verts=np.asarray(mesh.faces, dtype=np.uint32)))
+
+    union = (solid(base) + solid(terrain)).to_mesh()
+    return trimesh.Trimesh(vertices=np.asarray(union.vert_properties)[:, :3],
+                           faces=np.asarray(union.tri_verts), process=False)
 
 
 class TestReconcile:

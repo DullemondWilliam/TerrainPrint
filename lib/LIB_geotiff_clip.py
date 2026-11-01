@@ -52,11 +52,11 @@ native resolution (12072x8737 -- 402 MB if read whole), ``band_bytes=64 MB``:
 32                   256 MB             7.0 s
 ===================  =================  ======
 
-So ``gdal_cache_mb`` is the lever that actually moves the number, at about a
-second of re-reads; the clipped pixels come out identical either way.  Below
-~512 MB the peak stops falling because ``band_bytes`` and the rasterised
-boundary become the floor.  It is left unset by default: clamping a
-process-wide GDAL setting is the caller's decision, not a library's.
+These historical measurements predate the cache-unit fix: 512 and 32 were
+passed to Rasterio as bytes, not megabytes.  They do not establish a 512 MB
+memory floor and need remeasurement with the corrected conversion.
+``gdal_cache_mb`` now sets the cache in MiB (1024**2 bytes per unit); zero leaves
+GDAL's existing limit alone.  The previous limit is restored after the call.
 
 Resolution is a real choice, not an optimisation
 ------------------------------------------------
@@ -175,7 +175,8 @@ def clip_geotiff(raster, geojson, out_path=None, params=None, keep_array=False):
     params = params or ClipParams()
     # A cache cap has to be in force for rasterio.open too, not just the reads:
     # GDAL sizes decisions off the cache from the moment the dataset is opened.
-    env = rasterio.Env(GDAL_CACHEMAX=params.gdal_cache_mb)         if params.gdal_cache_mb else _nullcontext()
+    env = rasterio.Env(GDAL_CACHEMAX=params.gdal_cache_mb * (1 << 20)) \
+        if params.gdal_cache_mb else _nullcontext()
     with env, rasterio.open(str(raster)) as ds:
         geom = _load_union_crs(geojson, ds.crs, params.buffer_m)
         if geom is None or geom.is_empty:
@@ -198,11 +199,13 @@ def clip_geotiff(raster, geojson, out_path=None, params=None, keep_array=False):
         profile = dict(ds.profile, driver="GTiff", height=grid.height,
                        width=grid.width, count=1, dtype=dtype,
                        transform=grid.transform, nodata=nodata, **_CREATION)
-        sink = rasterio.open(str(out_path), "w", **profile) if out_path else None
         keep = keep_array or out_path is None
-        rows = [] if keep else None
+        bands = _row_bands(grid, dtype, params.band_bytes)
+        if keep and len(bands) > 1:
+            result.data = np.empty((grid.height, grid.width), dtype=dtype)
+        sink = rasterio.open(str(out_path), "w", **profile) if out_path else None
         try:
-            for row0, row1 in _row_bands(grid, dtype, params.band_bytes):
+            for row0, row1 in bands:
                 arr = _read_band(ds, window, grid, row0, row1, params, dtype)
                 mask = geometry_mask(
                     [geom], out_shape=arr.shape,
@@ -214,12 +217,13 @@ def clip_geotiff(raster, geojson, out_path=None, params=None, keep_array=False):
                     sink.write(arr, 1, window=windows.Window(
                         0, row0, grid.width, row1 - row0))
                 if keep:
-                    rows.append(arr)
+                    if result.data is None:
+                        result.data = arr
+                    else:
+                        result.data[row0:row1] = arr
         finally:
             if sink is not None:
                 sink.close()
-        if keep:
-            result.data = np.vstack(rows) if len(rows) > 1 else rows[0]
 
     log.info("Clipped %s: %dx%d @ %.0f m, %.1f%% covered, %s..%s m.",
              Path(str(raster)).name, result.width, result.height, result.res[0],
@@ -378,8 +382,9 @@ def _accumulate(result, arr, nodata):
     if not count:
         return
     result.valid_pixels += count
-    lo = float(arr[valid].min())
-    hi = float(arr[valid].max())
+    values = arr[valid]
+    lo = float(values.min())
+    hi = float(values.max())
     result.zmin = lo if result.zmin is None else min(result.zmin, lo)
     result.zmax = hi if result.zmax is None else max(result.zmax, hi)
 

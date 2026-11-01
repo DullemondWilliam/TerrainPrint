@@ -618,12 +618,10 @@ def _summarise_tile(land, level, lobes, box, shape, nbands, pixel_mm):
     prev = np.zeros((h, w), np.int32)
     prev_lineage = np.zeros(1, np.int64)
 
-    # Only steps a narrow pixel can appear at: nbands is the thick land.
-    for step in range(nbands - 1, 0, -1):
+    # Empty bands change neither connectivity nor mass. Only relabel when a
+    # narrow pixel appears; nbands itself is the thick land.
+    for step in np.unique(lv[narrow])[::-1].tolist():
         mask = narrow & (lv >= step)
-        if not mask.any():
-            prev, prev_lineage = np.zeros((h, w), np.int32), np.zeros(1, np.int64)
-            continue
         lab, n = ndimage.label(mask, structure=STRUCT)
         new = mask & (prev == 0)
 
@@ -1635,14 +1633,15 @@ def severity_field(report: StressReport, grid: StressGrid = None):
     if grid is None:
         return None, None
     out = np.zeros(grid.shape, np.float32)
-    for neck in report.necks:
-        if neck.region is None or neck.region.is_empty:
-            continue
-        mask = rasterio.features.rasterize(
-            [(neck.region, 1)], out_shape=grid.shape, transform=grid.transform,
-            fill=0, dtype="uint8").astype(bool)
-        np.maximum(out, np.where(mask, neck.severity, 0.0).astype(np.float32),
-                   out=out)
+    shapes = [(neck.region, np.float32(np.maximum(neck.severity, 0.0)))
+              for neck in report.necks
+              if neck.region is not None and not neck.region.is_empty]
+    # Rasterize once, worst last, so overlaps take the maximum without a
+    # province-sized mask and temporary float array for every neck. NaNs, like
+    # np.maximum, propagate wherever their region is painted.
+    shapes.sort(key=lambda item: (math.isnan(item[1]), item[1]))
+    if shapes:
+        rasterio.features.rasterize(shapes, out=out, transform=grid.transform)
     return out, grid.transform
 
 
