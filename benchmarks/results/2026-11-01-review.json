@@ -47,8 +47,8 @@
   ],
   "interactive_application_check": {
     "status": "incomplete",
-    "observed": "Launched the Island Editor as a live desktop process, read its accessibility controls and reached the Import province GeoJSON dialog.",
-    "blocker": "Desktop capture timed out and input/control addressing was unreliable. No successful province import or terrain-editor walkthrough is claimed.",
+    "observed": "Launched the Island Editor as a live desktop process, read its accessibility controls and reached the Import province GeoJSON dialog. The user confirmed that the window was visible and responsive on their desktop.",
+    "blocker": "Both desktop control interfaces timed out on window capture and could not address the filename field reliably. The user's responsiveness confirmation does not establish a completed workflow. No successful province import or terrain-editor walkthrough is claimed.",
     "not_verified": [
       "Map rendering",
       "3D preview rendering",

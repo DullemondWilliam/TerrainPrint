@@ -120,8 +120,9 @@ made from their success. Review evidence is summarized in
 [`2026-11-01-review.json`](../benchmarks/results/2026-11-01-review.json).
 
 A live Island Editor process was also launched and its import dialog reached
-through desktop controls. That walkthrough did not complete: desktop capture
-timed out and input/control addressing was unreliable. Province import, map
+through desktop controls. The user confirmed that the window was visible and
+responsive. That walkthrough did not complete: both desktop control interfaces
+timed out on capture and could not address the filename field reliably. Province import, map
 rendering and the terrain editor's 3D preview were not visually verified.
 
 Create an untouched baseline checkout at the revision above, then run from
