@@ -82,13 +82,15 @@ shipped province boundaries in EPSG:3347. Mesh benchmarks isolate slab
 construction, excluding clipping, booleans, simplification and STL writing.
 No whole-pipeline speedup is claimed.
 
-All **1,979 unique tests were verified** through a full run and targeted
-reruns. The initial full run had 1,967 passes and 12 failures: two temporary
+On November 1, a fresh complete run passed **all 1,979 tests in 224.94 seconds**
+with `QT_QPA_PLATFORM=offscreen` and `MPLBACKEND=Agg`. This includes the Qt
+editor tests and the repaired test fixtures.
+
+The earlier October 31 run had 1,967 passes and 12 failures: two temporary
 directory assertions and ten tests blocked by the fixture's Boolean backend.
 After the test-harness repairs below, both affected files passed all 51 tests
-in 4.54 seconds. There are no remaining failures from that run. The full suite
-was not rerun after these test-only repairs; its original log and the targeted
-rerun log are retained as evidence.
+in 4.54 seconds. That historical run and its targeted rerun are retained;
+the November 1 full run closes the previously documented verification gap.
 
 Focused suites also passed: 62 mesh tests, 83 geometry/stress tests and 94
 initial raster tests. Dependency consistency (`pip check`), benchmark syntax
@@ -101,6 +103,26 @@ use the project's required Manifold library directly instead of a trimesh
 Boolean backend requiring an additional Blender/OpenSCAD installation. The ten
 trim failures were reproduced on the untouched baseline before this repair.
 Both fixes change only test setup/assertions, not production behavior.
+
+Independent review of commit `93aa314` found no actionable introduced
+correctness defect. Additional baseline comparisons covered 396 mesh cases,
+324 raster pairs, 30 bounds cases, 12 cache-restoration checks, 1,000 stress
+tile summaries, 300 severity fields and 200 island merges. Of the merges,
+197 matched exactly; in three valid-input cases the baseline caught a GEOS
+`TopologyException` and returned an unbridged union, while the new index
+completed and produced valid bridges retaining all original land. These
+are additional robustness observations, not general guarantees of geometry
+equivalence for previously failing baseline inputs.
+
+The two pre-existing accuracy findings below remain unresolved. Automated Qt
+tests are not an interactive visual walkthrough, and no visual-QA claim is
+made from their success. Review evidence is summarized in
+[`2026-11-01-review.json`](../benchmarks/results/2026-11-01-review.json).
+
+A live Island Editor process was also launched and its import dialog reached
+through desktop controls. That walkthrough did not complete: desktop capture
+timed out and input/control addressing was unreliable. Province import, map
+rendering and the terrain editor's 3D preview were not visually verified.
 
 Create an untouched baseline checkout at the revision above, then run from
 the optimized checkout with the installed Python 3.10 environment:
