@@ -91,6 +91,21 @@ class TestSlab:
         assert res.triangles == _triangle_count(COLS, ROWS)
         assert res.triangles == 920
 
+    @pytest.mark.parametrize("rows,cols", [(2, 2), (2, 17), (19, 2), (13, 23)])
+    def test_narrow_and_rectangular_grids_close_with_the_expected_volume(
+            self, tmp_path, rows, cols):
+        # A plane rising along both axes has a known mean height. Narrow grids
+        # also exercise the wall seams where just one cell spans the surface.
+        data = (50.0 * np.arange(rows)[:, None]
+                + 100.0 * np.arange(cols)[None, :]).astype("float32")
+        res = terrain_to_stl(_write_dem(tmp_path, data=data), params=_params())
+        area = (rows - 1) * (cols - 1)       # each pixel step is one print-mm
+        mean_height = BASE + float(data.mean()) * EXAG / MPM
+        assert res.mesh.is_volume
+        assert res.triangles == _triangle_count(cols, rows)
+        assert res.volume_mm3 == pytest.approx(area * mean_height)
+        assert res.extent_mm[:2] == pytest.approx((cols - 1, rows - 1))
+
     def test_footprint_is_one_pixel_short_of_the_raster(self, tmp_path):
         """Vertices are pixel centres, so the solid is a pixel narrower."""
         res = terrain_to_stl(_write_dem(tmp_path), params=_params())

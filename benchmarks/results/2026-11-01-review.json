@@ -1,0 +1,65 @@
+{
+  "review_date": "2026-11-01",
+  "reviewed_commit": "93aa314d1b121681506bd5a3998b0a9f1861313b",
+  "baseline_commit": "f501cb40afde40f73c61b1bbb0953fed684e9e71",
+  "pull_request": "https://github.com/DullemondWilliam/TerrainPrint/pull/1",
+  "conclusion": "No actionable introduced correctness defects found in the reviewed changes; this does not establish perfection.",
+  "full_suite": {
+    "passed": 1979,
+    "failed": 0,
+    "seconds": 224.94,
+    "python": "3.10.1",
+    "qt_platform": "offscreen",
+    "matplotlib_backend": "Agg"
+  },
+  "independent_checks": {
+    "mesh_cases": 396,
+    "raster_pairs": 324,
+    "bounds_cases": 30,
+    "cache_restoration_checks": 12,
+    "stress_tile_summaries": 1000,
+    "severity_fields": 300,
+    "island_merges": 200,
+    "island_merges_exact": 197
+  },
+  "additional_observation": {
+    "cases": [
+      93,
+      103,
+      143
+    ],
+    "claim": "For three generated valid-input island cases, baseline scalar intersects throws GEOS TopologyException and falls back to a plain union; the indexed implementation produces valid bridged geometry retaining all original land.",
+    "scope": "Informational robustness observations, not a guarantee that every previously failing geometry is fixed.",
+    "provenance": "Independent differential review; reproductions retained with local review evidence."
+  },
+  "preserved_unresolved_findings": [
+    "Bilinear terrain sampler can disagree with the triangulated surface (documented 4.5 vs 2.0 mm example)",
+    "Pre-existing documented stress results can vary with tile size"
+  ],
+  "preserved_deferred_optimization_candidates": [
+    "Bed-fit convex-hull avoidance",
+    "Shared-border caching and pair pruning",
+    "Island editor path reuse",
+    "Island hit-test indexing",
+    "Border piece/parent indexing",
+    "Prepared corridor predicates",
+    "Stress graph reuse"
+  ],
+  "interactive_application_check": {
+    "status": "incomplete",
+    "observed": "Launched the Island Editor as a live desktop process, read its accessibility controls and reached the Import province GeoJSON dialog. The user confirmed that the window was visible and responsive on their desktop.",
+    "blocker": "Both desktop control interfaces timed out on window capture and could not address the filename field reliably. The user's responsiveness confirmation does not establish a completed workflow. No successful province import or terrain-editor walkthrough is claimed.",
+    "not_verified": [
+      "Map rendering",
+      "3D preview rendering",
+      "Interactive terrain-to-STL workflow"
+    ],
+    "automated_ui_tests": "The complete passing pytest run includes the Qt editor test suites."
+  },
+  "limits": [
+    "No national DEM or whole-pipeline runtime/RSS validation",
+    "Sequential/nested cache restoration checked; concurrent process-global cache scopes not tested",
+    "Automated Qt tests do not establish visual layout or hands-on interaction quality",
+    "Three reviewers and finite differential cases cannot guarantee absence of defects"
+  ]
+}

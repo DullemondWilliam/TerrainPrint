@@ -87,6 +87,24 @@ class TestMergeIslands(unittest.TestCase):
         for island in (a, b, c):
             self.assertTrue(result.contains(island.buffer(-1)))
 
+    def test_multipart_input_counts_as_one_island(self):
+        # Two parts in one input must not count as two distinct islands when
+        # deciding whether added land spans a pair of inputs.
+        a = box(0, 0, 1000, 1000)
+        b = box(1400, 0, 2400, 1000)
+        far = box(50000, 0, 51000, 1000)
+        result = merge_islands([MultiPolygon([a, b]), far], buffer_km=0.3)
+        self.assertTrue(result.equals(MultiPolygon([a, b, far])))
+
+    def test_many_separate_pairs_only_bridge_their_neighbours(self):
+        pairs = [(box(x, 0, x + 1000, 1000),
+                  box(x + 1400, 0, x + 2400, 1000))
+                 for x in range(0, 200000, 10000)]
+        result = merge_islands([island for pair in pairs for island in pair], 0.3)
+        expected = MultiPolygon([merge_islands(pair, 0.3) for pair in pairs])
+        self.assertEqual(_part_count(result), len(pairs))
+        self.assertTrue(result.equals(expected))
+
     # -- shape preservation (the point of this method) ----------------------
 
     def test_original_coastlines_are_preserved(self):

@@ -318,6 +318,32 @@ class TestStreaming:
 class TestMemoryLevers:
     """Bounding memory must not change a single clipped pixel."""
 
+    @pytest.mark.parametrize("cache_mb", [0, 16])
+    @pytest.mark.parametrize("disjoint", [False, True])
+    def test_cache_uses_megabytes_and_restores_previous_limit(
+            self, tmp_path, monkeypatch, cache_mb, disjoint):
+        from rasterio.env import get_gdal_config
+
+        dem = _write_dem(tmp_path)
+        geom = _metric_box(500, 500, 600, 600) if disjoint \
+            else _metric_wedge(50, 30, 150, 100)
+        original_open = rasterio.open
+        limits = []
+
+        def observe_open(*args, **kwargs):
+            limits.append(get_gdal_config("GDAL_CACHEMAX"))
+            return original_open(*args, **kwargs)
+
+        monkeypatch.setattr(rasterio, "open", observe_open)
+        with rasterio.Env(GDAL_CACHEMAX=32 << 20):
+            if disjoint:
+                with pytest.raises(ValueError, match="does not overlap"):
+                    clip_geotiff(dem, geom, params=ClipParams(gdal_cache_mb=cache_mb))
+            else:
+                clip_geotiff(dem, geom, params=ClipParams(gdal_cache_mb=cache_mb))
+            assert get_gdal_config("GDAL_CACHEMAX") == 32 << 20
+        assert limits == [(cache_mb or 32) << 20]
+
     def test_gdal_cache_cap_does_not_change_the_result(self, tmp_path):
         dem = _write_dem(tmp_path, hole=(slice(40, 60), slice(60, 120)))
         gj = _write_boundary(tmp_path, _metric_wedge(50, 30, 150, 100))
@@ -338,11 +364,13 @@ class TestMemoryLevers:
 
 class TestOutputFile:
 
-    def test_written_file_round_trips(self, tmp_path):
+    @pytest.mark.parametrize("band_bytes", [400, 64 << 20])
+    def test_written_file_round_trips(self, tmp_path, band_bytes):
         dem = _write_dem(tmp_path)
         gj = _write_boundary(tmp_path, _metric_box(50, 30, 150, 100))
         out = tmp_path / "clipped.tif"
-        res = clip_geotiff(dem, gj, out, keep_array=True)
+        res = clip_geotiff(dem, gj, out, params=ClipParams(band_bytes=band_bytes),
+                          keep_array=True)
 
         assert res.path == str(out)
         with rasterio.open(out) as ds:

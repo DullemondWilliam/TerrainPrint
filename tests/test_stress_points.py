@@ -45,10 +45,12 @@ from unittest import mock
 
 import numpy as np
 import shapely
+from affine import Affine
 from shapely.geometry import LineString, Polygon, box
 
-from lib.LIB_stress_points import (COMPACT_SLENDERNESS, StressGrid,
+from lib.LIB_stress_points import (COMPACT_SLENDERNESS, Neck, StressGrid,
                                    StressParams, StressReport, _needed_mm,
+                                   _summarise_tile,
                                    branch_mask, restress, severity_field,
                                    stress_points, width_field,
                                    load_stress_params)
@@ -295,6 +297,26 @@ class TestTheTilingIsNotInTheAnswer(StressTestCase):
                                    msg=f"tile {tile_px}")
 
 
+class TestTileSummary(unittest.TestCase):
+
+    def test_sparse_width_bands_keep_join_width_and_arriving_mass(self):
+        # Two six-pixel sides meet through a three-pixel throat. The empty
+        # bands between 9, 6 and 1 must add neither mass nor extra joins.
+        levels = np.tile([9, 9, 1, 6, 6], (3, 1)).astype(np.uint16)
+        land = np.ones(levels.shape, dtype=bool)
+        summary = _summarise_tile(
+            land, levels, np.zeros(levels.shape, np.int32),
+            (slice(0, 3), slice(0, 5)), levels.shape, 12, 1.0)
+        expected = np.zeros((2, 13))
+        expected[0, 9] = 6
+        expected[1, 6] = 6
+        expected[0, 1] = 3
+        np.testing.assert_array_equal(summary.profile, expected)
+        np.testing.assert_array_equal(summary.reps, [0, 3])
+        self.assertEqual(summary.edges, [(0, 1, 1, 2)])
+        self.assertEqual(summary.lobe_edges, [])
+
+
 class TestTheSettingsAreShared(StressTestCase):
     """Saved settings reach a block through ``load_stress_params``, and only
     through it.
@@ -463,6 +485,32 @@ class TestTheMarks(StressTestCase):
 
 
 class TestTheOverlayLayers(StressTestCase):
+
+    def test_overlapping_regions_keep_the_worst_severity_in_any_order(self):
+        grid = StressGrid(transform=Affine(1, 0, 0, 0, -1, 8), shape=(8, 8),
+                          land=None, level=None, pixel_mm=1, ceiling_mm=3,
+                          band_mm=0.025, tile_px=128)
+        necks = [Neck(None, None, region=box(1, 1, 5, 5), severity=3.25),
+                 Neck(None, None, region=box(3, 3, 7, 7), severity=1.5),
+                 Neck(None, None, region=box(-1, 0, 2, 2), severity=-1),
+                 Neck(None, None, region=Polygon(), severity=10),
+                 Neck(None, None, region=None, severity=10)]
+        expected = np.zeros((8, 8), dtype=np.float32)
+        expected[1:5, 3:7] = 1.5
+        expected[3:7, 1:5] = 3.25
+        for order in (necks, list(reversed(necks))):
+            field, transform = severity_field(StressReport(necks=order, grid=grid))
+            np.testing.assert_array_equal(field, expected)
+            self.assertEqual(field.dtype, np.float32)
+            self.assertEqual(transform, grid.transform)
+
+    def test_a_report_without_regions_returns_a_zero_field(self):
+        grid = StressGrid(transform=Affine.identity(), shape=(4, 5), land=None,
+                          level=None, pixel_mm=1, ceiling_mm=3, band_mm=0.025,
+                          tile_px=128)
+        for necks in ([], [Neck(None, None), Neck(None, None, region=Polygon())]):
+            field, _ = severity_field(StressReport(necks=necks, grid=grid))
+            np.testing.assert_array_equal(field, np.zeros((4, 5), np.float32))
 
     def test_the_severity_field_is_zero_except_at_the_necks(self):
         report = stress_points(self.dumbbell(0.25))

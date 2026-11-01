@@ -131,10 +131,15 @@ Measured on the native Labrador clip above (402 MB if read whole),
 | `512` | 256 MB | 7.0 s |
 | `32` | 256 MB | 7.0 s |
 
-The clipped pixels are identical in all three. Below ~512 MB the peak stops
-falling, because `band_bytes` and the rasterised boundary become the floor. The
-cap is off by default — clamping a process-wide GDAL setting is the caller's
-call, not a library's.
+These historical measurements predate the cache-unit fix: the values `512`
+and `32` were passed to Rasterio as **bytes**, not megabytes. The timings are
+preserved here as historical evidence; they do not establish a 512 MB memory
+floor. Rerun the native DEM benchmark before comparing corrected cache limits.
+
+`gdal_cache_mb` now sets the cache in MiB (1,048,576 bytes per unit). Zero keeps
+the existing GDAL limit, and the previous limit is restored after each call,
+including failures. When an array is requested, banded reads fill one output
+array directly, avoiding a second full-size array during concatenation.
 
 ## Tests
 

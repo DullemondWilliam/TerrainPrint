@@ -438,8 +438,6 @@ def _build_slab(elev, transform, nodata, params, result):
     mpm = params.mpm
     xs = (xs_m - result.origin_m[0]) / mpm
     ys = (ys_m - result.origin_m[1]) / mpm
-    grid_x, grid_y = np.meshgrid(xs, ys)
-
     valid = np.ones(elev.shape, dtype=bool) if nodata is None else (elev != nodata)
     valid &= ~np.isnan(elev)
     if valid.any():
@@ -447,12 +445,18 @@ def _build_slab(elev, transform, nodata, params, result):
         result.zmax_m = float(elev[valid].max())
 
     height = _surface_mm(elev, valid, params)
-    n = grid_x.size
-    top = np.column_stack([grid_x.ravel(), grid_y.ravel(), height.ravel()])
-    base = np.column_stack([grid_x.ravel(), grid_y.ravel(), np.zeros(n)])
-    vertices = np.vstack([top, base])
+    n = rows * cols
+    # Fill the final array directly: full X/Y grids and separate top/base
+    # copies otherwise stay alive alongside a mesh with millions of vertices.
+    vertices = np.empty((2 * n, 3), dtype=np.float64)
+    top = vertices[:n].reshape(rows, cols, 3)
+    top[:, :, 0] = xs
+    top[:, :, 1] = ys[:, None]
+    top[:, :, 2] = height
+    vertices[n:, :2] = vertices[:n, :2]
+    vertices[n:, 2] = 0.0
 
-    faces = np.vstack(_faces(cols, rows, n))
+    faces = _faces(cols, rows, n)
     return trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
 
 
@@ -518,31 +522,39 @@ def surface_sampler(raster, params=None):
 
 def _faces(cols, rows, n):
     """
-    Index arrays for the closed shell.
+    Index array for the closed shell.
 
     Winding is chosen so every normal points outward; the orders below are what
     produce a positive volume, which the watertight gate then checks rather than
     trusting.  ``n`` offsets into the base copy of the vertex grid.
     """
-    def cell_corners(offset):
-        top_left = (np.arange(rows - 1)[:, None] * cols
-                    + np.arange(cols - 1)[None, :]).ravel() + offset
-        return top_left, top_left + 1, top_left + cols, top_left + cols + 1
-
-    a, b, c, d = cell_corners(0)                       # terrain surface
-    faces = [np.column_stack([a, c, b]), np.column_stack([b, c, d])]
-    a, b, c, d = cell_corners(n)                       # base, wound the other way
-    faces += [np.column_stack([a, b, c]), np.column_stack([b, d, c])]
+    # int64 is trimesh's index type; fill one array rather than retaining all
+    # four surface blocks while stacking another complete copy of the shell.
+    faces = np.empty((_triangle_count(cols, rows), 3), dtype=np.int64)
+    top_left = (np.arange(rows - 1, dtype=np.int64)[:, None] * cols
+                + np.arange(cols - 1)[None, :]).ravel()
+    cells = len(top_left)
+    offsets = ((0, cols, 1), (1, cols, cols + 1),       # terrain surface
+               (n, n + 1, n + cols),                  # base, reversed
+               (n + 1, n + cols + 1, n + cols))
+    for index, corners in enumerate(offsets):
+        block = faces[index * cells:(index + 1) * cells]
+        for axis, offset in enumerate(corners):
+            block[:, axis] = top_left + offset
+    cursor = 4 * cells
 
     def wall(ring):
+        nonlocal cursor
         i, j = ring[:-1], ring[1:]
-        return [np.column_stack([i, j, i + n]), np.column_stack([j, j + n, i + n])]
+        for corners in ((i, j, i + n), (j, j + n, i + n)):
+            faces[cursor:cursor + len(i)] = np.column_stack(corners)
+            cursor += len(i)
 
     # The four edges of the grid, traversed as one consistent loop.
-    faces += wall(np.arange(cols))                              # north
-    faces += wall(np.arange(cols - 1, rows * cols, cols))        # east
-    faces += wall(np.arange(rows * cols - 1, rows * cols - cols - 1, -1))   # south
-    faces += wall(np.arange((rows - 1) * cols, -1, -cols))       # west
+    wall(np.arange(cols))                                      # north
+    wall(np.arange(cols - 1, rows * cols, cols))                 # east
+    wall(np.arange(rows * cols - 1, rows * cols - cols - 1, -1))  # south
+    wall(np.arange((rows - 1) * cols, -1, -cols))                 # west
     return faces
 
 

@@ -98,8 +98,8 @@ from rasterio.crs import CRS
 from rasterio.enums import Resampling
 from rasterio.vrt import WarpedVRT
 from rasterio.warp import calculate_default_transform, transform_bounds
+from shapely import total_bounds
 from shapely.geometry.base import BaseGeometry
-from shapely.ops import unary_union
 
 log = logging.getLogger(__name__)
 
@@ -194,7 +194,7 @@ def reproject_geotiff(raster, dst_crs, out_path=None, params=None,
     """
     params = params or ReprojectParams()
     dst_crs = CRS.from_user_input(dst_crs)
-    env = rasterio.Env(GDAL_CACHEMAX=params.gdal_cache_mb) \
+    env = rasterio.Env(GDAL_CACHEMAX=params.gdal_cache_mb * (1 << 20)) \
         if params.gdal_cache_mb else _nullcontext()
 
     with env, rasterio.open(str(raster)) as src:
@@ -223,9 +223,11 @@ def reproject_geotiff(raster, dst_crs, out_path=None, params=None,
                        transform=grid.transform, width=grid.width,
                        height=grid.height, count=1, dtype=dtype,
                        nodata=nodata, **_CREATION)
-        sink = rasterio.open(str(out_path), "w", **profile) if out_path else None
         keep = keep_array or out_path is None
-        rows = [] if keep else None
+        bands = _row_bands(grid, dtype, params.band_bytes)
+        if keep and len(bands) > 1:
+            result.data = np.empty((grid.height, grid.width), dtype=dtype)
+        sink = rasterio.open(str(out_path), "w", **profile) if out_path else None
 
         # A WarpedVRT presents the whole warped raster as a virtual dataset, so
         # rows can be pulled from it a band at a time.  Nothing the size of the
@@ -237,7 +239,7 @@ def reproject_geotiff(raster, dst_crs, out_path=None, params=None,
             vrt_args["src_nodata"] = src_nodata
         try:
             with WarpedVRT(src, **vrt_args) as vrt:
-                for row0, row1 in _row_bands(grid, dtype, params.band_bytes):
+                for row0, row1 in bands:
                     window = windows.Window(0, row0, grid.width, row1 - row0)
                     arr = vrt.read(params.band, window=window)
                     arr = arr.astype(dtype, copy=False)
@@ -245,12 +247,13 @@ def reproject_geotiff(raster, dst_crs, out_path=None, params=None,
                     if sink is not None:
                         sink.write(arr, 1, window=window)
                     if keep:
-                        rows.append(arr)
+                        if result.data is None:
+                            result.data = arr
+                        else:
+                            result.data[row0:row1] = arr
         finally:
             if sink is not None:
                 sink.close()
-        if keep:
-            result.data = np.vstack(rows) if len(rows) > 1 else rows[0]
 
     log.info("Warped %s %s -> %s: %dx%d @ %.0f m, %.1f%% covered.",
              Path(str(raster)).name, result.src_crs, dst_crs, result.width,
@@ -333,7 +336,7 @@ def bounds_for(geojson, dst_crs, buffer_m=0.0):
     # too (it returns a Series of type names), so a duck-type check would take a
     # frame down this branch and silently skip its reprojection.
     if isinstance(geojson, BaseGeometry):
-        geom = geojson
+        left, bottom, right, top = geojson.bounds
     else:
         frame = geojson if isinstance(geojson, gpd.GeoDataFrame) \
             else gpd.read_file(str(geojson))
@@ -341,8 +344,7 @@ def bounds_for(geojson, dst_crs, buffer_m=0.0):
             raise ValueError(f"{geojson}: no features to take bounds from.")
         if frame.crs is not None and frame.crs != dst_crs:
             frame = frame.to_crs(dst_crs)
-        geom = unary_union(frame.geometry.values)
-    left, bottom, right, top = geom.bounds
+        left, bottom, right, top = total_bounds(frame.geometry.values)
     if buffer_m:
         left, bottom = left - buffer_m, bottom - buffer_m
         right, top = right + buffer_m, top + buffer_m
@@ -368,9 +370,12 @@ def _output_grid(src, dst_crs, params):
     # calculate_default_transform answers "what resolution does this source have,
     # expressed in the destination CRS?" -- the right default when the caller has
     # no opinion, since it preserves ground sampling across the projection change.
-    default_transform, _, _ = calculate_default_transform(
-        src.crs, dst_crs, src.width, src.height, *src.bounds)
-    res = params.dst_res_m if params.dst_res_m > 0 else abs(default_transform.a)
+    if params.dst_res_m > 0:
+        res = params.dst_res_m
+    else:
+        default_transform, _, _ = calculate_default_transform(
+            src.crs, dst_crs, src.width, src.height, *src.bounds)
+        res = abs(default_transform.a)
 
     if params.bounds is not None:
         left, bottom, right, top = params.bounds
@@ -429,8 +434,9 @@ def _accumulate(result, arr, nodata):
     if not count:
         return
     result.valid_pixels += count
-    lo = float(arr[valid].min())
-    hi = float(arr[valid].max())
+    values = arr[valid]
+    lo = float(values.min())
+    hi = float(values.max())
     result.zmin = lo if result.zmin is None else min(result.zmin, lo)
     result.zmax = hi if result.zmax is None else max(result.zmax, hi)
 

@@ -1,0 +1,298 @@
+{
+  "recorded_date": "2026-10-31",
+  "timezone": "America/New_York",
+  "baseline_commit": "f501cb40afde40f73c61b1bbb0953fed684e9e71",
+  "platform": "Windows AMD64",
+  "scope": "Named operations only, not whole-pipeline throughput. Memory is traced Python/NumPy allocations, not RSS or native GDAL/GEOS allocations.",
+  "mesh": {
+    "scope": "Slab construction only; excludes input allocation and imports",
+    "repeats": 7,
+    "equality": "Exact vertices, faces and metadata on five grids",
+    "python": "3.10.1 (tags/v3.10.1:2cd268a, Dec  6 2021, 19:10:37) [MSC v.1929 64 bit (AMD64)]",
+    "numpy": "1.24.3",
+    "trimesh": "4.0.1",
+    "measurements": [
+      {
+        "rows": 256,
+        "cols": 256,
+        "triangles": 262140,
+        "median_seconds": {
+          "before": 0.008674800000108007,
+          "after": 0.005189299999983632
+        },
+        "samples_seconds": {
+          "before": [
+            0.008674800000108007,
+            0.008557800000062343,
+            0.009849799999983588,
+            0.008364499999970576,
+            0.008692399999972622,
+            0.008366499999965527,
+            0.00867740000012418
+          ],
+          "after": [
+            0.004904500000066037,
+            0.0054881000000932545,
+            0.0050459999999930005,
+            0.005189299999983632,
+            0.007334799999853203,
+            0.005297799999880226,
+            0.004995600000029299
+          ]
+        },
+        "peak_traced_mib": {
+          "before": 16.578432083129883,
+          "after": 10.56561279296875
+        }
+      },
+      {
+        "rows": 512,
+        "cols": 768,
+        "triangles": 1572860,
+        "median_seconds": {
+          "before": 0.0590965999999753,
+          "after": 0.04925780000007762
+        },
+        "samples_seconds": {
+          "before": [
+            0.05758060000016485,
+            0.05874000000017077,
+            0.0590965999999753,
+            0.05910950000020421,
+            0.06136930000002394,
+            0.05967630000009194,
+            0.054014899999856425
+          ],
+          "after": [
+            0.04925780000007762,
+            0.04827970000019377,
+            0.0475642000001244,
+            0.04889520000006087,
+            0.05022029999986444,
+            0.05098950000001423,
+            0.049294400000007954
+          ]
+        },
+        "peak_traced_mib": {
+          "before": 99.4027042388916,
+          "after": 63.37816619873047
+        }
+      },
+      {
+        "rows": 866,
+        "cols": 866,
+        "triangles": 2999820,
+        "median_seconds": {
+          "before": 0.11388160000001335,
+          "after": 0.09666579999998248
+        },
+        "samples_seconds": {
+          "before": [
+            0.1169079999999667,
+            0.11771589999989374,
+            0.10802639999997155,
+            0.11388160000001335,
+            0.11301739999998972,
+            0.1166301000000658,
+            0.10928360000002613
+          ],
+          "after": [
+            0.09663070000010521,
+            0.09764610000001994,
+            0.09710330000007161,
+            0.09666579999998248,
+            0.09586230000013529,
+            0.09533749999991414,
+            0.10063530000002174
+          ]
+        },
+        "peak_traced_mib": {
+          "before": 189.56625175476074,
+          "after": 120.87429428100586
+        }
+      }
+    ]
+  },
+  "raster": {
+    "python": "3.10.1 (tags/v3.10.1:2cd268a, Dec  6 2021, 19:10:37) [MSC v.1929 64 bit (AMD64)]",
+    "numpy": "1.24.3",
+    "rasterio": "1.3.9",
+    "repeats": 5,
+    "equality": "Raster pixels and metadata, grids, all 13 province bounds",
+    "measurements": [
+      {
+        "case": "clip 4096x4096, 1 MiB bands, retain array",
+        "median_seconds": {
+          "before": 0.2283856999999898,
+          "after": 0.2068778000000293
+        },
+        "peak_traced_mib": {
+          "before": 128.32186031341553,
+          "after": 66.55314636230469
+        }
+      },
+      {
+        "case": "warp 4096x4096 in same CRS, 1 MiB bands, retain array",
+        "median_seconds": {
+          "before": 0.575847500000009,
+          "after": 0.5393095999997968
+        },
+        "peak_traced_mib": {
+          "before": 128.03198528289795,
+          "after": 66.27611827850342
+        }
+      },
+      {
+        "case": "40 explicit-resolution grid estimates",
+        "median_seconds": {
+          "before": 2.5767587000000276,
+          "after": 1.266383899999937
+        },
+        "peak_traced_mib": {
+          "before": 0.03109455108642578,
+          "after": 0.017658233642578125
+        }
+      },
+      {
+        "case": "Nunavut bounds, preloaded in print CRS",
+        "median_seconds": {
+          "before": 0.2955848000001424,
+          "after": 0.010751199999958772
+        },
+        "peak_traced_mib": {
+          "before": 0.0043430328369140625,
+          "after": 0.0043430328369140625
+        }
+      }
+    ]
+  },
+  "geometry": [
+    {
+      "id": "geometry-merge-index",
+      "benchmark": {
+        "method": "Median of 3 calls after output-equivalence check; Python 3.10.1, Shapely 2.0.2 on this Windows host",
+        "40_islands_before_seconds": 0.0267441,
+        "40_islands_after_seconds": 0.0215356,
+        "400_islands_before_seconds": 0.934556,
+        "400_islands_after_seconds": 0.3284682,
+        "400_islands_speedup": 2.8452
+      },
+      "evidence": "Zero-tolerance geometry equality against baseline on 40 and 400 synthetic islands. All existing merge tests pass, with new multipart identity and separated-pair coverage."
+    },
+    {
+      "id": "geometry-stress-overlay",
+      "benchmark": {
+        "method": "Median of 3 calls after equality check; tracemalloc peak measures traced Python/NumPy allocations, not total process RSS or GDAL native allocations",
+        "before_seconds": 1.3257992,
+        "after_seconds": 0.0317489,
+        "speedup": 41.7589,
+        "before_traced_peak_MiB": 172.7747,
+        "after_traced_peak_MiB": 40.6579
+      },
+      "evidence": "Exact pixel equality on 10.656 million cells and 20 overlapping regions, plus reversed report order, clipped regions, polygon holes, empty regions, negative values, infinity and NaN. New tests assert expected overlapping pixel values and zero-field behavior."
+    },
+    {
+      "id": "geometry-stress-empty-bands",
+      "benchmark": {
+        "method": "Median of 3 full stress_points calls on the shipped Nova Scotia GeoJSON, projected to EPSG:3347, after exact report and cached-tile equality check",
+        "before_seconds": 0.5640098,
+        "after_seconds": 0.3972856,
+        "speedup": 1.4197
+      },
+      "evidence": "All summary arrays and ordered edge lists match the baseline for 100 seeded random sparse-width grids. Full real Nova Scotia AND Nunavut reports, exact neck geometry/metrics, land/level rasters and every cached tile summary match. A dedicated regression asserts two six-pixel sides meet at band 1 with exactly three pixels of arriving throat mass. Stress/Fort Rupert/merge suite: 83 passed."
+    }
+  ],
+  "geometry_final_code_validation": [
+    {
+      "case": "merge 40 islands",
+      "seconds": {
+        "before": 0.026546299999836265,
+        "after": 0.021327299999938987
+      },
+      "repeats": 1,
+      "speedup": 1.2447098319952459,
+      "outputs_equal": true
+    },
+    {
+      "case": "merge 400 islands",
+      "seconds": {
+        "before": 0.8829573000000437,
+        "after": 0.3231550000000425
+      },
+      "repeats": 1,
+      "speedup": 2.7323027649268234,
+      "outputs_equal": true
+    },
+    {
+      "case": "severity field: 10.66M pixels, 20 overlapping regions",
+      "seconds": {
+        "before": 1.3442992000000231,
+        "after": 0.03016170000000784
+      },
+      "repeats": 1,
+      "speedup": 44.56974242166966,
+      "outputs_equal": true
+    },
+    {
+      "case": "severity traced Python/NumPy peak allocation",
+      "version": "before",
+      "peak_MiB": 172.7759828567505
+    },
+    {
+      "case": "severity traced Python/NumPy peak allocation",
+      "version": "after",
+      "peak_MiB": 40.658010482788086
+    },
+    {
+      "case": "overlay edge cases and 100 random sparse-level tiles",
+      "outputs_equal": true
+    },
+    {
+      "case": "stress: real Nova Scotia",
+      "seconds": {
+        "before": 0.5812983999999233,
+        "after": 0.40494669999998223
+      },
+      "repeats": 1,
+      "speedup": 1.4354936094057533,
+      "outputs_equal": true
+    },
+    {
+      "case": "stress: real Nunavut",
+      "seconds": {
+        "before": 13.256992800000035,
+        "after": 9.605914900000016
+      },
+      "repeats": 1,
+      "speedup": 1.3800864298724957,
+      "outputs_equal": true
+    }
+  ],
+  "test_validation": {
+    "initial_full_run": {
+      "passed": 1967,
+      "failed": 12,
+      "seconds": 203.46
+    },
+    "after_test_harness_repairs": {
+      "passed": 51,
+      "failed": 0,
+      "seconds": 4.54,
+      "files": [
+        "tests/test_island_editor_settings.py",
+        "tests/test_terrain_trim.py"
+      ]
+    },
+    "unique_tests_verified": 1979,
+    "full_suite_repeated_after_test_only_repairs": false,
+    "unchanged_baseline_terrain_trim": {
+      "failed": 10,
+      "reason": "Pinned trimesh requires an unavailable external Boolean backend in the test fixture"
+    }
+  },
+  "remaining_checks": [
+    "Real national DEM benchmark and full pipeline runtime were not available",
+    "Real Nunavut island-merge comparison was interrupted; no result claimed",
+    "Historical native-DEM cache benchmarks need remeasurement with corrected units"
+  ]
+}
